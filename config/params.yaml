@@ -1,0 +1,39 @@
+# config/params.yaml
+# Trust formula weights (must sum to 1.0)
+trust:
+  alpha: 0.35        # Reputation weight
+  beta:  0.25        # Behavioural consistency weight
+  gamma: 0.25        # Resource honesty weight
+  delta: 0.15        # Attack suspicion weight
+  lambda_decay: 0.85 # EMA decay factor (higher = slower forgetting)
+  initial_score: 0.5 # Starting trust for new devices
+
+# EdgeScore weights (must sum to 1.0)
+edge_score:
+  w1_trust:   0.50
+  w2_cpu:     0.30
+  w3_latency: 0.20
+
+# RAFT consensus
+raft:
+  election_timeout_min_ms: 150
+  election_timeout_max_ms: 300
+  heartbeat_interval_ms:   50
+  replicas: 3
+
+# Blockchain
+blockchain:
+  max_updates_per_block: 10
+  block_commit_timeout_s: 5.0
+
+# Simulation
+simulation:
+  num_edge_nodes: 8
+  num_iot_devices: 40
+  num_malicious: 3
+  duration_s: 300
+
+# PRESENT cipher
+security:
+  key_length_bits: 80
+  nonce_length_bits: 64
