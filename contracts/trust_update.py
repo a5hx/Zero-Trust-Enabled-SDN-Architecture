@@ -1,4 +1,3 @@
-# contracts/trust_update.py
 from dataclasses import dataclass, field
 from typing import Literal
 import time
