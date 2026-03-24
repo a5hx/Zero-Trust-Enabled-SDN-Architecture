@@ -1,0 +1,12 @@
+data/
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.joblib
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+*.log
