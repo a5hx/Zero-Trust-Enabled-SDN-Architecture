@@ -51,7 +51,8 @@ project/
 │   └── plots.py
 ├── tests/
 ├── data/                     
-├── logs/                     
+├── logs/
+├── uml_diagrams/                    
 └── requirements.txt
 ```
 
