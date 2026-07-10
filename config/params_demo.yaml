@@ -1,0 +1,25 @@
+# config/params_demo.yaml
+# Reduced-scale config for a fast, readable first Mininet demo
+# (full-scale config is config/params.yaml: 8 edge / 40 IoT / 3 malicious)
+trust:
+  alpha: 0.35
+  beta: 0.25
+  gamma: 0.25
+  delta: 0.15
+  lambda_decay: 0.85
+  initial_score: 0.5
+
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+
+simulation:
+  num_edge_nodes: 2
+  num_iot_devices: 6
+  num_malicious: 0
+  duration_s: 30
+
+blockchain:
+  max_updates_per_block: 10
+  block_commit_timeout_s: 5.0

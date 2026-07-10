@@ -6,8 +6,16 @@ simulation can run without Mininet installed.
 
 import logging
 import random
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Allow running this file directly (`python3 simulation/topology.py`) as
+# well as as a module (`python3 -m simulation.topology`) by ensuring the
+# repo root is on sys.path for the `simulation.traffic_gen` import below.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +52,7 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
 
         edge_switches: List[Any] = []
         self.edge_servers: List[Any] = []
+        self.iot_to_edge: Dict[str, int] = {}
 
         # Core switch
         core = self.addSwitch('s0', cls=OVSSwitch, protocols='OpenFlow13')
@@ -65,6 +74,7 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
             sw_idx = (j - 1) % n_edge
             delay = f'{random.randint(1, 10)}ms'
             self.addLink(h, edge_switches[sw_idx], cls=TCLink, delay=delay, bw=10)
+            self.iot_to_edge[f'iot{j}'] = sw_idx + 1
             if is_mal:
                 self.malicious_ids.append(f'iot{j}')
 
@@ -74,14 +84,18 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
         )
 
 
-def run_topology(cfg: Dict[str, Any]) -> None:
-    """Launch the Mininet network with a remote Ryu controller.
+def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
+    """Launch the Mininet network with a remote Ryu/os-ken controller.
 
-    Each edge server runs a simple HTTP status endpoint. The network
-    runs for cfg['simulation']['duration_s'] seconds and then cleans up.
+    Each edge server runs a simple HTTP status endpoint, and pingAll +
+    iperf traffic is generated between IoT hosts and their edge server.
+    If interactive, drops into the Mininet CLI afterwards (so pingall /
+    ovs-ofctl dump-flows can be run by hand); otherwise sleeps out the
+    remainder of cfg['simulation']['duration_s'] and tears down.
 
     Args:
         cfg: Parsed params.yaml configuration dict.
+        interactive: drop into the Mininet CLI instead of sleeping.
 
     Raises:
         RuntimeError: If Mininet is not installed.
@@ -94,12 +108,11 @@ def run_topology(cfg: Dict[str, Any]) -> None:
     import time
     import subprocess
 
-    topo = ZeroTrustTopo()
-    topo.build(cfg)
+    topo = ZeroTrustTopo(cfg=cfg)
 
     net = Mininet(
         topo=topo,
-        controller=lambda name: RemoteController(name, ip='127.0.0.1', port=6633),
+        controller=lambda name: RemoteController(name, ip='127.0.0.1', port=6653),
         switch=OVSSwitch,
         link=TCLink,
     )
@@ -119,9 +132,47 @@ def run_topology(cfg: Dict[str, Any]) -> None:
         srv.cmd(cmd)
         logger.info("Started HTTP server on %s:%d", srv_name, port)
 
+    from simulation.traffic_gen import generate_traffic
+
     duration = cfg['simulation']['duration_s']
     logger.info("Running topology for %d seconds...", duration)
-    time.sleep(duration)
+
+    traffic_start = time.time()
+    summary = generate_traffic(net, topo.iot_to_edge)
+    logger.info("Traffic summary: pingAll loss=%s%%, flows=%d",
+                summary['ping_loss_percent'], len(summary['flows']))
+
+    if interactive:
+        from mininet.cli import CLI
+        logger.info("Dropping into Mininet CLI (try: pingall, dump-flows, exit)")
+        CLI(net)
+    else:
+        remaining = duration - (time.time() - traffic_start)
+        if remaining > 0:
+            time.sleep(remaining)
 
     net.stop()
     logger.info("Mininet network stopped")
+
+
+if __name__ == '__main__':
+    import argparse
+
+    import yaml
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+    )
+
+    parser = argparse.ArgumentParser(description='Zero Trust SDN Mininet topology')
+    parser.add_argument('--config', default='config/params.yaml',
+                         help='Path to YAML config (default: config/params.yaml)')
+    parser.add_argument('--interactive', action='store_true',
+                         help='Drop into the Mininet CLI instead of running for a fixed duration')
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        run_cfg = yaml.safe_load(f)
+
+    run_topology(run_cfg, interactive=args.interactive)
