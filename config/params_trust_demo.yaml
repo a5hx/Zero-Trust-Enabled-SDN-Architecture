@@ -1,0 +1,85 @@
+# config/params_trust_demo.yaml
+# Mid-scale config for the trust-aware controller demo.
+#
+# 4 edge servers / 12 IoT devices / 1 malicious EDGE SERVER.
+#
+# params_demo.yaml (2 edge / 6 IoT / 0 malicious) cannot show trust-driven
+# rerouting: it has no attacker, and with only 2 servers "route away from the
+# bad one" has exactly one alternative. 4 servers makes the rerouting visible
+# while keeping pingall fast and `dpctl dump-flows` readable on a projector.
+#
+# Full-scale evaluation config remains config/params.yaml (8 / 40 / 3).
+trust:
+  alpha: 0.35
+  beta: 0.25
+  gamma: 0.25
+  delta: 0.15
+  lambda_decay: 0.85
+  initial_score: 0.5
+
+  # A node is excluded from routing when EITHER condition holds:
+  isolation_threshold: 0.3   # trust score T falls below this, OR
+  anomaly_gate: 0.5          # smoothed anomaly Ā reaches this (quarantine gate).
+  #
+  # The anomaly gate is NOT in the original formula. It is required because the
+  # published formula cannot isolate a node that lies about its load but still
+  # serves tasks well: with R̄→1 and B̄→0.96, T floors at
+  #   0.35(1.0) + 0.25(0.96) + 0.25(0.0) - 0.15(1.0) = 0.44
+  # which never crosses the 0.3 threshold, since δ only ever subtracts 0.15.
+  # See tests/test_flow_monitor.py::test_f04_non_degrading_liar_needs_anomaly_gate.
+
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+
+simulation:
+  num_edge_nodes: 4
+  num_iot_devices: 12
+  num_malicious: 1
+  duration_s: 120
+
+  # Which EDGE SERVERS misbehave, and how.
+  #   sybil — under-reports its CPU load to attract traffic (trust inflation).
+  #           Detected when claimed CPU deviates >40% from observed load.
+  #   drop  — accepts the task, then silently never replies (client times out).
+  malicious_edge_nodes:
+    - node: srv3
+      attack: sybil
+      start_s: 20
+
+blockchain:
+  max_updates_per_block: 10
+  block_commit_timeout_s: 5.0
+
+controller:
+  # Virtual service IP. IoT clients only ever address the VIP; the controller
+  # rewrites the destination to the chosen edge server in the data plane, so
+  # the client never learns which server served it.
+  vip: 10.0.99.1
+  vip_port: 9000
+
+  # Northbound REST API. The controller process binds this on api_host
+  # (0.0.0.0 -- it runs directly in the root namespace, not inside Mininet).
+  # Mininet hosts reach it at CX_IP (simulation/topology.py) via the `cx`
+  # root-namespace routing node, not this address.
+  api_host: 0.0.0.0
+  api_port: 8081
+
+  flow_idle_timeout_s: 10
+  flow_hard_timeout_s: 30
+  monitor_interval_s: 1.0
+
+  # The deck's Sybil detection rule: |claimed_cpu - observed_load| > 0.40.
+  honesty_deviation_threshold: 0.40
+
+agents:
+  node_port: 8000
+  # >=1 Hz. The <3s isolation NFR depends on this: once anomaly_flag is set,
+  # T crosses below the isolation threshold on the very first trust update,
+  # so isolation latency is bounded by the reporting interval.
+  report_interval_s: 1.0
+  task_timeout_s: 2.0
+  # Real work per task (a bounded hash loop), so a node that lies about being
+  # idle genuinely overloads under the traffic its lie attracts.
+  task_work_ms: 40

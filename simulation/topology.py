@@ -17,13 +17,15 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from simulation.addressing import iot_ip, iot_mac, srv_ip, srv_mac
+
 logger = logging.getLogger(__name__)
 
 # ---------- conditional Mininet imports ----------
 try:
     from mininet.topo import Topo
     from mininet.net import Mininet
-    from mininet.node import OVSSwitch, RemoteController
+    from mininet.node import Node, OVSSwitch, RemoteController
     from mininet.link import TCLink
 
     _MININET_AVAILABLE = True
@@ -33,6 +35,18 @@ except ImportError:
     _MININET_AVAILABLE = False
     logger.info("Mininet not available - topology will work in metadata-only mode")
 
+# The root-namespace routing node (design fact #3, Sprint 1 memory): a plain
+# Node (not addNAT() -- no iptables MASQUERADE needed) linked to the core
+# switch, deliberately kept on a narrower /24 than the emulated hosts'
+# default /8 so it doesn't widen the blast radius. It exists so the
+# controller process itself (which runs directly in the root namespace, not
+# inside any Mininet host) can route into the emulated 10.0.0.0/24 (IoT) and
+# 10.0.1.0/24 (server) subnets -- required for FlowMonitor's /status polling
+# and for iot_client's /report calls to the northbound API.
+CX_NAME = 'cx'
+CX_IP = '10.0.99.254'
+CX_PREFIX = 24
+
 
 class ZeroTrustTopo(Topo):  # type: ignore[misc]
     """3-tier SDN topology: core switch → edge switches → IoT devices.
@@ -40,6 +54,14 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
     Tier 0: 1 core OVSSwitch (s0)
     Tier 1: num_edge_nodes edge switches (s1..sN), each with one edge server
     Tier 2: num_iot_devices IoT hosts, round-robin attached to edge switches
+
+    Every switch gets an explicit, distinct, nonzero DPID -- s0 defaults to
+    dpid=0 otherwise, which some OVS versions reject or mishandle (see
+    SETUP.md's DPID quirk note). Every host gets a deterministic MAC from
+    simulation/addressing.py, the same scheme controller/trust_balancer.py
+    uses to build VIP rewrite rules with no runtime ARP/discovery -- if the
+    two ever computed addresses differently, the rewrite would silently
+    target a MAC nothing owns.
     """
 
     malicious_ids: List[str] = []
@@ -54,13 +76,15 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
         self.edge_servers: List[Any] = []
         self.iot_to_edge: Dict[str, int] = {}
 
-        # Core switch
-        core = self.addSwitch('s0', cls=OVSSwitch, protocols='OpenFlow13')
+        # Core switch. dpid=1 (not the Mininet default of 0).
+        core = self.addSwitch('s0', cls=OVSSwitch, protocols='OpenFlow13', dpid='%016x' % 1)
 
         # Edge switches + servers
         for i in range(1, n_edge + 1):
-            sw = self.addSwitch(f's{i}', cls=OVSSwitch, protocols='OpenFlow13')
-            srv = self.addHost(f'srv{i}', ip=f'10.0.1.{i}')
+            sw = self.addSwitch(
+                f's{i}', cls=OVSSwitch, protocols='OpenFlow13', dpid='%016x' % (i + 1),
+            )
+            srv = self.addHost(f'srv{i}', ip=f'{srv_ip(i)}/8', mac=srv_mac(i))
             self.addLink(sw, srv, cls=TCLink, delay='2ms', bw=100)
             self.addLink(core, sw, cls=TCLink, delay='5ms', bw=1000)
             edge_switches.append(sw)
@@ -70,7 +94,7 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
         self.malicious_ids = []
         for j in range(1, n_iot + 1):
             is_mal = j > (n_iot - n_mal)
-            h = self.addHost(f'iot{j}', ip=f'10.0.0.{j}')
+            h = self.addHost(f'iot{j}', ip=f'{iot_ip(j)}/8', mac=iot_mac(j))
             sw_idx = (j - 1) % n_edge
             delay = f'{random.randint(1, 10)}ms'
             self.addLink(h, edge_switches[sw_idx], cls=TCLink, delay=delay, bw=10)
@@ -84,17 +108,110 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
         )
 
 
-def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
-    """Launch the Mininet network with a remote Ryu/os-ken controller.
+def _add_cx_node(net: Any, core_switch: Any) -> Any:
+    """Add the root-namespace `cx` routing node (see CX_NAME docstring above)
+    and give it explicit routes into the emulated 10.0.0.0/24 (IoT) and
+    10.0.1.0/24 (server) subnets. Those routes are only needed on cx itself:
+    every Mininet host already has a /8 netmask by Mininet's default IP
+    scheme, so from *their* side, cx's 10.0.99.0/24 is already on-link.
 
-    Each edge server runs a simple HTTP status endpoint, and pingAll +
-    iperf traffic is generated between IoT hosts and their edge server.
+    Must be called after net.start() -- cx.cmd() needs its shell/interface
+    to already exist, which only happens once Mininet has configured links.
+    """
+    cx = net.addHost(CX_NAME, cls=Node, ip=None, inNamespace=False)
+    net.addLink(cx, core_switch, cls=TCLink, bw=1000)
+    cx_intf = cx.intfNames()[-1]
+    cx.cmd(f'ip link set {cx_intf} up')
+    cx.cmd(f'ip addr add {CX_IP}/{CX_PREFIX} dev {cx_intf}')
+    cx.cmd(f'ip route add 10.0.0.0/24 dev {cx_intf}')
+    cx.cmd(f'ip route add 10.0.1.0/24 dev {cx_intf}')
+    logger.info("cx routing node up: %s/%d on %s", CX_IP, CX_PREFIX, cx_intf)
+    return cx
+
+
+def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
+    """Start node_agent.py on every edge server and iot_client.py on every
+    IoT host, backgrounded inside each Mininet host's own namespace. Reads
+    --malicious from cfg['simulation']['malicious_edge_nodes'] (delayed
+    onset via that list's start_s is not implemented by node_agent.py --
+    malicious nodes misbehave from the moment they start)."""
+    Path('logs').mkdir(exist_ok=True)
+
+    n_edge = cfg['simulation']['num_edge_nodes']
+    n_iot = cfg['simulation']['num_iot_devices']
+    ctrl_cfg = cfg['controller']
+    agents_cfg = cfg.get('agents', {})
+    agent_port = agents_cfg.get('node_port', 8000)
+    work_ms = agents_cfg.get('task_work_ms', 40.0)
+    report_interval = agents_cfg.get('report_interval_s', 1.0)
+    task_timeout = agents_cfg.get('task_timeout_s', 2.0)
+
+    mal_by_node = {m['node']: m for m in cfg['simulation'].get('malicious_edge_nodes', [])}
+
+    for i in range(1, n_edge + 1):
+        node_id = f'srv{i}'
+        srv = net.get(node_id)
+        mal = mal_by_node.get(node_id)
+        attack = mal['attack'] if mal else 'none'
+        cmd = (
+            f'python3 -u -m simulation.node_agent --node-id {node_id} '
+            f'--port {agent_port} --work-ms {work_ms} --malicious {attack} '
+            f'> logs/{node_id}_agent.log 2>&1 &'
+        )
+        srv.cmd(cmd)
+        logger.info("Started node_agent on %s (malicious=%s)", node_id, attack)
+
+    for j in range(1, n_iot + 1):
+        device_id = f'iot{j}'
+        host = net.get(device_id)
+        cmd = (
+            f'python3 -u -m simulation.iot_client --device-id {device_id} '
+            f'--vip {ctrl_cfg["vip"]} --vip-port {ctrl_cfg["vip_port"]} '
+            f'--controller {CX_IP} --controller-port {ctrl_cfg["api_port"]} '
+            f'--interval-s {report_interval} --timeout-s {task_timeout} '
+            f'> logs/{device_id}_client.log 2>&1 &'
+        )
+        host.cmd(cmd)
+    logger.info("Started iot_client on %d IoT host(s)", n_iot)
+
+
+def _stop_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
+    """Explicitly kill backgrounded agent/client processes before net.stop()
+    (mirrors traffic_gen.py's own `kill %iperf` cleanup) rather than relying
+    on namespace teardown to reap them."""
+    n_edge = cfg['simulation']['num_edge_nodes']
+    n_iot = cfg['simulation']['num_iot_devices']
+    for i in range(1, n_edge + 1):
+        net.get(f'srv{i}').cmd('pkill -f simulation.node_agent 2>/dev/null')
+    for j in range(1, n_iot + 1):
+        net.get(f'iot{j}').cmd('pkill -f simulation.iot_client 2>/dev/null')
+
+
+def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
+    """Launch the Mininet network with a remote os-ken controller.
+
+    Two modes, selected by whether cfg has a `controller:` block (i.e. was
+    loaded from config/params_trust_demo.yaml or config/params.yaml, not
+    config/params_demo.yaml):
+
+    Trust mode (cfg has `controller:`): adds the cx routing node, starts a
+        real node_agent.py per edge server (malicious ones per
+        cfg['simulation']['malicious_edge_nodes']) and a real iot_client.py
+        per IoT host generating continuous traffic through the VIP, so
+        TrustBalancerApp (run separately -- see SETUP.md) has genuine
+        traffic to route and re-steer. No iperf/http.server traffic in this
+        mode; the point is the VIP-routed task traffic itself.
+    Plain mode (no `controller:` block, e.g. params_demo.yaml): unchanged
+        Phase C behaviour -- plain HTTP status servers + pingAll/iperf via
+        simulation.traffic_gen, for connectivity verification against
+        learning_switch_13.py rather than the trust-aware controller.
+
     If interactive, drops into the Mininet CLI afterwards (so pingall /
-    ovs-ofctl dump-flows can be run by hand); otherwise sleeps out the
-    remainder of cfg['simulation']['duration_s'] and tears down.
+    `dpctl dump-flows -O OpenFlow13` can be run by hand); otherwise sleeps
+    out the remainder of cfg['simulation']['duration_s'] and tears down.
 
     Args:
-        cfg: Parsed params.yaml configuration dict.
+        cfg: Parsed params YAML configuration dict.
         interactive: drop into the Mininet CLI instead of sleeping.
 
     Raises:
@@ -106,7 +223,8 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         )
 
     import time
-    import subprocess
+
+    trust_mode = 'controller' in cfg
 
     topo = ZeroTrustTopo(cfg=cfg)
 
@@ -119,37 +237,55 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
     net.start()
     logger.info("Mininet network started")
 
-    # Start HTTP status servers on each edge server
-    http_procs = []
-    for i, srv_name in enumerate(
-        [f'srv{j}' for j in range(1, cfg['simulation']['num_edge_nodes'] + 1)]
-    ):
-        srv = net.get(srv_name)
-        port = 8080
-        cmd = (
-            f'python3 -m http.server {port} &'
-        )
-        srv.cmd(cmd)
-        logger.info("Started HTTP server on %s:%d", srv_name, port)
+    if trust_mode:
+        _add_cx_node(net, net.get('s0'))
+        loss = net.pingAll()
+        logger.info("pingAll loss: %s%% (reachability check before agents start)", loss)
+        _launch_trust_agents(net, cfg)
 
-    from simulation.traffic_gen import generate_traffic
+        duration = cfg['simulation']['duration_s']
+        logger.info("Trust-aware demo running for %d seconds (Ctrl-C / exit to stop early)...", duration)
 
-    duration = cfg['simulation']['duration_s']
-    logger.info("Running topology for %d seconds...", duration)
+        if interactive:
+            from mininet.cli import CLI
+            logger.info(
+                "Dropping into Mininet CLI (try: pingall, dpctl dump-flows -O "
+                "OpenFlow13, iot1 wireshark &, exit)"
+            )
+            CLI(net)
+        else:
+            time.sleep(duration)
 
-    traffic_start = time.time()
-    summary = generate_traffic(net, topo.iot_to_edge)
-    logger.info("Traffic summary: pingAll loss=%s%%, flows=%d",
-                summary['ping_loss_percent'], len(summary['flows']))
-
-    if interactive:
-        from mininet.cli import CLI
-        logger.info("Dropping into Mininet CLI (try: pingall, dump-flows, exit)")
-        CLI(net)
+        _stop_trust_agents(net, cfg)
     else:
-        remaining = duration - (time.time() - traffic_start)
-        if remaining > 0:
-            time.sleep(remaining)
+        # Start HTTP status servers on each edge server
+        for i, srv_name in enumerate(
+            [f'srv{j}' for j in range(1, cfg['simulation']['num_edge_nodes'] + 1)]
+        ):
+            srv = net.get(srv_name)
+            port = 8080
+            cmd = f'python3 -m http.server {port} &'
+            srv.cmd(cmd)
+            logger.info("Started HTTP server on %s:%d", srv_name, port)
+
+        from simulation.traffic_gen import generate_traffic
+
+        duration = cfg['simulation']['duration_s']
+        logger.info("Running topology for %d seconds...", duration)
+
+        traffic_start = time.time()
+        summary = generate_traffic(net, topo.iot_to_edge)
+        logger.info("Traffic summary: pingAll loss=%s%%, flows=%d",
+                    summary['ping_loss_percent'], len(summary['flows']))
+
+        if interactive:
+            from mininet.cli import CLI
+            logger.info("Dropping into Mininet CLI (try: pingall, dump-flows, exit)")
+            CLI(net)
+        else:
+            remaining = duration - (time.time() - traffic_start)
+            if remaining > 0:
+                time.sleep(remaining)
 
     net.stop()
     logger.info("Mininet network stopped")

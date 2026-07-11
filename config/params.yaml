@@ -8,6 +8,13 @@ trust:
   lambda_decay: 0.85    # EMA decay factor (higher = slower forgetting)
   initial_score: 0.5    # Starting trust for new devices
 
+  # A node is excluded from routing when EITHER condition holds:
+  isolation_threshold: 0.3   # trust score T falls below this, OR
+  anomaly_gate: 0.5          # smoothed anomaly Ā reaches this (quarantine gate).
+  # See contracts/thresholds.py for why the anomaly gate is required: the trust
+  # formula alone cannot isolate a node that lies about its load but still
+  # serves tasks well (it floors at T=0.44, never crossing 0.3).
+
 # EdgeScore weights (must sum to 1.0)
 edge_score:
   w1_trust: 0.50

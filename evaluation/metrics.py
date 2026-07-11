@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from contracts.thresholds import DEFAULT_ISOLATION_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,14 +132,18 @@ class MetricsCollector:
         logger.info("Exported %d routing events to %s", len(self._routing_events), path)
 
     def get_malicious_isolation_time(
-        self, malicious_nodes: List[str]
+        self,
+        malicious_nodes: List[str],
+        isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
     ) -> Dict[str, Optional[float]]:
         """For each malicious node, return seconds from first anomaly to exclusion.
 
-        A node is considered 'isolated' when its trust score drops below 0.3.
+        A node is considered 'isolated' when its trust score drops below
+        isolation_threshold.
 
         Args:
             malicious_nodes: List of node IDs marked as malicious.
+            isolation_threshold: Trust score below which a node counts as isolated.
 
         Returns:
             Dict mapping node_id → isolation time in seconds, or None.
@@ -145,7 +151,6 @@ class MetricsCollector:
         result: Dict[str, Optional[float]] = {}
 
         for node_id in malicious_nodes:
-            # Find first trust event where score drops below 0.3
             first_event_time: Optional[float] = None
             isolation_time: Optional[float] = None
 
@@ -153,7 +158,7 @@ class MetricsCollector:
                 if evt['node_id'] == node_id:
                     if first_event_time is None:
                         first_event_time = evt['elapsed_s']
-                    if evt['score_after'] < 0.3 and isolation_time is None:
+                    if evt['score_after'] < isolation_threshold and isolation_time is None:
                         isolation_time = evt['elapsed_s']
 
             if first_event_time is not None and isolation_time is not None:

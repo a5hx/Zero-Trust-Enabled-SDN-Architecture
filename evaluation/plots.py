@@ -16,6 +16,8 @@ matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 
+from contracts.thresholds import DEFAULT_ISOLATION_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 # IEEE-style appearance
@@ -39,6 +41,7 @@ def plot_trust_evolution(
     trust_history: Dict[str, List[float]],
     malicious_nodes: List[str],
     output_path: Optional[Path] = None,
+    isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
 ) -> Path:
     """Figure 1 — Trust Score Convergence Under Attack.
 
@@ -46,6 +49,7 @@ def plot_trust_evolution(
         trust_history: {node_id: [score_at_step_0, score_at_step_1, …]}
         malicious_nodes: Node IDs that are under attack.
         output_path: Override default save path.
+        isolation_threshold: Trust level at which a node is excluded from routing.
 
     Returns:
         Path to saved figure.
@@ -62,7 +66,10 @@ def plot_trust_evolution(
         ax.plot(scores, linestyle=style, color=color, label=label, linewidth=1.5)
 
     ax.axhline(y=0.5, color='gray', linestyle=':', linewidth=1, label='Neutral threshold')
-    ax.axhline(y=0.3, color='orange', linestyle=':', linewidth=1, alpha=0.7, label='Isolation threshold')
+    ax.axhline(
+        y=isolation_threshold, color='orange', linestyle=':', linewidth=1, alpha=0.7,
+        label=f'Isolation threshold (T < {isolation_threshold})',
+    )
     ax.set_xlabel('Interaction Number')
     ax.set_ylabel('Trust Score')
     ax.set_title('Trust Score Convergence Under Attack')
@@ -80,13 +87,15 @@ def plot_routing_distribution(
     routing_counts: Dict[str, int],
     low_trust_nodes: List[str],
     output_path: Optional[Path] = None,
+    isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
 ) -> Path:
     """Figure 2 — Routing Distribution by Edge Node.
 
     Args:
         routing_counts: {node_id: count_of_routing_decisions}.
-        low_trust_nodes: Nodes whose trust dropped below 0.3.
+        low_trust_nodes: Nodes whose trust dropped below isolation_threshold.
         output_path: Override default save path.
+        isolation_threshold: Trust level at which a node is excluded from routing.
 
     Returns:
         Path to saved figure.
@@ -106,7 +115,7 @@ def plot_routing_distribution(
     from matplotlib.patches import Patch
     legend_elements = [
         Patch(facecolor='#2ecc71', label='Trusted node'),
-        Patch(facecolor='#e74c3c', label='Low-trust node (T < 0.3)'),
+        Patch(facecolor='#e74c3c', label=f'Low-trust node (T < {isolation_threshold})'),
     ]
     ax.legend(handles=legend_elements, loc='upper right')
 

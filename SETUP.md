@@ -93,6 +93,55 @@ mininet> exit                            # tear down
 Note: there is **no** `dump-flows` command in Mininet's CLI — `dpctl <cmd>`
 is the correct way to run an `ovs-ofctl`-style command against every switch.
 
+## 3b. Trust-aware controller demo (Phase D Sprint 1)
+
+Shows the real thing: `TrustBalancerApp` routing live IoT task traffic
+through a virtual service IP (VIP) by EdgeScore, then re-steering away from
+a malicious edge server once it's caught. Three terminals.
+
+**Terminal A — controller** (no sudo needed):
+```bash
+python3 -m controller.osken_manager controller.trust_balancer
+```
+Wait for `TrustBalancerApp started: vip=...` and `NorthboundAPI listening on
+0.0.0.0:8081`. Every edge node will log `QUARANTINE: srvN ... /status poll
+failed` at first -- that's expected and correct, since no agents are running
+yet (FlowMonitor treats an unreachable node as suspicious, not just idle);
+it clears once Terminal B's agents come up.
+
+**Terminal B — topology (sudo)**:
+```bash
+sudo mn -c   # always clean up leftover bridges from a previous run first --
+             # a stale OVS bridge still pointed at 127.0.0.1:6653 will
+             # reconnect to Terminal A the instant it starts and confuse
+             # what you're looking at
+sudo python3 -m simulation.topology --config config/params_trust_demo.yaml --interactive
+```
+This config is 4 edge servers / 12 IoT devices / 1 malicious server (`srv3`,
+Sybil attack -- lies about its CPU load). Unlike section 3's plain demo,
+this launches a real `node_agent.py` per edge server and a real
+`iot_client.py` per IoT device generating continuous traffic through the
+VIP -- watch Terminal A's log for `Routed <ip>:<port> -> srvN` lines as
+routing decisions happen, and eventually `QUARANTINE: srv3 ...` once
+FlowMonitor's honesty-deviation check catches the lie (bounded by
+`monitor_interval_s`, ~1s).
+
+**Terminal C — watch it happen, from the Mininet CLI (Terminal B)**:
+```
+mininet> dpctl dump-flows -O OpenFlow13 | grep cookie=0x5a
+mininet> iot1 curl -s http://10.0.99.254:8081/node/status | python3 -m json.tool
+mininet> iot1 curl -s http://10.0.99.254:8081/trust/score | python3 -m json.tool
+```
+The first shows the live per-connection VIP rewrite rules by node (cookie
+low byte = server index); watch `srv3`'s rules disappear from the dump the
+moment it's quarantined. The REST calls hit the northbound API through the
+`cx` routing node (10.0.99.254) -- the same path `iot_client.py` itself uses
+to file its `/report` calls.
+
+Logs land in `logs/srvN_agent.log` / `logs/iotN_client.log` per host, plus
+whatever Terminal A prints (routing decisions, quarantine events, honesty
+deviations).
+
 ## 4. Visualizing "rules" and packet flow (Wireshark)
 
 Two things an advisor might mean by this — both covered:
@@ -147,16 +196,28 @@ wireshark /tmp/iot1.pcap
 
 - `sch_htb: quantum of class ... is big` warnings during topology startup —
   a `tc`/traffic-control tuning notice, not an error.
-- One switch sometimes gets a large numeric DPID instead of a small
-  sequential one (Mininet auto-assigns from interface MAC when not set
-  explicitly) — cosmetic only, doesn't affect forwarding.
+- If you ever see a switch log a large numeric DPID instead of a small
+  sequential one, it means you're talking to a **stale bridge from a
+  previous, uncleaned run** (Mininet auto-assigns from interface MAC when no
+  DPID was set) — `simulation/topology.py` now assigns every switch an
+  explicit, distinct, nonzero DPID, so this shouldn't happen on a fresh
+  `sudo mn -c` + re-run. If it does, that's the tell to run `sudo mn -c`.
 
 ## Project status / what's left
 
 Phases A (env), B (standalone sim verified), C (Mininet+traffic+controller
-demo) are done. Phase D (not started): `blockchain/raft.py`,
-`trust_engine/ai_optimizer.py`, `security/present_cipher.py`,
-`controller/flow_monitor.py`, `evaluation/baseline.py`,
-`evaluation/stats.py`, plus finishing the real trust-aware controller
-(`controller/trust_balancer.py`) as an os-ken app and swapping it in for
-`learning_switch_13.py` in the demo above.
+demo) are done. Phase D Sprint 1 (trust-aware controller) is done: the real
+`TrustBalancerApp` os-ken app (`controller/trust_balancer.py`), anomaly
+detection (`controller/flow_monitor.py`), the northbound REST API
+(`controller/northbound_api.py`), and the Mininet wiring for it
+(`simulation/topology.py`'s trust mode, `simulation/node_agent.py`,
+`simulation/iot_client.py`) are all built, unit-tested (38/38 passing —
+`pytest tests/`), and confirmed to start cleanly and talk real OpenFlow to a
+live switch (see section 3b). Not yet run as a full live Mininet demo end to
+end by a human — do that next (section 3b) before treating it as verified
+for the advisor.
+
+Phase D Sprint 2+ (not started): `security/present_cipher.py` (PRESENT-80,
+replacing the Sprint-1 `HmacAuthenticator`), `blockchain/raft.py`,
+`trust_engine/ai_optimizer.py`, `evaluation/baseline.py`,
+`evaluation/stats.py`.

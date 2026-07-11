@@ -1,34 +1,43 @@
-"""Simplified Ryu SDN controller for trust-aware load balancing.
+"""os-ken SDN controller for trust-aware load balancing.
 
-All Ryu imports are conditional so that the module can be imported in
-standalone simulation mode without Ryu installed.
+Two classes live here:
+    TrustBalancerStandalone -- no os-ken dependency, used by run_demo.py.
+        Untouched by the Sprint 1 os-ken work below: it has its own routing
+        logic (no quarantine gate) that run_demo.py and its tests depend on
+        exactly as-is.
+    TrustBalancerApp -- the real os-ken OSKenApp driving the Mininet demo,
+        using controller/edge_selector.py + controller/trust_state.py as its
+        single source of truth for the EdgeScore/quarantine logic.
 """
 
 import csv
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from contracts.trust_update import TrustUpdate
 from trust_engine.trust_calculator import TrustCalculator
 from blockchain.block import build_block
+from blockchain.commit_backend import LocalLedgerBackend
 from blockchain.ledger import Ledger
 
+from os_ken.base import app_manager
+from os_ken.controller import ofp_event
+from os_ken.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
+from os_ken.lib import hub
+from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
+from os_ken.ofproto import inet, ofproto_v1_3
+
+from controller.edge_selector import EdgeWeights
+from controller.trust_state import TrustState
+from security.authenticator import HmacAuthenticator
+from simulation.addressing import VIP_MAC, srv_index, srv_ip, srv_mac
+
 logger = logging.getLogger(__name__)
-
-# ---------- conditional Ryu imports ----------
-try:
-    from ryu.base import app_manager
-    from ryu.controller import ofp_event
-    from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
-    from ryu.ofproto import ofproto_v1_3
-    from ryu.lib.packet import packet, ethernet, ipv4
-
-    _RYU_AVAILABLE = True
-except ImportError:
-    _RYU_AVAILABLE = False
-    logger.info("Ryu not available - controller runs in standalone mode only")
 
 
 class TrustBalancerStandalone:
@@ -190,3 +199,460 @@ class TrustBalancerStandalone:
                 time.time(), node_id, f'{edge_score:.4f}',
                 f'{trust_score:.4f}', f'{routing_latency_ms:.2f}', task_status,
             ])
+
+
+# --------------------------------------------------------------------------- #
+# TrustBalancerApp -- the real os-ken controller for the Mininet demo         #
+# --------------------------------------------------------------------------- #
+
+# Demo-only pre-shared key for HmacAuthenticator (security/authenticator.py).
+# Fine for a simulated IoT fleet; PRESENT-80 (Sprint 2) replaces this scheme
+# behind the same Authenticator protocol without callers changing.
+_DEMO_HMAC_KEY = b'zero-trust-sdn-demo-shared-key'
+
+# Overridable so tests / alternate demo scales can point at a different file
+# without editing code.
+_CONFIG_ENV_VAR = 'ZTSDN_CONFIG'
+_DEFAULT_CONFIG_PATH = 'config/params_trust_demo.yaml'
+
+
+class TrustBalancerApp(app_manager.OSKenApp):
+    """Trust-aware OpenFlow 1.3 controller.
+
+    Two-table pipeline per switch:
+        TABLE_VIP (0): proxy-ARP for the virtual service IP (VIP), punts new
+            TCP connections to the VIP to the controller, and holds the
+            per-connection rewrite rules the controller installs dynamically.
+            Miss -> goto TABLE_L2.
+        TABLE_L2 (1): ordinary MAC-learning switch, identical logic to
+            learning_switch_13.py, just relocated to table_id=1 so it never
+            competes with the VIP rules in table 0.
+
+    Routing itself is enforced entirely in the data plane (the rewrite rules
+    installed in TABLE_VIP): an IoT client only ever addresses the VIP and is
+    never told which real edge server answered. TrustState.choose_edge_node()
+    decides who that is at the moment of the first PacketIn for a new
+    (client_ip, client_port) flow.
+    """
+
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+
+    TABLE_VIP = 0
+    TABLE_L2 = 1
+
+    PRIO_ARP_PUNT = 350
+    PRIO_CONNECTION = 300
+    PRIO_NEW_TASK = 250
+    PRIO_MISS = 0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        cfg_path = os.environ.get(_CONFIG_ENV_VAR, _DEFAULT_CONFIG_PATH)
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        self.cfg = cfg
+
+        n = cfg['simulation']['num_edge_nodes']
+        node_ids = [f'srv{i}' for i in range(1, n + 1)]
+
+        trust_cfg = cfg['trust']
+        trust_calc = TrustCalculator(
+            alpha=trust_cfg['alpha'],
+            beta=trust_cfg['beta'],
+            gamma=trust_cfg['gamma'],
+            delta=trust_cfg['delta'],
+            lambda_decay=trust_cfg['lambda_decay'],
+            initial_score=trust_cfg['initial_score'],
+        )
+
+        blockchain_cfg = cfg.get('blockchain', {})
+
+        self.state = TrustState(
+            node_ids=node_ids,
+            trust_calculator=trust_calc,
+            commit_backend=LocalLedgerBackend(),
+            authenticator=HmacAuthenticator(shared_key=_DEMO_HMAC_KEY),
+            edge_weights=EdgeWeights.from_config(cfg['edge_score']),
+            isolation_threshold=trust_cfg['isolation_threshold'],
+            anomaly_gate=trust_cfg['anomaly_gate'],
+            anomaly_lambda=trust_cfg['lambda_decay'],
+            max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
+            block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
+        )
+
+        ctrl_cfg = cfg['controller']
+        self.vip_ip: str = ctrl_cfg['vip']
+        self.vip_port: int = ctrl_cfg['vip_port']
+        self.api_host: str = ctrl_cfg['api_host']
+        self.api_port: int = ctrl_cfg['api_port']
+        self.flow_idle_timeout: int = ctrl_cfg['flow_idle_timeout_s']
+        self.flow_hard_timeout: int = ctrl_cfg['flow_hard_timeout_s']
+        self.monitor_interval_s: float = ctrl_cfg['monitor_interval_s']
+        self.honesty_deviation_threshold: float = ctrl_cfg['honesty_deviation_threshold']
+
+        self._datapaths: Dict[int, Any] = {}
+        self._mac_to_port: Dict[int, Dict[str, int]] = {}
+        self._cookie_base = 0x5A00000000000000
+
+        # Imported here (not at module scope) because FlowMonitor is built and
+        # wired in the same Sprint 1 pass as this class -- avoids a hard
+        # top-level dependency ordering requirement between the two files.
+        from controller.flow_monitor import FlowMonitor
+
+        agents_cfg = cfg.get('agents', {})
+        self.flow_monitor = FlowMonitor(
+            state=self.state,
+            node_ids=node_ids,
+            agent_port=agents_cfg.get('node_port', 8000),
+            poll_interval_s=self.monitor_interval_s,
+            honesty_deviation_threshold=self.honesty_deviation_threshold,
+            on_quarantine=self._on_trust_collapse,
+        )
+
+        self._http_server = None  # set in start(), from northbound_api.py
+
+    def start(self):
+        super().start()
+        hub.spawn(self._run_http_server)
+        hub.spawn(self.flow_monitor.run)
+        logger.info(
+            "TrustBalancerApp started: vip=%s:%d, api=%s:%d, nodes=%s",
+            self.vip_ip, self.vip_port, self.api_host, self.api_port,
+            self.state.node_ids,
+        )
+
+    def _run_http_server(self) -> None:
+        # Imported lazily for the same reason as FlowMonitor above.
+        from controller.northbound_api import NorthboundAPI
+
+        self._http_server = NorthboundAPI(
+            app=self, state=self.state, host=self.api_host, port=self.api_port,
+        )
+        self._http_server.serve_forever()
+
+    # ------------------------------------------------------------------ #
+    # OpenFlow event handlers                                             #
+    # ------------------------------------------------------------------ #
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        dp = ev.msg.datapath
+        ofproto = dp.ofproto
+        parser = dp.ofproto_parser
+
+        self._datapaths[dp.id] = dp
+        self._mac_to_port.setdefault(dp.id, {})
+
+        # TABLE_VIP: default miss -> goto TABLE_L2 (no other action).
+        self._install_goto_l2(dp, self.TABLE_VIP, self.PRIO_MISS, parser.OFPMatch(), [])
+
+        # TABLE_VIP: proxy-ARP punt for the VIP (terminal, never reaches L2).
+        arp_match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_tpa=self.vip_ip)
+        arp_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        self._install_terminal(dp, self.TABLE_VIP, self.PRIO_ARP_PUNT, arp_match, arp_actions)
+
+        # TABLE_VIP: new TCP connection to the VIP -> punt to controller
+        # (terminal; a per-connection rewrite rule at PRIO_CONNECTION takes
+        # over for the rest of that flow once installed).
+        tcp_match = parser.OFPMatch(
+            eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+            ipv4_dst=self.vip_ip, tcp_dst=self.vip_port,
+        )
+        tcp_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        self._install_terminal(dp, self.TABLE_VIP, self.PRIO_NEW_TASK, tcp_match, tcp_actions)
+
+        # TABLE_L2: miss -> controller (same rule learning_switch_13.py used,
+        # just relocated to table_id=1).
+        l2_miss_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        self._install_terminal(dp, self.TABLE_L2, self.PRIO_MISS, parser.OFPMatch(), l2_miss_actions)
+
+        logger.info("Switch connected: dpid=%016x", dp.id)
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def packet_in_handler(self, ev):
+        msg = ev.msg
+        dp = msg.datapath
+        in_port = msg.match['in_port']
+
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            return
+
+        if msg.table_id == self.TABLE_VIP:
+            self._handle_table_vip(dp, msg, pkt, eth, in_port)
+        else:
+            self._handle_table_l2(dp, msg, pkt, eth, in_port)
+
+    # ------------------------------------------------------------------ #
+    # TABLE_VIP handling                                                  #
+    # ------------------------------------------------------------------ #
+    def _handle_table_vip(self, dp, msg, pkt, eth, in_port) -> None:
+        if eth.ethertype == ether_types.ETH_TYPE_ARP:
+            arp_pkt = pkt.get_protocols(arp.arp)[0]
+            if arp_pkt.opcode == arp.ARP_REQUEST and arp_pkt.dst_ip == self.vip_ip:
+                self._send_arp_reply(dp, in_port, arp_pkt, eth)
+            return
+
+        if eth.ethertype != ether_types.ETH_TYPE_IP:
+            return
+
+        ip_pkt = pkt.get_protocols(ipv4.ipv4)[0]
+        if ip_pkt.proto != inet.IPPROTO_TCP:
+            return
+        tcp_pkt = pkt.get_protocols(tcp.tcp)[0]
+        if ip_pkt.dst != self.vip_ip or tcp_pkt.dst_port != self.vip_port:
+            # Shouldn't happen given the installed match, but stay defensive.
+            return
+
+        decision_start = time.monotonic()
+        client_ip = ip_pkt.src
+        client_port = tcp_pkt.src_port
+
+        chosen = self.state.choose_edge_node()
+        if chosen is None:
+            logger.warning(
+                "No eligible edge node for %s:%d -- all quarantined, denying",
+                client_ip, client_port,
+            )
+            return
+
+        self.state.register_dispatch(client_ip, client_port, chosen)
+        self._install_vip_pair(dp, client_ip, client_port, chosen)
+        self._resend_packet(dp, msg, in_port)
+
+        decision_ms = (time.monotonic() - decision_start) * 1000.0
+        logger.info(
+            "Routed %s:%d -> %s (decision took %.2fms)",
+            client_ip, client_port, chosen, decision_ms,
+        )
+
+    def _send_arp_reply(self, dp, in_port, arp_pkt, eth) -> None:
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+
+        reply = packet.Packet()
+        reply.add_protocol(ethernet.ethernet(
+            dst=eth.src, src=VIP_MAC, ethertype=ether_types.ETH_TYPE_ARP,
+        ))
+        reply.add_protocol(arp.arp(
+            opcode=arp.ARP_REPLY, src_mac=VIP_MAC, src_ip=self.vip_ip,
+            dst_mac=arp_pkt.src_mac, dst_ip=arp_pkt.src_ip,
+        ))
+        reply.serialize()
+
+        out = parser.OFPPacketOut(
+            datapath=dp, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
+            actions=[parser.OFPActionOutput(in_port)], data=reply.data,
+        )
+        dp.send_msg(out)
+
+    def _install_vip_pair(self, dp, client_ip: str, client_port: int, node_id: str) -> None:
+        parser = dp.ofproto_parser
+        idx = srv_index(node_id)
+        s_ip = srv_ip(idx)
+        s_mac = srv_mac(idx)
+        cookie = self._cookie_for(node_id)
+
+        forward_match = parser.OFPMatch(
+            eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+            ipv4_src=client_ip, ipv4_dst=self.vip_ip,
+            tcp_src=client_port, tcp_dst=self.vip_port,
+        )
+        forward_actions = [
+            parser.OFPActionSetField(eth_dst=s_mac),
+            parser.OFPActionSetField(ipv4_dst=s_ip),
+        ]
+        self._install_goto_l2(
+            dp, self.TABLE_VIP, self.PRIO_CONNECTION, forward_match, forward_actions,
+            cookie=cookie, idle_timeout=self.flow_idle_timeout,
+            hard_timeout=self.flow_hard_timeout,
+        )
+
+        # Reverse direction is installed on the SAME datapath (the client's
+        # ingress switch), not the server's. The server's OS replies using the
+        # client's real ip/mac untouched, so the reply travels as ordinary
+        # learned L2 traffic all the way to the client's own edge switch --
+        # it only needs un-rewriting at that very last hop before delivery.
+        reverse_match = parser.OFPMatch(
+            eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+            ipv4_src=s_ip, ipv4_dst=client_ip,
+            tcp_src=self.vip_port, tcp_dst=client_port,
+        )
+        reverse_actions = [
+            parser.OFPActionSetField(eth_src=VIP_MAC),
+            parser.OFPActionSetField(ipv4_src=self.vip_ip),
+        ]
+        self._install_goto_l2(
+            dp, self.TABLE_VIP, self.PRIO_CONNECTION, reverse_match, reverse_actions,
+            cookie=cookie, idle_timeout=self.flow_idle_timeout,
+            hard_timeout=self.flow_hard_timeout,
+        )
+
+    def _resend_packet(self, dp, msg, in_port) -> None:
+        """Resubmit the just-punted packet through the pipeline from table 0,
+        so it now matches the higher-priority per-connection rule just
+        installed instead of falling into the punt rule again (no loop), and
+        the very first SYN isn't dropped waiting for a TCP retransmit."""
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+        data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+        out = parser.OFPPacketOut(
+            datapath=dp, buffer_id=msg.buffer_id, in_port=in_port,
+            actions=[parser.OFPActionOutput(ofproto.OFPP_TABLE)], data=data,
+        )
+        dp.send_msg(out)
+
+    # ------------------------------------------------------------------ #
+    # TABLE_L2 handling -- straight port of learning_switch_13.py         #
+    # ------------------------------------------------------------------ #
+    def _handle_table_l2(self, dp, msg, pkt, eth, in_port) -> None:
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+
+        dst = eth.dst
+        src = eth.src
+        dpid = dp.id
+        self._mac_to_port.setdefault(dpid, {})
+        self._mac_to_port[dpid][src] = in_port
+
+        out_port = self._mac_to_port[dpid].get(dst, ofproto.OFPP_FLOOD)
+        actions = [parser.OFPActionOutput(out_port)]
+
+        if out_port != ofproto.OFPP_FLOOD:
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
+            buffer_id = msg.buffer_id if msg.buffer_id != ofproto.OFP_NO_BUFFER else None
+            self._install_goto_l2_flow_mod(
+                dp, self.TABLE_L2, 1, match, actions, buffer_id=buffer_id,
+            )
+            if buffer_id is not None:
+                return
+
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+        out = parser.OFPPacketOut(
+            datapath=dp, buffer_id=msg.buffer_id, in_port=in_port,
+            actions=actions, data=data,
+        )
+        dp.send_msg(out)
+
+    def _install_goto_l2_flow_mod(self, dp, table_id, priority, match, actions, buffer_id=None) -> None:
+        """Table-1 rule with no goto (nothing after L2) -- named for symmetry
+        with the TABLE_VIP installers below, but is really just a terminal
+        apply-actions rule installed directly into table_id=1."""
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(
+            datapath=dp, table_id=table_id, priority=priority, match=match,
+            instructions=inst, buffer_id=buffer_id if buffer_id is not None else dp.ofproto.OFP_NO_BUFFER,
+        )
+        dp.send_msg(mod)
+
+    # ------------------------------------------------------------------ #
+    # Flow-mod helpers                                                    #
+    # ------------------------------------------------------------------ #
+    def _install_terminal(self, dp, table_id, priority, match, actions, cookie: int = 0) -> None:
+        """Apply-actions only, no goto -- used for the controller-punt rules
+        and the TABLE_L2 miss rule."""
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(
+            datapath=dp, cookie=cookie, table_id=table_id, priority=priority,
+            match=match, instructions=inst,
+        )
+        dp.send_msg(mod)
+
+    def _install_goto_l2(
+        self, dp, table_id, priority, match, actions, cookie: int = 0,
+        idle_timeout: int = 0, hard_timeout: int = 0,
+    ) -> None:
+        """Apply-actions (if any) + GotoTable(TABLE_L2) -- used for the
+        TABLE_VIP default-miss rule (actions=[]) and the per-connection VIP
+        rewrite rules."""
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+        inst = []
+        if actions:
+            inst.append(parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions))
+        inst.append(parser.OFPInstructionGotoTable(self.TABLE_L2))
+        mod = parser.OFPFlowMod(
+            datapath=dp, cookie=cookie, table_id=table_id, priority=priority,
+            match=match, instructions=inst,
+            idle_timeout=idle_timeout, hard_timeout=hard_timeout,
+        )
+        dp.send_msg(mod)
+
+    def _cookie_for(self, node_id: str) -> int:
+        return self._cookie_base | srv_index(node_id)
+
+    # ------------------------------------------------------------------ #
+    # Quarantine enforcement                                              #
+    # ------------------------------------------------------------------ #
+    def _on_trust_collapse(self, node_id: str) -> None:
+        """Called by FlowMonitor the instant a node crosses into quarantine.
+        Deletes every VIP rewrite rule for this node across every switch, by
+        cookie -- so no further traffic is ever routed to it, and its existing
+        in-flight connections drain out on their own idle/hard timeout."""
+        t = self.state.trust_calc.get_score(node_id)
+        a = self.state.get_anomaly(node_id)
+        logger.warning(
+            "QUARANTINE: %s trust=%.4f anomaly=%.4f -- deleting VIP rules",
+            node_id, t, a,
+        )
+        cookie = self._cookie_for(node_id)
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            ofproto = dp.ofproto
+            mod = parser.OFPFlowMod(
+                datapath=dp, cookie=cookie, cookie_mask=0xFFFFFFFFFFFFFFFF,
+                table_id=self.TABLE_VIP, command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY,
+                match=parser.OFPMatch(),
+            )
+            dp.send_msg(mod)
+
+    # ------------------------------------------------------------------ #
+    # Called by northbound_api.py                                         #
+    # ------------------------------------------------------------------ #
+    def handle_client_report(
+        self, client_ip: str, vip_src_port: int, device_id: str,
+        status: str, latency_ms: float,
+    ) -> Optional[float]:
+        """POST /report: a client's task-completion outcome. Resolves which
+        node actually served it via the dispatch map (the client is never
+        told), then feeds a real TrustUpdate through the shared TrustState.
+
+        Returns the node's new trust score, or None if this report can't be
+        attributed to any known dispatch (stale, duplicate, or reaped)."""
+        node_id = self.state.complete_dispatch(client_ip, vip_src_port)
+        if node_id is None:
+            logger.warning(
+                "Unattributable /report from %s:%d (device=%s) -- stale or duplicate",
+                client_ip, vip_src_port, device_id,
+            )
+            return None
+
+        claimed_cpu = self.state.get_claimed_cpu(node_id)
+        observed = self.state.observed_load(node_id)
+        upd = TrustUpdate(
+            device_id=device_id, edge_node_id=node_id, task_status=status,
+            cpu_usage=observed, reported_cpu=claimed_cpu, latency_ms=latency_ms,
+        )
+        score = self.state.record_task_outcome(upd)
+        logger.info(
+            "Report: %s task=%s from %s -> %s trust=%.4f",
+            device_id, status, node_id, node_id, score,
+        )
+        return score
+
+    def handle_offload_advisory(self) -> Dict[str, Any]:
+        """POST /offload/request: advisory only -- returns what node *would*
+        be chosen, without installing anything. The real routing decision
+        already happens on the VIP data-plane path in _handle_table_vip; this
+        exists so evaluation/baseline.py has a comparable read-only hook."""
+        chosen = self.state.choose_edge_node()
+        return {'chosen': chosen, 'snapshot': self.state.snapshot()}

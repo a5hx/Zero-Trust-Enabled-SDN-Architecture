@@ -8,6 +8,8 @@ trust:
   delta: 0.15
   lambda_decay: 0.85
   initial_score: 0.5
+  isolation_threshold: 0.3
+  anomaly_gate: 0.5
 
 edge_score:
   w1_trust: 0.50

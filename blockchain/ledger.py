@@ -137,6 +137,10 @@ class Ledger:
         """Return the number of blocks in the chain (including genesis)."""
         return len(self._chain)
 
+    def head_hash(self) -> str:
+        """Return the hash of the tip block (the previous_hash for the next one)."""
+        return self._chain[-1].hash
+
     def get_all_scores(self) -> Dict[str, float]:
         """Return the latest trust score for every node ever recorded.
 
