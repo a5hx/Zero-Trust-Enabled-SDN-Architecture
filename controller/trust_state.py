@@ -317,6 +317,18 @@ class TrustState:
         with self._lock:
             return list(self._routing_decisions)
 
+    def last_routing_decision(self) -> Optional[Dict[str, Any]]:
+        """The most recent decision, O(1).
+
+        The `routing_decisions` property above copies the whole (unbounded)
+        history on every access, which is fine for end-of-run analysis but not
+        for the OpenFlow event path -- the dashboard publishes one event per
+        routed connection, and copying the entire history each time would make
+        routing steadily slower over a run and eat the <200ms NFR.
+        """
+        with self._lock:
+            return self._routing_decisions[-1] if self._routing_decisions else None
+
     # ------------------------------------------------------------------ #
     # Snapshots (REST / logging)                                          #
     # ------------------------------------------------------------------ #

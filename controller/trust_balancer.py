@@ -33,9 +33,10 @@ from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
 from os_ken.ofproto import inet, ofproto_v1_3
 
 from controller.edge_selector import EdgeWeights
+from controller.event_bus import EventBus, NullBus
 from controller.trust_state import TrustState
 from security.authenticator import HmacAuthenticator
-from simulation.addressing import VIP_MAC, srv_index, srv_ip, srv_mac
+from simulation.addressing import VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._mac_to_port: Dict[int, Dict[str, int]] = {}
         self._cookie_base = 0x5A00000000000000
 
+        # Dashboard event bus. Absent/disabled config -> NullBus, so every
+        # self.bus.publish() below is a no-op and the controller behaves
+        # bit-for-bit as it did before the dashboard existed.
+        dash_cfg = ctrl_cfg.get('dashboard', {})
+        self.dashboard_enabled: bool = bool(dash_cfg.get('enabled', False))
+        if self.dashboard_enabled:
+            self.bus: Any = EventBus(
+                record_path=dash_cfg.get('record_path', 'data/events.jsonl'),
+            )
+        else:
+            self.bus = NullBus()
+
         # Imported here (not at module scope) because FlowMonitor is built and
         # wired in the same Sprint 1 pass as this class -- avoids a hard
         # top-level dependency ordering requirement between the two files.
@@ -308,7 +321,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
             poll_interval_s=self.monitor_interval_s,
             honesty_deviation_threshold=self.honesty_deviation_threshold,
             on_quarantine=self._on_trust_collapse,
+            bus=self.bus,
         )
+
+        # Set in start() when the dashboard is enabled -- polls OFPFlowStats so
+        # the packet animation and rule hit-counters are driven by real switch
+        # counters rather than anything the controller makes up.
+        self.flow_stats: Any = None
 
         self._http_server = None  # set in start(), from northbound_api.py
 
@@ -316,6 +335,27 @@ class TrustBalancerApp(app_manager.OSKenApp):
         super().start()
         hub.spawn(self._run_http_server)
         hub.spawn(self.flow_monitor.run)
+
+        if self.dashboard_enabled:
+            from controller.flow_stats import FlowStatsPoller
+
+            # First event in every recording, so dashboard/replay.py can rebuild
+            # the exact graph this run used instead of guessing it back from the
+            # traffic (a run where a server never got traffic would otherwise
+            # replay with that server missing from the map).
+            self.bus.publish('topology', graph=self.topology_graph())
+
+            self.flow_stats = FlowStatsPoller(
+                datapaths=self._datapaths,
+                bus=self.bus,
+                poll_interval_s=self.monitor_interval_s,
+            )
+            hub.spawn(self.flow_stats.run)
+            logger.info(
+                "Dashboard enabled -- open http://localhost:%d/ in a browser",
+                self.api_port,
+            )
+
         logger.info(
             "TrustBalancerApp started: vip=%s:%d, api=%s:%d, nodes=%s",
             self.vip_ip, self.vip_port, self.api_host, self.api_port,
@@ -367,6 +407,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._install_terminal(dp, self.TABLE_L2, self.PRIO_MISS, parser.OFPMatch(), l2_miss_actions)
 
         logger.info("Switch connected: dpid=%016x", dp.id)
+        self.bus.publish('switch_up', dpid=dp.id)
+
+    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
+    def flow_stats_reply_handler(self, ev):
+        """OFPFlowStats replies arrive as os-ken events on this app, not on the
+        poller that requested them (FlowStatsPoller is a plain object, not an
+        OSKenApp, so it can't register handlers of its own) -- forward them."""
+        if self.flow_stats is not None:
+            self.flow_stats.handle_reply(ev)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -415,6 +464,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 "No eligible edge node for %s:%d -- all quarantined, denying",
                 client_ip, client_port,
             )
+            self.bus.publish(
+                'route_denied', client_ip=client_ip, client_port=client_port,
+                reason='all candidates quarantined',
+            )
             return
 
         self.state.register_dispatch(client_ip, client_port, chosen)
@@ -425,6 +478,17 @@ class TrustBalancerApp(app_manager.OSKenApp):
         logger.info(
             "Routed %s:%d -> %s (decision took %.2fms)",
             client_ip, client_port, chosen, decision_ms,
+        )
+
+        # The ranked list is what makes the decision explicable on screen: the
+        # dashboard can show not just who won but the EdgeScore of everyone who
+        # lost, which is the whole point of the trust-aware routing claim.
+        last = self.state.last_routing_decision() or {}
+        self.bus.publish(
+            'route',
+            client_ip=client_ip, client_port=client_port, chosen=chosen,
+            edge_score=last.get('score'), ranked=last.get('ranked'),
+            decision_ms=round(decision_ms, 2), dpid=dp.id,
         )
 
     def _send_arp_reply(self, dp, in_port, arp_pkt, eth) -> None:
@@ -487,6 +551,31 @@ class TrustBalancerApp(app_manager.OSKenApp):
             dp, self.TABLE_VIP, self.PRIO_CONNECTION, reverse_match, reverse_actions,
             cookie=cookie, idle_timeout=self.flow_idle_timeout,
             hard_timeout=self.flow_hard_timeout,
+        )
+
+        # Rendered as text here rather than in the browser: this is the exact
+        # rewrite the advisor wants to see ("rules"), and building the string
+        # next to the OFPMatch it describes is the only way it can't drift from
+        # what was actually installed.
+        self.bus.publish(
+            'flow_install', dpid=dp.id, node=node_id, cookie=cookie,
+            table=self.TABLE_VIP, priority=self.PRIO_CONNECTION,
+            idle_timeout=self.flow_idle_timeout,
+            hard_timeout=self.flow_hard_timeout,
+            rules=[
+                {
+                    'dir': 'forward',
+                    'match': f'ipv4_src={client_ip},tcp_src={client_port},'
+                             f'ipv4_dst={self.vip_ip},tcp_dst={self.vip_port}',
+                    'actions': f'set eth_dst={s_mac}, set ipv4_dst={s_ip} -> goto table {self.TABLE_L2}',
+                },
+                {
+                    'dir': 'reverse',
+                    'match': f'ipv4_src={s_ip},tcp_src={self.vip_port},'
+                             f'ipv4_dst={client_ip},tcp_dst={client_port}',
+                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip} -> goto table {self.TABLE_L2}',
+                },
+            ],
         )
 
     def _resend_packet(self, dp, msg, in_port) -> None:
@@ -604,6 +693,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             node_id, t, a,
         )
         cookie = self._cookie_for(node_id)
+        dpids = []
         for dp in list(self._datapaths.values()):
             parser = dp.ofproto_parser
             ofproto = dp.ofproto
@@ -614,6 +704,14 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 match=parser.OFPMatch(),
             )
             dp.send_msg(mod)
+            dpids.append(dp.id)
+
+        self.bus.publish(
+            'quarantine', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
+            isolation_threshold=self.state.isolation_threshold,
+            anomaly_gate=self.state.anomaly_gate,
+        )
+        self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
 
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py                                         #
@@ -647,7 +745,84 @@ class TrustBalancerApp(app_manager.OSKenApp):
             "Report: %s task=%s from %s -> %s trust=%.4f",
             device_id, status, node_id, node_id, score,
         )
+        self.bus.publish(
+            'report', device=device_id, node=node_id, status=status,
+            latency_ms=round(latency_ms, 2), trust=round(score, 4),
+            claimed_cpu=round(claimed_cpu, 4), observed_load=round(observed, 4),
+        )
         return score
+
+    # ------------------------------------------------------------------ #
+    # Called by northbound_api.py -- dashboard                            #
+    # ------------------------------------------------------------------ #
+    def topology_graph(self) -> Dict[str, Any]:
+        """The node/link graph the dashboard draws.
+
+        Derived from the same config and the same round-robin attachment rule
+        (`sw_idx = (j - 1) % n_edge`) that ZeroTrustTopo.build() in
+        simulation/topology.py uses to build the real Mininet network. Computed
+        from the shared config rather than read back off the switches so the
+        dashboard can draw the topology before any switch has connected -- but
+        it does mean this formula must track topology.py's if that ever changes.
+        """
+        n_edge = self.cfg['simulation']['num_edge_nodes']
+        n_iot = self.cfg['simulation']['num_iot_devices']
+        mal = {
+            m['node']: m.get('attack', 'none')
+            for m in self.cfg['simulation'].get('malicious_edge_nodes', [])
+        }
+
+        nodes: List[Dict[str, Any]] = [
+            {'id': 's0', 'kind': 'core_switch', 'dpid': 1, 'label': 's0 (core)'},
+        ]
+        links: List[Dict[str, Any]] = []
+
+        for i in range(1, n_edge + 1):
+            nodes.append({
+                'id': f's{i}', 'kind': 'edge_switch', 'dpid': i + 1,
+                'label': f's{i}',
+            })
+            nodes.append({
+                'id': f'srv{i}', 'kind': 'server', 'ip': srv_ip(i),
+                'mac': srv_mac(i), 'label': f'srv{i}',
+                # Surfaced only so the dashboard can mark ground truth *after*
+                # the controller catches it -- never used to pre-emptively
+                # colour a node, which would give the detection away for free.
+                'attack': mal.get(f'srv{i}', 'none'),
+            })
+            links.append({'a': f's{i}', 'b': f'srv{i}', 'kind': 'server_link'})
+            links.append({'a': 's0', 'b': f's{i}', 'kind': 'core_link'})
+
+        for j in range(1, n_iot + 1):
+            sw_idx = (j - 1) % n_edge          # matches ZeroTrustTopo.build()
+            nodes.append({
+                'id': f'iot{j}', 'kind': 'iot', 'ip': iot_ip(j),
+                'label': f'iot{j}',
+            })
+            links.append({'a': f'iot{j}', 'b': f's{sw_idx + 1}', 'kind': 'iot_link'})
+
+        return {
+            'nodes': nodes,
+            'links': links,
+            'vip': f'{self.vip_ip}:{self.vip_port}',
+            'weights': {
+                'w1_trust': self.state.edge_weights.w1_trust,
+                'w2_cpu': self.state.edge_weights.w2_cpu,
+                'w3_latency': self.state.edge_weights.w3_latency,
+            },
+            'thresholds': {
+                'isolation': self.state.isolation_threshold,
+                'anomaly_gate': self.state.anomaly_gate,
+            },
+        }
+
+    def flow_table(self) -> List[Dict[str, Any]]:
+        """Current flow rules with live counters, for the dashboard's rules
+        panel. Empty until the flow-stats poller has completed a cycle (or
+        always, if the dashboard is disabled)."""
+        if self.flow_stats is None:
+            return []
+        return self.flow_stats.snapshot()
 
     def handle_offload_advisory(self) -> Dict[str, Any]:
         """POST /offload/request: advisory only -- returns what node *would*

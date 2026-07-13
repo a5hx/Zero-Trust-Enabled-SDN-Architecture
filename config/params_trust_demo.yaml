@@ -70,6 +70,17 @@ controller:
   flow_hard_timeout_s: 30
   monitor_interval_s: 1.0
 
+  # Live visualisation dashboard, served by this same controller process on
+  # api_port above -- open http://localhost:8081/ while the demo runs.
+  # Disabled (or absent) => the controller uses a NullBus and behaves exactly
+  # as it did before the dashboard existed.
+  dashboard:
+    enabled: true
+    # Every event is also appended here, so a run can be replayed into the
+    # dashboard afterwards with no Mininet and no sudo:
+    #   python3 -m dashboard.replay data/events.jsonl
+    record_path: data/events.jsonl
+
   # The deck's Sybil detection rule: |claimed_cpu - observed_load| > 0.40.
   honesty_deviation_threshold: 0.40
 

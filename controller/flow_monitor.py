@@ -33,10 +33,11 @@ import http.client
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from os_ken.lib import hub
 
+from controller.event_bus import NullBus
 from controller.trust_state import TrustState
 from simulation.addressing import srv_index, srv_ip
 
@@ -58,6 +59,7 @@ class FlowMonitor:
         poll_interval_s: float,
         honesty_deviation_threshold: float,
         on_quarantine: Callable[[str], None],
+        bus: Optional[Any] = None,
     ) -> None:
         self.state = state
         self.node_ids = list(node_ids)
@@ -65,6 +67,7 @@ class FlowMonitor:
         self.poll_interval_s = poll_interval_s
         self.honesty_deviation_threshold = honesty_deviation_threshold
         self.on_quarantine = on_quarantine
+        self.bus = bus if bus is not None else NullBus()
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, len(self.node_ids)), thread_name_prefix='flow-monitor-poll',
         )
@@ -95,6 +98,7 @@ class FlowMonitor:
         for node_id in self.node_ids:
             status = results[node_id]
             anomaly_raw = 0.0
+            reasons: List[str] = []
 
             if status is not None:
                 claimed_cpu = status.get('cpu_load', 0.5)
@@ -114,6 +118,10 @@ class FlowMonitor:
                         self.honesty_deviation_threshold,
                     )
                     anomaly_raw = 1.0
+                    reasons.append(
+                        f'CPU honesty: |claimed {claimed_cpu:.2f} - observed '
+                        f'{observed:.2f}| = {deviation:.2f} > {self.honesty_deviation_threshold:.2f}'
+                    )
             else:
                 # Agent unreachable this cycle -- treat as suspicious rather
                 # than silently skipping, but don't crash the loop over it.
@@ -123,6 +131,7 @@ class FlowMonitor:
                 # under-reacting to what could be a genuine outage.
                 logger.warning("%s: /status poll failed this cycle", node_id)
                 anomaly_raw = 1.0
+                reasons.append('/status unreachable')
 
             timeout_rate = self.state.recent_timeout_rate(node_id, min_samples=_MIN_TIMEOUT_SAMPLES)
             if timeout_rate is not None and timeout_rate > self.honesty_deviation_threshold:
@@ -131,8 +140,23 @@ class FlowMonitor:
                     node_id, timeout_rate, self.honesty_deviation_threshold,
                 )
                 anomaly_raw = 1.0
+                reasons.append(
+                    f'packet-drop tell: timeout rate {timeout_rate:.2f} > '
+                    f'{self.honesty_deviation_threshold:.2f}'
+                )
 
-            self.state.set_anomaly_raw(node_id, anomaly_raw)
+            anomaly = self.state.set_anomaly_raw(node_id, anomaly_raw)
+
+            if reasons:
+                self.bus.publish(
+                    'anomaly', node=node_id, reasons=reasons,
+                    anomaly=round(anomaly, 4), gate=self.state.anomaly_gate,
+                )
+
+        # One snapshot event per cycle rather than one per node: the dashboard
+        # redraws the whole trust panel from it, and 4 separate events would
+        # make it render torn intermediate states.
+        self.bus.publish('node_status', nodes=self.state.snapshot())
 
         for node_id in self.state.poll_newly_quarantined():
             try:

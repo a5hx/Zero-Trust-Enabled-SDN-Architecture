@@ -23,12 +23,27 @@ Endpoints:
         that way, since the /report POST originates from the same host as the
         /task connection it's completing (see simulation/iot_client.py).
     POST /register        {node_id, concurrency} -- agent startup registration.
+
+Dashboard routes (added alongside the five deck endpoints above; all read-only,
+and all inert unless controller.dashboard.enabled is set in the config):
+    GET  /                -> dashboard/index.html
+    GET  /api/topology    -> the node/link graph the dashboard draws
+    GET  /api/events      -> Server-Sent Events stream of controller events
+    GET  /api/flows       -> current flow tables with live counters ("rules")
+
+SSE rather than WebSockets deliberately: it is one-way (controller -> browser,
+which is all this needs), it is plain HTTP so it works on the stdlib
+ThreadingHTTPServer already in use here, and it needs no third-party library --
+which matters because this box is apt-only Python 3.14 with no pip (see
+[[project-zerotrust-sdn-environment]]).
 """
 
 import json
 import logging
+import queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from security.authenticator import AuthError
@@ -36,9 +51,19 @@ from controller.trust_state import TrustState
 
 logger = logging.getLogger(__name__)
 
+_DASHBOARD_DIR = Path(__file__).resolve().parent.parent / 'dashboard'
+
+# How long an idle SSE stream waits before emitting a keepalive comment. Without
+# this, a proxy or an asleep laptop can silently drop a connection that simply
+# has nothing to say during a quiet stretch of the demo.
+_SSE_HEARTBEAT_S = 15.0
+
 
 def _make_handler(app: Any, state: TrustState):
     class Handler(BaseHTTPRequestHandler):
+        # SSE streams are long-lived; HTTP/1.1 keeps the socket framing sane.
+        protocol_version = 'HTTP/1.1'
+
         def log_message(self, fmt: str, *args) -> None:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
@@ -63,6 +88,22 @@ def _make_handler(app: Any, state: TrustState):
             path = split.path
             qs = parse_qs(split.query)
             node_id = qs.get('node_id', [None])[0]
+
+            # Dashboard routes are handled first and return early. /api/events
+            # in particular never returns until the client disconnects, so it
+            # must not fall through to the JSON paths below.
+            if path in ('/', '/index.html', '/dashboard'):
+                self._serve_dashboard()
+                return
+            if path == '/api/events':
+                self._serve_events()
+                return
+            if path == '/api/topology':
+                self._write_json(200, app.topology_graph())
+                return
+            if path == '/api/flows':
+                self._write_json(200, {'flows': app.flow_table()})
+                return
 
             try:
                 if path == '/trust/score':
@@ -149,6 +190,60 @@ def _make_handler(app: Any, state: TrustState):
             concurrency = int(body.get('concurrency', 4))
             state.set_concurrency(node_id, concurrency)
             self._write_json(200, {'ok': True})
+
+        # -------------------------------------------------------------- #
+        # Dashboard                                                       #
+        # -------------------------------------------------------------- #
+        def _serve_dashboard(self) -> None:
+            index = _DASHBOARD_DIR / 'index.html'
+            try:
+                body = index.read_bytes()
+            except OSError:
+                self._write_json(404, {'error': 'dashboard/index.html not found'})
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _serve_events(self) -> None:
+            """Server-Sent Events stream. Holds this thread (one per client, via
+            ThreadingHTTPServer) until the browser goes away."""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            # SSE is a stream of unknown length: no Content-Length, and the
+            # connection must stay open -- the opposite of what _write_json does.
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('X-Accel-Buffering', 'no')
+            self.end_headers()
+
+            q = app.bus.subscribe()
+            try:
+                # Backfill first, so a browser opened mid-run immediately has a
+                # populated topology/rules/trust view instead of a blank page
+                # until the next event happens to fire.
+                for event in app.bus.history():
+                    self._write_sse(event)
+
+                while True:
+                    try:
+                        event = q.get(timeout=_SSE_HEARTBEAT_S)
+                    except queue.Empty:
+                        self.wfile.write(b': keepalive\n\n')
+                        self.wfile.flush()
+                        continue
+                    self._write_sse(event)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # browser closed the tab -- entirely normal
+            finally:
+                app.bus.unsubscribe(q)
+
+        def _write_sse(self, event: Dict[str, Any]) -> None:
+            payload = json.dumps(event)
+            self.wfile.write(f'data: {payload}\n\n'.encode())
+            self.wfile.flush()
 
     return Handler
 

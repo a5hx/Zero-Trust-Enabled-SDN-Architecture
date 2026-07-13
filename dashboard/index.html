@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<!--
+  Live dashboard for the Zero-Trust SDN controller.
+
+  Self-contained on purpose: no CDN, no build step, no npm. Everything (CSS,
+  JS, SVG) is inline, so it works on a projector with no wifi and on a box that
+  is apt-only Python 3.14 with no pip.
+
+  Data sources, and the honesty rule this dashboard follows:
+
+    * Dot movement is driven by REAL per-flow packet counters read from the
+      switches via OFPFlowStatsRequest (GET /api/flows, and the `flow_stats`
+      SSE event). The measured packets/sec is printed next to the link.
+    * One-shot animations (a routing decision, a quarantine) fire from REAL
+      controller events over SSE.
+
+  Nothing here invents traffic. In OpenFlow the controller cannot see packets
+  once a rule is installed -- they are switched in the data plane -- so per-flow
+  counters are the honest source for "how much is flowing", and that is what is
+  used. See controller/flow_stats.py.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zero-Trust SDN — Live Controller View</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2129;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --accent: #58a6ff;
+    --vip: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 18px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--border); background: var(--panel-2);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .dot.replay { background: var(--vip); box-shadow: 0 0 8px var(--vip); }
+  .dot.down { background: var(--bad); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2.1fr) minmax(320px, 1fr);
+    gap: 12px; padding: 12px;
+  }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  .panel > h2 {
+    margin: 0; padding: 9px 14px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .7px; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel > h2 .note { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .body { padding: 12px 14px; }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+
+  /* ---------- topology ---------- */
+  #topo { display: block; width: 100%; height: auto; background: #0b0f14; }
+  .link { stroke: #30363d; stroke-width: 2; fill: none; }
+  .link.hot { stroke: var(--accent); stroke-width: 2.5; }
+  .link.dead { stroke: var(--bad); stroke-width: 2; stroke-dasharray: 5 4; opacity: .75; }
+  .nodeLabel { fill: var(--text); font-size: 11px; text-anchor: middle; }
+  .nodeSub { fill: var(--muted); font-size: 9px; text-anchor: middle; }
+  .switchBox { fill: #21262d; stroke: #484f58; stroke-width: 1.5; rx: 4; }
+  .switchBox.up { stroke: var(--accent); }
+  .iotDot { fill: #21262d; stroke: #484f58; stroke-width: 1.5; }
+  .iotDot.active { stroke: var(--accent); fill: #182634; }
+  .srvBox { stroke-width: 2; rx: 5; }
+  .pps { fill: var(--muted); font-size: 9px; }
+  .quarantineX { stroke: var(--bad); stroke-width: 3; stroke-linecap: round; }
+  .routePulseLabel { font-size: 10px; fill: var(--accent); font-weight: 600; }
+
+  /* ---------- trust panel ---------- */
+  .srv { padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .srv:last-child { border-bottom: 0; }
+  .srvHead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .srvName { font-weight: 600; font-size: 13px; }
+  .tag {
+    font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .tag.bad { color: var(--bad); border-color: var(--bad); background: #2d1214; }
+  .tag.win { color: var(--good); border-color: var(--good); background: #10241a; }
+  .meter { display: grid; grid-template-columns: 74px 1fr 46px; align-items: center; gap: 7px; margin: 3px 0; }
+  .meter .k { font-size: 10px; color: var(--muted); }
+  .meter .v { font-size: 10px; text-align: right; }
+  .bar { height: 7px; border-radius: 4px; background: #21262d; overflow: hidden; position: relative; }
+  .bar > i { display: block; height: 100%; border-radius: 4px; transition: width .35s ease; }
+  .bar .gate {
+    position: absolute; top: -2px; bottom: -2px; width: 2px;
+    background: var(--bad); opacity: .8;
+  }
+  .cmp { display: flex; gap: 6px; align-items: center; font-size: 10px; color: var(--muted); }
+  .lie { color: var(--bad); font-weight: 600; }
+
+  /* ---------- rules ---------- */
+  #rules { max-height: 300px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th {
+    text-align: left; color: var(--muted); font-weight: 500; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .5px;
+    padding: 5px 8px; position: sticky; top: 0; background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 5px 8px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  tr.vip td { background: rgba(88,166,255,.05); }
+  tr.flash td { background: rgba(63,185,80,.16); }
+  tr.dying td { background: rgba(248,81,73,.16); text-decoration: line-through; opacity: .6; }
+  .m { color: var(--accent); }
+  .a { color: var(--good); }
+  .num { text-align: right; color: var(--muted); white-space: nowrap; }
+
+  /* ---------- log ---------- */
+  #log { max-height: 260px; overflow: auto; font-size: 11px; }
+  .ev { padding: 3px 14px; border-bottom: 1px solid #1b2028; display: flex; gap: 8px; }
+  .ev .t { color: #6e7681; flex: none; }
+  .ev.route .k { color: var(--accent); }
+  .ev.quarantine { background: rgba(248,81,73,.12); }
+  .ev.quarantine .k { color: var(--bad); font-weight: 600; }
+  .ev.anomaly .k { color: var(--warn); }
+  .ev.flow_install .k { color: var(--good); }
+  .ev.flow_delete .k { color: var(--bad); }
+  .ev .k { flex: none; width: 92px; }
+  .ev .d { color: var(--muted); }
+
+  .empty { color: var(--muted); font-size: 12px; padding: 14px; text-align: center; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 10px; color: var(--muted); padding: 8px 14px 0; }
+  .legend b { font-weight: 500; color: var(--text); }
+  .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Zero-Trust SDN — Live Controller View</h1>
+  <span class="sub" id="vip">—</span>
+  <div class="spacer"></div>
+  <span class="pill" id="formula" title="EdgeScore(n) = w1·T(n) + w2·(1−cpu) + w3·(1−lat)">EdgeScore = —</span>
+  <span class="pill"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></span>
+</header>
+
+<div class="grid">
+  <div class="stack">
+    <div class="panel">
+      <h2>Topology
+        <span class="note">— dots move at the packets/sec actually measured on each flow rule</span>
+      </h2>
+      <svg id="topo" viewBox="0 0 1000 560" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--good)"></span><b>trusted</b></span>
+        <span><span class="sw" style="background:var(--warn)"></span><b>degrading</b></span>
+        <span><span class="sw" style="background:var(--bad)"></span><b>quarantined</b> — VIP rules deleted</span>
+        <span><span class="sw" style="background:var(--accent)"></span><b>request</b> → server</span>
+        <span><span class="sw" style="background:var(--vip)"></span><b>reply</b> → client</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>OpenFlow rules
+        <span class="note">— live from OFPFlowStats (same rules as <code>dpctl dump-flows</code>)</span>
+      </h2>
+      <div id="rules"><div class="empty">waiting for the first flow-stats poll…</div></div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="panel">
+      <h2>Trust &amp; EdgeScore</h2>
+      <div class="body" id="trust"><div class="empty">waiting for controller…</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Events</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------- state ----
+const S = {
+  topo: null,
+  pos: {},            // node id -> {x, y}
+  nodes: {},          // node id -> topology node
+  status: {},         // srvN -> latest snapshot from `node_status`
+  quarantined: new Set(),
+  flows: [],          // latest flow table
+  flowsByKey: new Map(),
+  recentInstall: new Set(),
+  recentDelete: new Set(),
+  lastRoute: {},      // srvN -> {client, score}
+  seenSwitches: new Set(),
+  dots: [],           // in-flight animated packets
+  spawnAcc: new Map(),// path key -> fractional dot accumulator
+  paths: new Map(),   // path key -> {pts, pps, node, client, dir}
+};
+
+const VIP_RE = /ipv4_src=([\d.]+).*tcp_src=(\d+)/;
+const SRV_RE = /ipv4_src=(10\.0\.1\.\d+)/;
+
+// ------------------------------------------------------------ geometry ----
+// Column layout. Servers hang off their edge switch (not off the core), so a
+// cross-switch route visibly hairpins through s0 -- which is the truth about
+// this topology and worth showing rather than hiding.
+const X_IOT = 70, X_SW = 340, X_CORE = 560, X_SRV = 790;
+
+function layout(topo) {
+  const pos = {};
+  const iots = topo.nodes.filter(n => n.kind === 'iot');
+  const sws  = topo.nodes.filter(n => n.kind === 'edge_switch');
+  const srvs = topo.nodes.filter(n => n.kind === 'server');
+
+  const top = 40, bottom = 520;
+  iots.forEach((n, i) => {
+    const y = iots.length > 1 ? top + i * (bottom - top) / (iots.length - 1) : 280;
+    pos[n.id] = { x: X_IOT, y };
+  });
+
+  const swTop = 110, swGap = sws.length > 1 ? 360 / (sws.length - 1) : 0;
+  sws.forEach((n, i) => {
+    const y = sws.length > 1 ? swTop + i * swGap : 280;
+    pos[n.id] = { x: X_SW, y };
+  });
+  srvs.forEach((n, i) => {
+    pos[n.id] = { x: X_SRV, y: pos['s' + (i + 1)] ? pos['s' + (i + 1)].y : 280 };
+  });
+
+  pos['s0'] = { x: X_CORE, y: 290 };
+  return pos;
+}
+
+// The real forwarding path a packet takes. iot_j sits on some edge switch; if
+// the chosen server hangs off that same switch the packet never touches the
+// core, otherwise it hairpins s_client -> s0 -> s_server.
+function pathFor(iotId, srvId) {
+  const cs = clientSwitch(iotId), ss = 's' + srvId.replace('srv', '');
+  if (!cs || !S.pos[cs] || !S.pos[ss]) return null;
+  const ids = cs === ss
+    ? [iotId, cs, srvId]
+    : [iotId, cs, 's0', ss, srvId];
+  const pts = ids.map(id => S.pos[id]);
+  return pts.every(Boolean) ? pts : null;
+}
+
+// --------------------------------------------------------------- render ----
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs = {}) => {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+};
+
+let gLinks, gNodes, gDots, gPulse;
+
+function drawTopology() {
+  const svg = document.getElementById('topo');
+  svg.textContent = '';
+  gLinks = el('g'); gNodes = el('g'); gDots = el('g'); gPulse = el('g');
+  svg.append(gLinks, gNodes, gDots, gPulse);
+
+  for (const l of S.topo.links) {
+    const a = S.pos[l.a], b = S.pos[l.b];
+    if (!a || !b) continue;
+    const line = el('line', {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'link',
+      'data-a': l.a, 'data-b': l.b,
+    });
+    gLinks.append(line);
+  }
+
+  for (const n of S.topo.nodes) {
+    const p = S.pos[n.id];
+    if (!p) continue;
+    const g = el('g', { 'data-id': n.id });
+
+    if (n.kind === 'iot') {
+      g.append(el('circle', { cx: p.x, cy: p.y, r: 7, class: 'iotDot' }));
+      const t = el('text', { x: p.x - 14, y: p.y + 3.5, class: 'nodeLabel' });
+      t.setAttribute('text-anchor', 'end');
+      t.textContent = n.label;
+      g.append(t);
+    } else if (n.kind === 'server') {
+      g.append(el('rect', {
+        x: p.x - 34, y: p.y - 17, width: 68, height: 34, class: 'srvBox',
+        fill: '#21262d', stroke: '#484f58',
+      }));
+      const t = el('text', { x: p.x, y: p.y - 1, class: 'nodeLabel' });
+      t.textContent = n.label;
+      const s = el('text', { x: p.x, y: p.y + 11, class: 'nodeSub' });
+      s.textContent = 'T —';
+      g.append(t, s);
+    } else {
+      const w = n.kind === 'core_switch' ? 62 : 48;
+      g.append(el('rect', {
+        x: p.x - w / 2, y: p.y - 15, width: w, height: 30, class: 'switchBox',
+      }));
+      const t = el('text', { x: p.x, y: p.y + 4, class: 'nodeLabel' });
+      t.textContent = n.id;
+      g.append(t);
+    }
+    gNodes.append(g);
+  }
+
+  // Per-server pps readout, so the animation always shows its own evidence.
+  for (const n of S.topo.nodes.filter(n => n.kind === 'server')) {
+    const p = S.pos[n.id];
+    const t = el('text', { x: p.x, y: p.y + 30, class: 'pps', 'text-anchor': 'middle',
+                           'data-pps': n.id });
+    t.textContent = '';
+    gNodes.append(t);
+  }
+}
+
+const trustColor = t =>
+  t >= 0.6 ? 'var(--good)' : t >= 0.3 ? 'var(--warn)' : 'var(--bad)';
+
+function paintNodes() {
+  for (const n of (S.topo ? S.topo.nodes : [])) {
+    const g = gNodes.querySelector(`g[data-id="${n.id}"]`);
+    if (!g) continue;
+
+    if (n.kind === 'server') {
+      const st = S.status[n.id];
+      const box = g.querySelector('rect');
+      const sub = g.querySelector('.nodeSub');
+      const q = S.quarantined.has(n.id);
+
+      if (!st) continue;
+      box.setAttribute('stroke', q ? 'var(--bad)' : trustColor(st.trust));
+      box.setAttribute('fill', q ? '#2d1214' : '#21262d');
+      sub.textContent = q ? 'QUARANTINED' : `T ${st.trust.toFixed(2)} · ${st.inflight} inflight`;
+      sub.setAttribute('fill', q ? 'var(--bad)' : 'var(--muted)');
+
+      let x = g.querySelector('.quarantineX');
+      if (q && !x) {
+        const p = S.pos[n.id];
+        const l1 = el('line', { x1: p.x - 30, y1: p.y - 13, x2: p.x + 30, y2: p.y + 13,
+                                class: 'quarantineX' });
+        l1.classList.add('quarantineX');
+        g.append(l1);
+      } else if (!q && x) {
+        x.remove();
+      }
+
+      // The server's own link goes dead when it is quarantined -- its VIP rules
+      // were deleted, so nothing can reach it any more.
+      const link = gLinks.querySelector(`line[data-b="${n.id}"], line[data-a="${n.id}"]`);
+      if (link) link.setAttribute('class', q ? 'link dead' : 'link');
+    }
+
+    if (n.kind === 'edge_switch' || n.kind === 'core_switch') {
+      const box = g.querySelector('rect');
+      box.setAttribute('class',
+        S.seenSwitches.has(n.dpid) ? 'switchBox up' : 'switchBox');
+    }
+  }
+}
+
+// ------------------------------------------------- packet animation --------
+// Dot spawn rate for each path is set from the REAL pps counter on the flow
+// rule carrying that path. Nothing is invented: if a rule is doing 0 pps, no
+// dots appear on it.
+const PPS_TO_DOTS = 0.35;   // visual scale: dots/sec shown per real packet/sec
+const MAX_DOTS = 260;       // keep the browser smooth on a projector laptop
+const DOT_SPEED = 190;      // px/sec
+
+function rebuildPaths(flows) {
+  const paths = new Map();
+  for (const f of flows) {
+    if (!f.is_vip || !f.node || f.pps <= 0) continue;
+
+    let iotId = null, dir = 'fwd';
+    const fwd = VIP_RE.exec(f.match);
+    const rev = SRV_RE.exec(f.match);
+
+    if (fwd && fwd[1].startsWith('10.0.0.')) {
+      iotId = 'iot' + parseInt(fwd[1].split('.')[3], 10);
+    } else if (rev) {
+      dir = 'rev';
+      const m = /ipv4_dst=(10\.0\.0\.\d+)/.exec(f.match);
+      if (m) iotId = 'iot' + parseInt(m[1].split('.')[3], 10);
+    }
+    if (!iotId) continue;
+    if (S.quarantined.has(f.node)) continue;   // rules are gone; show nothing
+
+    const pts = pathFor(iotId, f.node);
+    if (!pts) continue;
+
+    const key = `${iotId}|${f.node}|${dir}`;
+    const prev = paths.get(key);
+    paths.set(key, {
+      pts: dir === 'rev' ? [...pts].reverse() : pts,
+      pps: (prev ? prev.pps : 0) + f.pps,
+      node: f.node, client: iotId, dir,
+    });
+  }
+  S.paths = paths;
+
+  // Per-server total pps, printed on the map next to each server.
+  const perSrv = {};
+  for (const p of paths.values()) perSrv[p.node] = (perSrv[p.node] || 0) + p.pps;
+  document.querySelectorAll('[data-pps]').forEach(t => {
+    const id = t.getAttribute('data-pps');
+    const v = perSrv[id] || 0;
+    t.textContent = S.quarantined.has(id) ? 'no rules' : (v > 0 ? `${v.toFixed(0)} pkt/s` : '');
+  });
+
+  // Highlight the links that are actually carrying traffic right now. Rebuilt
+  // from scratch each poll so a link goes cold as soon as its flow does.
+  const hot = new Set();
+  for (const p of paths.values()) {
+    const ids = hopIds(p);
+    for (let i = 0; i < ids.length - 1; i++) {
+      hot.add(`${ids[i]}|${ids[i + 1]}`);
+      hot.add(`${ids[i + 1]}|${ids[i]}`);
+    }
+  }
+  gLinks.querySelectorAll('line').forEach(l => {
+    const cls = l.getAttribute('class');
+    if (cls.includes('dead')) return;
+    const key = `${l.dataset.a}|${l.dataset.b}`;
+    l.setAttribute('class', hot.has(key) ? 'link hot' : 'link');
+  });
+}
+
+// The node ids a path traverses, in forward (client -> server) order.
+function hopIds(p) {
+  const ss = 's' + p.node.replace('srv', '');
+  const cs = clientSwitch(p.client);
+  if (!cs) return [];
+  return cs === ss
+    ? [p.client, cs, p.node]
+    : [p.client, cs, 's0', ss, p.node];
+}
+
+function clientSwitch(iotId) {
+  const l = S.topo.links.find(l => l.a === iotId || l.b === iotId);
+  if (!l) return null;
+  return l.a === iotId ? l.b : l.a;
+}
+
+function spawnDots(dt) {
+  for (const [key, p] of S.paths) {
+    if (S.dots.length >= MAX_DOTS) break;
+    const rate = p.pps * PPS_TO_DOTS;
+    const acc = (S.spawnAcc.get(key) || 0) + rate * dt;
+    let n = Math.floor(acc);
+    S.spawnAcc.set(key, acc - n);
+    while (n-- > 0 && S.dots.length < MAX_DOTS) {
+      S.dots.push({ pts: p.pts, u: 0, dir: p.dir });
+    }
+  }
+}
+
+// Advance a dot along its polyline by `dist` pixels.
+function advance(dot, dist) {
+  let remaining = dist;
+  while (remaining > 0) {
+    const a = dot.pts[Math.floor(dot.u)];
+    const b = dot.pts[Math.floor(dot.u) + 1];
+    if (!b) return false;
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    const frac = dot.u - Math.floor(dot.u);
+    const left = segLen * (1 - frac);
+    if (remaining < left) {
+      dot.u += remaining / segLen;
+      return true;
+    }
+    remaining -= left;
+    dot.u = Math.floor(dot.u) + 1;
+    if (Math.floor(dot.u) >= dot.pts.length - 1) return false;
+  }
+  return true;
+}
+
+function dotXY(dot) {
+  const i = Math.floor(dot.u);
+  const a = dot.pts[i], b = dot.pts[i + 1] || a;
+  const f = dot.u - i;
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+}
+
+let lastFrame = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - lastFrame) / 1000);
+  lastFrame = now;
+
+  if (gDots) {
+    spawnDots(dt);
+    S.dots = S.dots.filter(d => advance(d, DOT_SPEED * dt));
+
+    gDots.textContent = '';
+    for (const d of S.dots) {
+      const { x, y } = dotXY(d);
+      gDots.append(el('circle', {
+        cx: x, cy: y, r: 2.6,
+        fill: d.dir === 'rev' ? 'var(--vip)' : 'var(--accent)',
+      }));
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// A routing decision: fire one bright, labelled pulse down the path that was
+// actually chosen, so the moment of the decision is visible even at low traffic.
+function routePulse(iotId, srvId, score) {
+  const pts = pathFor(iotId, srvId);
+  if (!pts || !gPulse) return;
+
+  const c = el('circle', { cx: pts[0].x, cy: pts[0].y, r: 6, fill: 'var(--accent)' });
+  c.style.filter = 'drop-shadow(0 0 6px var(--accent))';
+  const label = el('text', { class: 'routePulseLabel', x: pts[0].x + 10, y: pts[0].y - 8 });
+  label.textContent = score != null ? `→ ${srvId} (${score.toFixed(2)})` : `→ ${srvId}`;
+  gPulse.append(c, label);
+
+  const dot = { pts, u: 0 };
+  const t0 = performance.now();
+  (function step(now) {
+    const alive = advance(dot, 520 * Math.min(0.05, (now - (dot._t || now)) / 1000 || 0.016));
+    dot._t = now;
+    const { x, y } = dotXY(dot);
+    c.setAttribute('cx', x); c.setAttribute('cy', y);
+    label.setAttribute('x', x + 10); label.setAttribute('y', y - 8);
+    if (alive && now - t0 < 4000) requestAnimationFrame(step);
+    else { c.remove(); label.remove(); }
+  })(performance.now());
+}
+
+// ---------------------------------------------------------- trust panel ----
+function renderTrust() {
+  const box = document.getElementById('trust');
+  const ids = Object.keys(S.status).sort();
+  if (!ids.length) return;
+
+  const th = S.topo ? S.topo.thresholds : { isolation: 0.3, anomaly_gate: 0.5 };
+  const w = S.topo ? S.topo.weights : { w1_trust: .5, w2_cpu: .3, w3_latency: .2 };
+
+  box.innerHTML = ids.map(id => {
+    const s = S.status[id];
+    const q = s.quarantined;
+    const dev = Math.abs(s.claimed_cpu - s.observed_load);
+    const lying = dev > 0.40;
+
+    const escore = (w.w1_trust * s.trust)
+                 + (w.w2_cpu * (1 - s.claimed_cpu))
+                 + (w.w3_latency * (1 - Math.min(1, s.latency_ms / 100)));
+    const last = S.lastRoute[id];
+
+    return `
+      <div class="srv">
+        <div class="srvHead">
+          <span class="srvName">${id}</span>
+          ${q ? '<span class="tag bad">QUARANTINED</span>'
+              : `<span class="tag">EdgeScore ${escore.toFixed(2)}</span>`}
+          ${lying && !q ? '<span class="tag bad">CPU LIE</span>' : ''}
+          ${!q && last ? '<span class="tag win">serving</span>' : ''}
+        </div>
+
+        <div class="meter">
+          <span class="k">trust T</span>
+          <span class="bar">
+            <i style="width:${(s.trust * 100).toFixed(0)}%;background:${trustColor(s.trust)}"></i>
+            <span class="gate" style="left:${th.isolation * 100}%"></span>
+          </span>
+          <span class="v">${s.trust.toFixed(2)}</span>
+        </div>
+
+        <div class="meter">
+          <span class="k">anomaly Ā</span>
+          <span class="bar">
+            <i style="width:${(s.anomaly * 100).toFixed(0)}%;background:${
+              s.anomaly >= th.anomaly_gate ? 'var(--bad)' : 'var(--warn)'}"></i>
+            <span class="gate" style="left:${th.anomaly_gate * 100}%"></span>
+          </span>
+          <span class="v">${s.anomaly.toFixed(2)}</span>
+        </div>
+
+        <div class="meter">
+          <span class="k">CPU claimed</span>
+          <span class="bar"><i style="width:${(s.claimed_cpu * 100).toFixed(0)}%;background:var(--muted)"></i></span>
+          <span class="v">${s.claimed_cpu.toFixed(2)}</span>
+        </div>
+        <div class="meter">
+          <span class="k">CPU observed</span>
+          <span class="bar"><i style="width:${(s.observed_load * 100).toFixed(0)}%;background:${
+            lying ? 'var(--bad)' : 'var(--accent)'}"></i></span>
+          <span class="v">${s.observed_load.toFixed(2)}</span>
+        </div>
+
+        <div class="cmp">
+          ${lying
+            ? `<span class="lie">deviation ${dev.toFixed(2)} &gt; 0.40 — claims idle, is not</span>`
+            : `<span>deviation ${dev.toFixed(2)} · ${s.latency_ms.toFixed(0)} ms · ${s.inflight} inflight</span>`}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ---------------------------------------------------------- rules panel ----
+function renderRules() {
+  const box = document.getElementById('rules');
+  if (!S.flows.length) return;
+
+  const rows = S.flows.map(f => {
+    const key = `${f.dpid}|${f.table}|${f.priority}|${f.match}`;
+    const cls = [
+      f.is_vip ? 'vip' : '',
+      S.recentInstall.has(key) ? 'flash' : '',
+      S.recentDelete.has(key) ? 'dying' : '',
+    ].filter(Boolean).join(' ');
+    return `
+      <tr class="${cls}">
+        <td class="mono">s${f.dpid - 1}</td>
+        <td class="num">${f.table}</td>
+        <td class="num">${f.priority}</td>
+        <td class="mono m">${f.match}</td>
+        <td class="mono a">${f.actions}</td>
+        <td class="num">${f.node || '—'}</td>
+        <td class="num">${f.packets}</td>
+        <td class="num">${f.pps > 0 ? f.pps.toFixed(0) : '·'}</td>
+      </tr>`;
+  }).join('');
+
+  box.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>switch</th><th>tbl</th><th>prio</th><th>match</th><th>actions</th>
+        <th>node</th><th>pkts</th><th>pkt/s</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ------------------------------------------------------------------ log ----
+function log(ev) {
+  const box = document.getElementById('log');
+  const time = new Date(ev.ts * 1000).toLocaleTimeString('en-GB', { hour12: false });
+
+  let desc = '';
+  switch (ev.type) {
+    case 'route':
+      desc = `${ev.client_ip}:${ev.client_port} → <b>${ev.chosen}</b> ` +
+             `(EdgeScore ${ev.edge_score != null ? ev.edge_score.toFixed(3) : '?'}, ` +
+             `decided in ${ev.decision_ms} ms)`;
+      break;
+    case 'route_denied': desc = `${ev.client_ip}:${ev.client_port} DENIED — ${ev.reason}`; break;
+    case 'quarantine':
+      desc = `<b>${ev.node}</b> isolated — trust ${ev.trust} (&lt; ${ev.isolation_threshold}) ` +
+             `or Ā ${ev.anomaly} (≥ ${ev.anomaly_gate})`;
+      break;
+    case 'flow_delete': desc = `VIP rules for <b>${ev.node}</b> deleted on ${ev.dpids.length} switch(es)`; break;
+    case 'flow_install': desc = `rewrite pair for <b>${ev.node}</b> on s${ev.dpid - 1}`; break;
+    case 'anomaly': desc = `<b>${ev.node}</b> — ${ev.reasons.join('; ')}`; break;
+    case 'report': desc = `${ev.device} → ${ev.node}: ${ev.status} (${ev.latency_ms} ms), trust ${ev.trust}`; break;
+    case 'switch_up': desc = `switch dpid=${ev.dpid} connected`; break;
+    default: return;
+  }
+
+  const div = document.createElement('div');
+  div.className = 'ev ' + ev.type;
+  div.innerHTML = `<span class="t">${time}</span><span class="k">${ev.type}</span><span class="d">${desc}</span>`;
+  box.prepend(div);
+  while (box.children.length > 200) box.lastChild.remove();
+}
+
+// --------------------------------------------------------------- events ----
+function handle(ev) {
+  switch (ev.type) {
+    case 'switch_up':
+      S.seenSwitches.add(ev.dpid);
+      paintNodes();
+      break;
+
+    case 'node_status':
+      S.status = ev.nodes;
+      for (const [id, s] of Object.entries(ev.nodes)) {
+        if (s.quarantined) S.quarantined.add(id); else S.quarantined.delete(id);
+      }
+      renderTrust();
+      paintNodes();
+      return;   // too frequent to log
+
+    case 'route': {
+      const iot = 'iot' + parseInt(ev.client_ip.split('.')[3], 10);
+      S.lastRoute[ev.chosen] = { client: iot, score: ev.edge_score };
+      routePulse(iot, ev.chosen, ev.edge_score);
+      break;
+    }
+
+    case 'flow_stats':
+      S.flows = S.flows.filter(f => f.dpid !== ev.dpid).concat(ev.rules)
+                       .sort((a, b) => a.dpid - b.dpid || a.table - b.table || b.priority - a.priority);
+      rebuildPaths(S.flows);
+      renderRules();
+      return;   // too frequent to log
+
+    case 'quarantine':
+      S.quarantined.add(ev.node);
+      paintNodes();
+      rebuildPaths(S.flows);
+      break;
+
+    case 'flow_delete':
+      // Drop this node's VIP rules from the panel immediately rather than
+      // waiting for the next stats poll to notice they are gone.
+      S.flows = S.flows.filter(f => f.node !== ev.node);
+      renderRules();
+      break;
+  }
+  log(ev);
+}
+
+// ----------------------------------------------------------------- boot ----
+function setConn(state, text) {
+  document.getElementById('connDot').className = 'dot ' + state;
+  document.getElementById('connText').textContent = text;
+}
+
+async function boot() {
+  try {
+    const r = await fetch('/api/topology');
+    S.topo = await r.json();
+  } catch (e) {
+    setConn('down', 'controller unreachable');
+    return;
+  }
+
+  S.pos = layout(S.topo);
+  S.topo.nodes.forEach(n => S.nodes[n.id] = n);
+  drawTopology();
+
+  document.getElementById('vip').textContent = `VIP ${S.topo.vip}`;
+  const w = S.topo.weights;
+  document.getElementById('formula').textContent =
+    `EdgeScore = ${w.w1_trust}·T + ${w.w2_cpu}·(1−cpu) + ${w.w3_latency}·(1−lat)`;
+
+  try {
+    const f = await fetch('/api/flows');
+    S.flows = (await f.json()).flows || [];
+    rebuildPaths(S.flows);
+    renderRules();
+  } catch (e) { /* first poll may not have happened yet */ }
+
+  const es = new EventSource('/api/events');
+  es.onopen = () => setConn(S.replay ? 'replay' : 'live', S.replay ? 'replay' : 'live');
+  es.onerror = () => setConn('down', 'disconnected — retrying');
+  es.onmessage = m => {
+    try { handle(JSON.parse(m.data)); }
+    catch (e) { console.error('bad event', e, m.data); }
+  };
+
+  requestAnimationFrame(frame);
+}
+
+// Replay mode (dashboard/replay.py) serves the same API off a recorded file.
+S.replay = new URLSearchParams(location.search).has('replay')
+        || location.port === '8082';
+
+boot();
+</script>
+</body>
+</html>
