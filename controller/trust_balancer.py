@@ -241,6 +241,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
     TABLE_VIP = 0
     TABLE_L2 = 1
 
+    PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
     PRIO_CONNECTION = 300
     PRIO_NEW_TASK = 250
@@ -683,13 +684,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # ------------------------------------------------------------------ #
     def _on_trust_collapse(self, node_id: str) -> None:
         """Called by FlowMonitor the instant a node crosses into quarantine.
-        Deletes every VIP rewrite rule for this node across every switch, by
-        cookie -- so no further traffic is ever routed to it, and its existing
-        in-flight connections drain out on their own idle/hard timeout."""
+        Two-step containment on every switch: (1) delete every VIP rewrite
+        rule for this node by cookie, so no further traffic is steered to it;
+        (2) install top-priority drop rules on the node's MAC, so traffic
+        addressed to it directly dies in the data plane too; then (3) re-steer
+        the node's still-active clients onto the next-best node so their retry
+        reconnects immediately instead of waiting out a flow timeout."""
+        collapse_start = time.monotonic()
         t = self.state.trust_calc.get_score(node_id)
         a = self.state.get_anomaly(node_id)
         logger.warning(
-            "QUARANTINE: %s trust=%.4f anomaly=%.4f -- deleting VIP rules",
+            "QUARANTINE: %s trust=%.4f anomaly=%.4f -- deleting VIP rules, "
+            "installing drop rules",
             node_id, t, a,
         )
         cookie = self._cookie_for(node_id)
@@ -706,12 +712,91 @@ class TrustBalancerApp(app_manager.OSKenApp):
             dp.send_msg(mod)
             dpids.append(dp.id)
 
+        # The deletes stop the controller *steering* traffic at the node, but
+        # any host could still reach it directly. A flow entry with an empty
+        # instruction set is OpenFlow's drop: matching packets die in the
+        # switch, and the entry's packet counter records exactly how many it
+        # killed (`dpctl dump-flows -O OpenFlow13`, the priority=400 entries).
+        # Matching the MAC as source *and* destination covers every ethertype,
+        # including the node's ARP replies -- an IP-only match would not.
+        node_mac = srv_mac(srv_index(node_id))
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            ofproto = dp.ofproto
+            for match in (
+                parser.OFPMatch(eth_src=node_mac),
+                parser.OFPMatch(eth_dst=node_mac),
+            ):
+                dp.send_msg(parser.OFPFlowMod(
+                    datapath=dp, cookie=cookie, table_id=self.TABLE_VIP,
+                    command=ofproto.OFPFC_ADD,
+                    priority=self.PRIO_QUARANTINE_DROP,
+                    match=match, instructions=[],
+                ))
+            self.bus.publish(
+                'flow_install', dpid=dp.id, node=node_id, cookie=cookie,
+                table=self.TABLE_VIP, priority=self.PRIO_QUARANTINE_DROP,
+                idle_timeout=0, hard_timeout=0,
+                rules=[
+                    {'dir': 'quarantine', 'match': f'eth_src={node_mac}',
+                     'actions': 'drop'},
+                    {'dir': 'quarantine', 'match': f'eth_dst={node_mac}',
+                     'actions': 'drop'},
+                ],
+            )
+
         self.bus.publish(
             'quarantine', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
             isolation_threshold=self.state.isolation_threshold,
             anomaly_gate=self.state.anomaly_gate,
         )
         self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
+
+        # (3) Proactively re-steer this node's active clients. Done after the
+        # drops so the dead node is already excluded from re-selection.
+        self._redispatch_after_quarantine(node_id, collapse_start)
+
+    def _redispatch_after_quarantine(self, node_id: str, collapse_start: float) -> None:
+        """Re-point every client the quarantined node was serving at the
+        next-best eligible node, installing fresh VIP rewrite rules so the
+        client's retry re-connects with no PacketIn round trip.
+
+        All moved clients go to a single re-selected target: the current
+        EdgeScore argmax already excludes the quarantined node, and re-running
+        the selection per client returns the same winner under the present
+        score (which does not factor in-flight load), so one selection is both
+        correct and cheaper. If every other node is also quarantined, there is
+        nowhere to send them -- their retry will PacketIn and be denied, which
+        is the correct deny-by-default behaviour."""
+        target = self.state.choose_edge_node()
+        if target is None:
+            logger.warning(
+                "Re-dispatch after %s quarantine: no eligible node, "
+                "affected clients will be denied on retry", node_id,
+            )
+            return
+
+        moved = self.state.reassign_dispatches(node_id, target)
+        if not moved:
+            return
+
+        # Fresh VIP pair on every switch, same as the drop rules: only the
+        # client's real ingress switch will ever match, the rest expire idle.
+        for dp in list(self._datapaths.values()):
+            for client_ip, client_port in moved:
+                self._install_vip_pair(dp, client_ip, client_port, target)
+
+        resteer_ms = (time.monotonic() - collapse_start) * 1000.0
+        for client_ip, client_port in moved:
+            self.bus.publish(
+                'reroute', client_ip=client_ip, client_port=client_port,
+                from_node=node_id, to_node=target, resteer_ms=round(resteer_ms, 2),
+            )
+        logger.info(
+            "Re-dispatched %d client(s) from quarantined %s to %s "
+            "(%.2fms after collapse; NFR isolation < 3000ms)",
+            len(moved), node_id, target, resteer_ms,
+        )
 
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py                                         #

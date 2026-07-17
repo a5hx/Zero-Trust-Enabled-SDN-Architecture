@@ -113,11 +113,22 @@ class TrustState:
     # ------------------------------------------------------------------ #
     # Telemetry ingestion                                                 #
     # ------------------------------------------------------------------ #
-    def report_claimed_status(self, node_id: str, cpu_load: float, latency_ms: float) -> None:
-        """From node_agent's /status response (self-reported, possibly a lie)."""
+    def report_claimed_status(self, node_id: str, cpu_load: float, measured_rtt_ms: float) -> None:
+        """Ingest one poll of a node's telemetry.
+
+        Deliberate honesty asymmetry between the two values:
+        - cpu_load is the node's *self-reported* load. It has to be claimed --
+          only the node knows its own CPU -- which is exactly why the honesty
+          gate cross-checks it against the controller's observed_load estimate.
+        - measured_rtt_ms is the controller's *own* measurement of how long the
+          node's /status reply took to come back (FlowMonitor times the round
+          trip). A node cannot lie about this the way it can lie about the
+          latency_ms field in its payload, so this is what feeds the EdgeScore
+          latency term. See FlowMonitor._fetch_status.
+        """
         with self._lock:
             self._claimed_cpu[node_id] = cpu_load
-            self._latency_ms[node_id] = latency_ms
+            self._latency_ms[node_id] = measured_rtt_ms
 
     def get_claimed_cpu(self, node_id: str) -> float:
         with self._lock:
@@ -169,6 +180,29 @@ class TrustState:
                 return None
             self._inflight[entry.node_id] = max(0, self._inflight.get(entry.node_id, 0) - 1)
             return entry.node_id
+
+    def reassign_dispatches(self, from_node_id: str, to_node_id: str) -> List[Tuple[str, int]]:
+        """Move every still-active dispatch mapped to from_node_id onto
+        to_node_id, transferring inflight counts. Returns the
+        (client_ip, client_port) keys that were moved so the OpenFlow app can
+        install fresh VIP rewrite rules for them.
+
+        Used by the re-dispatch path when a node is quarantined: the clients it
+        was serving are re-pointed at the next-best node so their retry lands
+        there with no PacketIn round trip. This is connection-granularity
+        re-steering -- the in-flight TCP connections are killed by the drop
+        rules (a live connection cannot be migrated without server-side state),
+        so it is each client's *next* connection that this fast-path serves.
+        """
+        with self._lock:
+            moved: List[Tuple[str, int]] = []
+            for key, d in list(self._dispatches.items()):
+                if d.node_id == from_node_id:
+                    self._dispatches[key] = _Dispatch(to_node_id, time.time())
+                    self._inflight[from_node_id] = max(0, self._inflight.get(from_node_id, 0) - 1)
+                    self._inflight[to_node_id] = self._inflight.get(to_node_id, 0) + 1
+                    moved.append(key)
+            return moved
 
     def _reap_stale_dispatches_locked(self) -> None:
         now = time.time()

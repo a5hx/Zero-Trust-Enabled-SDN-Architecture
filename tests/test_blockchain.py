@@ -101,6 +101,30 @@ class TestBlockchain:
         assert accepted, "Block with empty updates should be accepted"
         assert ledger.is_valid_chain()
 
+    def test_b06_merkle_proof_is_position_sensitive(self) -> None:
+        """B-06: A valid proof verifies; corrupting the sibling's left/right
+        position makes it fail. This is the regression guard for the fix that
+        stopped _hash_pair sorting its inputs -- with sorting, position was
+        ignored and the tree was order-agnostic (proofs weaker than claimed).
+        """
+        updates = [_make_update(f'srv{j}', score_after=0.5 + j / 100)
+                   for j in range(4)]
+        root = build_merkle_root(updates)
+
+        # Every record verifies against the root with its own proof.
+        for idx, u in enumerate(updates):
+            proof = _build_proof(updates, idx)
+            assert verify_record(u, proof, root), f"record {idx} should verify"
+
+        # Flipping a proof step's position must break verification -- proof
+        # that this is not order-agnostic. Index 0 sits under two internal
+        # layers, so it has a position to flip.
+        proof0 = _build_proof(updates, 0)
+        flipped = [(h, 'left' if pos == 'right' else 'right') for h, pos in proof0]
+        assert not verify_record(updates[0], flipped, root), (
+            "position-swapped proof must fail once the tree is order-sensitive"
+        )
+
     def test_b05_latest_trust_score(self) -> None:
         """B-05: latest_trust_score for known and unknown node → score / None."""
         ledger = Ledger()
