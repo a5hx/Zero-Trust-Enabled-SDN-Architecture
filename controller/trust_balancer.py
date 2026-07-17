@@ -362,6 +362,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # the packet animation and rule hit-counters are driven by real switch
         # counters rather than anything the controller makes up.
         self.flow_stats: Any = None
+        # Likewise polls OFPPortStats for the dashboard's link-load view.
+        self.port_stats: Any = None
 
         self._http_server = None  # set in start(), from northbound_api.py
 
@@ -372,6 +374,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         if self.dashboard_enabled:
             from controller.flow_stats import FlowStatsPoller
+            from controller.port_stats import PortStatsPoller
 
             # First event in every recording, so dashboard/replay.py can rebuild
             # the exact graph this run used instead of guessing it back from the
@@ -385,6 +388,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 poll_interval_s=self.monitor_interval_s,
             )
             hub.spawn(self.flow_stats.run)
+
+            self.port_stats = PortStatsPoller(
+                datapaths=self._datapaths,
+                bus=self.bus,
+                poll_interval_s=self.monitor_interval_s,
+            )
+            hub.spawn(self.port_stats.run)
             logger.info(
                 "Dashboard enabled -- open http://localhost:%d/ in a browser",
                 self.api_port,
@@ -450,6 +460,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
         OSKenApp, so it can't register handlers of its own) -- forward them."""
         if self.flow_stats is not None:
             self.flow_stats.handle_reply(ev)
+
+    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
+    def port_stats_reply_handler(self, ev):
+        """OFPPortStats replies, forwarded to PortStatsPoller for the same
+        reason as flow stats above (plain object, can't self-register)."""
+        if self.port_stats is not None:
+            self.port_stats.handle_reply(ev)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -941,6 +958,14 @@ class TrustBalancerApp(app_manager.OSKenApp):
         if self.flow_stats is None:
             return []
         return self.flow_stats.snapshot()
+
+    def port_table(self) -> List[Dict[str, Any]]:
+        """Current per-port link load (measured bps), for the dashboard's
+        link-load view. Empty until the port-stats poller has run a cycle (or
+        always, if the dashboard is disabled)."""
+        if self.port_stats is None:
+            return []
+        return self.port_stats.snapshot()
 
     def handle_offload_advisory(self) -> Dict[str, Any]:
         """POST /offload/request: advisory only -- returns what node *would*

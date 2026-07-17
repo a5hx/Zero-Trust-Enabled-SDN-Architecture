@@ -104,6 +104,9 @@ def _make_handler(app: Any, state: TrustState):
             if path == '/api/flows':
                 self._write_json(200, {'flows': app.flow_table()})
                 return
+            if path == '/api/ports':
+                self._write_json(200, {'ports': app.port_table()})
+                return
 
             try:
                 if path == '/trust/score':
