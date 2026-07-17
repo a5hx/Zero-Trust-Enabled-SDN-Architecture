@@ -144,6 +144,13 @@ deviations).
 
 ## 4. Visualizing "rules" and packet flow (Wireshark)
 
+> **If you just want the visual demo, use the dashboard in section 5 instead.**
+> It shows the same two things (the rules, and traffic moving) but in terms of
+> *this project's* logic -- EdgeScore decisions, trust collapse, quarantine --
+> rather than raw OpenFlow frames, and it needs no `xhost` or namespace
+> workarounds. Wireshark remains the right tool if you specifically want to show
+> the wire-level OpenFlow protocol itself.
+
 Two things an advisor might mean by this — both covered:
 
 - **"Rules"** = OpenFlow flow-table entries (`OFPT_FLOW_MOD` messages) the
@@ -192,6 +199,73 @@ Stop it (Ctrl+C in that host's xterm, or `iot1 kill %tcpdump`), then:
 wireshark /tmp/iot1.pcap
 ```
 
+## 5. Live dashboard (the visual demo)
+
+A browser dashboard served by the controller itself, showing the topology with
+traffic animating along it, the OpenFlow rules as they're installed and deleted,
+and trust/EdgeScore per edge server. No extra dependencies, no root, no `xhost`.
+
+Enabled by default in `config/params_trust_demo.yaml`:
+```yaml
+controller:
+  dashboard:
+    enabled: true
+    record_path: data/events.jsonl
+```
+Set `enabled: false` (or delete the block) and the controller behaves exactly as
+it did before the dashboard existed — it swaps in a `NullBus`, so every event
+publish becomes a no-op.
+
+### Live
+
+Run the section 3b demo as normal, then open **<http://localhost:8081/>** in a
+browser. Same port as the REST API — it's the same process, no new server.
+
+What to watch, in order:
+1. Blue dots flow from IoT hosts through the switches to the servers. Their
+   speed/density is set by the **real packets/sec** measured on each flow rule,
+   printed next to each server. A route that crosses switches visibly hairpins
+   through the core `s0`, because that is genuinely the path it takes.
+2. Each new connection fires a labelled pulse — `→ srv2 (0.81)` — along the path
+   actually chosen, showing the winning EdgeScore.
+3. Around t≈20s, `srv3` starts lying about its CPU. Its **claimed CPU** bar
+   separates from its **observed load** bar in the Trust panel. This is the
+   novelty claim, made visible: the controller counts load itself, so the lie
+   cannot hide.
+4. `srv3` gets quarantined — struck out in red, its link goes dashed, its rules
+   vanish from the rules table, and traffic re-steers to the others.
+
+Note **which gate catches it**: `srv3` is usually isolated by the anomaly gate
+(Ā ≥ 0.5), not the trust threshold — its trust score alone never falls far
+enough. That's the design finding in `tests/test_trust_state.py::
+test_f04_non_degrading_liar_needs_anomaly_gate`, and the dashboard shows it
+happening. Worth pointing out to your advisor rather than glossing over.
+
+### Replay (no Mininet, no sudo)
+
+Every run records to `data/events.jsonl`. Replay it later:
+```bash
+python3 -m dashboard.replay data/events.jsonl          # then open localhost:8082
+python3 -m dashboard.replay data/events.jsonl --speed 3 --loop
+```
+Events are re-emitted with their original timing, so the run paces exactly as it
+did live. Two uses: iterating on the UI without root, and **demo-day insurance** —
+keep a recording of a good run, and you can show the whole story even if the live
+network misbehaves in front of an examiner.
+
+### What the dots do and don't mean
+
+Once a flow rule is installed, OpenFlow switches packets **in the data plane** —
+they never reach the controller again. So the controller cannot see individual
+packets, and this dashboard does not pretend to. Every dot's rate comes from the
+**real packet counters on the flow rules** (`OFPFlowStatsRequest`, polled at 1 Hz
+by `controller/flow_stats.py`), and every one-shot animation comes from a real
+controller event. The measured pps is printed on screen next to each server so
+the claim is checkable.
+
+If someone asks "is that every packet?" — no, and it *can't* be, for the reason
+above. That's a fact about SDN worth stating, not a gap to hide.
+
 ## Known quirks (harmless)
 
 - `sch_htb: quantum of class ... is big` warnings during topology startup —
@@ -211,11 +285,18 @@ demo) are done. Phase D Sprint 1 (trust-aware controller) is done: the real
 detection (`controller/flow_monitor.py`), the northbound REST API
 (`controller/northbound_api.py`), and the Mininet wiring for it
 (`simulation/topology.py`'s trust mode, `simulation/node_agent.py`,
-`simulation/iot_client.py`) are all built, unit-tested (38/38 passing —
+`simulation/iot_client.py`) are all built, unit-tested (64/64 passing —
 `pytest tests/`), and confirmed to start cleanly and talk real OpenFlow to a
 live switch (see section 3b). Not yet run as a full live Mininet demo end to
 end by a human — do that next (section 3b) before treating it as verified
 for the advisor.
+
+The live dashboard (section 5) is built on top of that: `controller/event_bus.py`,
+`controller/flow_stats.py`, four read-only routes added to
+`controller/northbound_api.py`, `dashboard/index.html`, and
+`dashboard/replay.py`. Its HTTP surface is tested and was verified serving real
+`OFPFlowStats` counters from a live switch; the browser rendering itself still
+wants a human eye on it.
 
 Phase D Sprint 2+ (not started): `security/present_cipher.py` (PRESENT-80,
 replacing the Sprint-1 `HmacAuthenticator`), `blockchain/raft.py`,
