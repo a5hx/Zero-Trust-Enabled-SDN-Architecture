@@ -32,8 +32,9 @@ Mininet hosts have no DNS resolution for each other's names.
 import http.client
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, NamedTuple, Optional
 
 from os_ken.lib import hub
 
@@ -45,6 +46,22 @@ logger = logging.getLogger(__name__)
 
 _STATUS_TIMEOUT_S = 0.5
 _MIN_TIMEOUT_SAMPLES = 4
+
+
+class StatusProbe(NamedTuple):
+    """One /status poll result.
+
+    payload: the parsed JSON body, or None if the node was unreachable or
+        answered non-200 (treated as anomalous by _poll_once).
+    rtt_ms: the controller-measured round-trip time of the probe in
+        milliseconds, or None when the request failed. This is the
+        unspoofable latency signal fed to the EdgeScore -- unlike the
+        node-reported latency_ms field, a node cannot understate how long its
+        own reply actually took to arrive.
+    """
+
+    payload: Optional[dict]
+    rtt_ms: Optional[float]
 
 
 class FlowMonitor:
@@ -96,13 +113,21 @@ class FlowMonitor:
         ))
 
         for node_id in self.node_ids:
-            status = results[node_id]
+            probe = results[node_id]
+            status = probe.payload
             anomaly_raw = 0.0
             reasons: List[str] = []
 
             if status is not None:
                 claimed_cpu = status.get('cpu_load', 0.5)
-                latency_ms = status.get('latency_ms', 50.0)
+                # Feed the *measured* RTT, not the node's self-reported
+                # latency_ms, into the routing latency term. Fall back to the
+                # self-report only if the probe somehow carried no RTT (it
+                # always does for a real HTTP fetch; the guard is for stubs).
+                latency_ms = (
+                    probe.rtt_ms if probe.rtt_ms is not None
+                    else status.get('latency_ms', 50.0)
+                )
                 concurrency = status.get('concurrency')
 
                 self.state.report_claimed_status(node_id, claimed_cpu, latency_ms)
@@ -166,16 +191,21 @@ class FlowMonitor:
 
         self.state.flush_if_stale()
 
-    def _fetch_status(self, node_id: str) -> Optional[dict]:
+    def _fetch_status(self, node_id: str) -> StatusProbe:
         host = srv_ip(srv_index(node_id))
+        start = time.monotonic()
         try:
             conn = http.client.HTTPConnection(host, self.agent_port, timeout=_STATUS_TIMEOUT_S)
             conn.request('GET', '/status')
             resp = conn.getresponse()
             body = resp.read()
             conn.close()
+            # Round trip measured from just before the request to just after
+            # the full body is read -- the controller's own view of the node's
+            # responsiveness, which no node-side field can misrepresent.
+            rtt_ms = (time.monotonic() - start) * 1000.0
             if resp.status != 200:
-                return None
-            return json.loads(body)
+                return StatusProbe(None, None)
+            return StatusProbe(json.loads(body), rtt_ms)
         except OSError:
-            return None
+            return StatusProbe(None, None)

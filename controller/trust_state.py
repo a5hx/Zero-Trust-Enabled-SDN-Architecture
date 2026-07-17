@@ -113,11 +113,22 @@ class TrustState:
     # ------------------------------------------------------------------ #
     # Telemetry ingestion                                                 #
     # ------------------------------------------------------------------ #
-    def report_claimed_status(self, node_id: str, cpu_load: float, latency_ms: float) -> None:
-        """From node_agent's /status response (self-reported, possibly a lie)."""
+    def report_claimed_status(self, node_id: str, cpu_load: float, measured_rtt_ms: float) -> None:
+        """Ingest one poll of a node's telemetry.
+
+        Deliberate honesty asymmetry between the two values:
+        - cpu_load is the node's *self-reported* load. It has to be claimed --
+          only the node knows its own CPU -- which is exactly why the honesty
+          gate cross-checks it against the controller's observed_load estimate.
+        - measured_rtt_ms is the controller's *own* measurement of how long the
+          node's /status reply took to come back (FlowMonitor times the round
+          trip). A node cannot lie about this the way it can lie about the
+          latency_ms field in its payload, so this is what feeds the EdgeScore
+          latency term. See FlowMonitor._fetch_status.
+        """
         with self._lock:
             self._claimed_cpu[node_id] = cpu_load
-            self._latency_ms[node_id] = latency_ms
+            self._latency_ms[node_id] = measured_rtt_ms
 
     def get_claimed_cpu(self, node_id: str) -> float:
         with self._lock:

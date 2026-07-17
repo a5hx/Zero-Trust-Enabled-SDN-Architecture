@@ -4,8 +4,21 @@ _fetch_status is monkeypatched in every test here rather than hitting real
 HTTP, so these run with no Mininet/network dependency at all.
 """
 
-from controller.flow_monitor import FlowMonitor
+from controller.flow_monitor import FlowMonitor, StatusProbe
 from controller.trust_state import TrustState
+
+
+def _as_probe(value):
+    """Wrap a test's status value into the StatusProbe _fetch_status returns.
+
+    Accepts None (unreachable), a bare payload dict (RTT defaulted), or an
+    explicit StatusProbe when a test needs to pin the measured RTT.
+    """
+    if value is None:
+        return StatusProbe(None, None)
+    if isinstance(value, StatusProbe):
+        return value
+    return StatusProbe(value, 30.0)
 
 
 def _make_monitor(state, statuses, threshold=0.40):
@@ -15,7 +28,7 @@ def _make_monitor(state, statuses, threshold=0.40):
         poll_interval_s=1.0, honesty_deviation_threshold=threshold,
         on_quarantine=quarantined.append,
     )
-    fm._fetch_status = lambda node_id: statuses[node_id]
+    fm._fetch_status = lambda node_id: _as_probe(statuses[node_id])
     return fm, quarantined
 
 
@@ -77,6 +90,32 @@ def test_unreachable_agent_treated_as_anomalous():
     fm._poll_once()
     assert state.get_anomaly('srv1') > 0.5
     assert quarantined == ['srv1']
+
+
+def test_measured_rtt_feeds_routing_not_self_reported_latency():
+    """A node that lies 'my latency is 1ms' but is actually slow to answer must
+    not win the latency term. Routing uses the controller-measured RTT, so the
+    liar with a high measured RTT loses to an honest fast node -- even though
+    its self-reported latency_ms is far lower.
+    """
+    state = TrustState(node_ids=['srv1', 'srv2'])
+    # Both nodes: equal trust (fresh), equal claimed CPU -> the ONLY thing that
+    # can separate them in EdgeScore is the latency term.
+    fm, _ = _make_monitor(state, {
+        # srv1 lies about latency (1ms) but its reply is genuinely slow (200ms).
+        'srv1': StatusProbe({'cpu_load': 0.2, 'latency_ms': 1, 'concurrency': 1}, 200.0),
+        # srv2 honest and genuinely fast (10ms measured).
+        'srv2': StatusProbe({'cpu_load': 0.2, 'latency_ms': 1, 'concurrency': 1}, 10.0),
+    })
+    fm._poll_once()
+
+    # The measured RTT, not the self-reported 1ms, is what was stored.
+    snap = state.snapshot()
+    assert snap['srv1']['latency_ms'] == 200.0
+    assert snap['srv2']['latency_ms'] == 10.0
+
+    # And it drives the decision: the genuinely-fast honest node is chosen.
+    assert state.choose_edge_node() == 'srv2'
 
 
 def test_poll_calls_flush_if_stale():
