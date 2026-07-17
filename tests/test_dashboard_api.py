@@ -37,6 +37,12 @@ def cfg():
 def test_topology_graph_matches_mininet_attachment(cfg):
     """ZeroTrustTopo.build() attaches iot_j to edge switch (j-1) % n_edge. The
     dashboard graph must use the same rule or the drawing is wrong."""
+    # This test needs Mininet's real Topo machinery: ZeroTrustTopo(cfg=...)
+    # relies on mininet.topo.Topo.__init__ calling build(cfg), which populates
+    # iot_to_edge. Where Mininet is not installed (e.g. the CI runner, which
+    # only pip-installs os-ken), topology.py falls back to a stub Topo base and
+    # this construction can't run -- skip rather than fail.
+    pytest.importorskip('mininet')
     from simulation.topology import ZeroTrustTopo
 
     n_edge = cfg['simulation']['num_edge_nodes']
