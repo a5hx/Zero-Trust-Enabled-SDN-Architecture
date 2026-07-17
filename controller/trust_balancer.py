@@ -35,7 +35,9 @@ from os_ken.ofproto import inet, ofproto_v1_3
 from controller.edge_selector import EdgeWeights
 from controller.event_bus import EventBus, NullBus
 from controller.trust_state import TrustState
-from security.authenticator import HmacAuthenticator
+from security.authenticator import (
+    HmacAuthenticator, NullAuthenticator, Present80Authenticator,
+)
 from simulation.addressing import VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
 
 logger = logging.getLogger(__name__)
@@ -207,9 +209,40 @@ class TrustBalancerStandalone:
 # --------------------------------------------------------------------------- #
 
 # Demo-only pre-shared key for HmacAuthenticator (security/authenticator.py).
-# Fine for a simulated IoT fleet; PRESENT-80 (Sprint 2) replaces this scheme
-# behind the same Authenticator protocol without callers changing.
+# Used only when the config selects auth_scheme: hmac (or leaves security
+# unset). PRESENT-80 is the Sprint 2 default and carries its own 80-bit key.
 _DEMO_HMAC_KEY = b'zero-trust-sdn-demo-shared-key'
+
+
+def _build_authenticator(cfg: Dict[str, Any]):
+    """Select the device authenticator from the config's `security:` block.
+
+    security:
+      auth_scheme: present80 | hmac | null   (default present80)
+      shared_key_hex: "00010203...."         (10 bytes for present80)
+
+    All three satisfy the same Authenticator protocol, so nothing downstream
+    (TrustState, the /auth endpoints) changes with the choice. Absent config ->
+    HMAC with the demo key, preserving Sprint 1 behaviour for older config
+    files that have no security block.
+    """
+    sec = cfg.get('security')
+    if not sec:
+        return HmacAuthenticator(shared_key=_DEMO_HMAC_KEY)
+
+    scheme = sec.get('auth_scheme', 'present80')
+    if scheme == 'null':
+        return NullAuthenticator()
+    if scheme == 'hmac':
+        key_hex = sec.get('shared_key_hex')
+        key = bytes.fromhex(key_hex) if key_hex else _DEMO_HMAC_KEY
+        return HmacAuthenticator(shared_key=key)
+    if scheme == 'present80':
+        key_hex = sec.get('shared_key_hex')
+        if not key_hex:
+            raise ValueError("security.auth_scheme=present80 requires shared_key_hex (10 bytes)")
+        return Present80Authenticator(shared_key=bytes.fromhex(key_hex))
+    raise ValueError(f"unknown security.auth_scheme: {scheme!r}")
 
 # Overridable so tests / alternate demo scales can point at a different file
 # without editing code.
@@ -274,7 +307,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             node_ids=node_ids,
             trust_calculator=trust_calc,
             commit_backend=LocalLedgerBackend(),
-            authenticator=HmacAuthenticator(shared_key=_DEMO_HMAC_KEY),
+            authenticator=_build_authenticator(cfg),
             edge_weights=EdgeWeights.from_config(cfg['edge_score']),
             isolation_threshold=trust_cfg['isolation_threshold'],
             anomaly_gate=trust_cfg['anomaly_gate'],

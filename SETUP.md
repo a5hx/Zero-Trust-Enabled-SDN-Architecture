@@ -179,7 +179,23 @@ new VIP rewrite rules now carry `srvM`'s cookie low byte, not `srv3`'s:
 mininet> dpctl dump-flows -O OpenFlow13 | grep cookie=0x5a
 ```
 
-**4. Routing already prefers genuinely responsive nodes.** The EdgeScore
+**4. PRESENT-80 device admission (the malicious-IoT case).** Every IoT device
+now runs a PRESENT-80 challenge-response handshake before it may send traffic.
+`config/params_trust_demo.yaml`'s `security.malicious_iot_devices` lists `iot12`,
+which topology.py launches with a deliberately wrong key. Confirm it is refused
+while the honest devices join:
+```
+# iot12 was denied and sent no traffic:
+grep -h "AUTH DENIED" logs/iot12_client.log
+# an honest device was admitted:
+grep -h "AUTH OK" logs/iot1_client.log
+```
+The controller side logs the 403 as well. This is the deck's malicious-IoT
+adversary resolved as an *authentication* problem (distinct from the malicious
+*edge server* srv3, which is the trust/routing story) -- a device without the
+shared 80-bit key never reaches the trust engine at all.
+
+**5. Routing already prefers genuinely responsive nodes.** The EdgeScore
 latency term now uses the controller-measured `/status` round-trip time, not
 each node's self-reported `latency_ms`. Nothing extra to run here -- it means
 a node that lies "my latency is 1 ms" but answers slowly will not win the

@@ -48,6 +48,22 @@ simulation:
       attack: sybil
       start_s: 20
 
+# Device authentication (Sprint 2). The controller admits an IoT device only
+# after a PRESENT-80 challenge-response handshake; a device without the shared
+# 80-bit key (the malicious-IoT case) is denied at admission, before any
+# trust/routing logic sees it.
+#   auth_scheme: present80 | hmac | null
+#   shared_key_hex: 10 bytes (80 bits) for present80
+security:
+  auth_scheme: present80
+  shared_key_hex: "00112233445566778899"
+
+  # IoT devices launched with a WRONG key, to demonstrate admission control.
+  # topology.py starts these with a deliberately mismatched key so they are
+  # refused; they never generate VIP traffic.
+  malicious_iot_devices:
+    - iot12
+
 blockchain:
   max_updates_per_block: 10
   block_commit_timeout_s: 5.0
