@@ -181,6 +181,29 @@ class TrustState:
             self._inflight[entry.node_id] = max(0, self._inflight.get(entry.node_id, 0) - 1)
             return entry.node_id
 
+    def reassign_dispatches(self, from_node_id: str, to_node_id: str) -> List[Tuple[str, int]]:
+        """Move every still-active dispatch mapped to from_node_id onto
+        to_node_id, transferring inflight counts. Returns the
+        (client_ip, client_port) keys that were moved so the OpenFlow app can
+        install fresh VIP rewrite rules for them.
+
+        Used by the re-dispatch path when a node is quarantined: the clients it
+        was serving are re-pointed at the next-best node so their retry lands
+        there with no PacketIn round trip. This is connection-granularity
+        re-steering -- the in-flight TCP connections are killed by the drop
+        rules (a live connection cannot be migrated without server-side state),
+        so it is each client's *next* connection that this fast-path serves.
+        """
+        with self._lock:
+            moved: List[Tuple[str, int]] = []
+            for key, d in list(self._dispatches.items()):
+                if d.node_id == from_node_id:
+                    self._dispatches[key] = _Dispatch(to_node_id, time.time())
+                    self._inflight[from_node_id] = max(0, self._inflight.get(from_node_id, 0) - 1)
+                    self._inflight[to_node_id] = self._inflight.get(to_node_id, 0) + 1
+                    moved.append(key)
+            return moved
+
     def _reap_stale_dispatches_locked(self) -> None:
         now = time.time()
         stale = [

@@ -687,7 +687,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
         Two-step containment on every switch: (1) delete every VIP rewrite
         rule for this node by cookie, so no further traffic is steered to it;
         (2) install top-priority drop rules on the node's MAC, so traffic
-        addressed to it directly dies in the data plane too."""
+        addressed to it directly dies in the data plane too; then (3) re-steer
+        the node's still-active clients onto the next-best node so their retry
+        reconnects immediately instead of waiting out a flow timeout."""
+        collapse_start = time.monotonic()
         t = self.state.trust_calc.get_score(node_id)
         a = self.state.get_anomaly(node_id)
         logger.warning(
@@ -748,6 +751,52 @@ class TrustBalancerApp(app_manager.OSKenApp):
             anomaly_gate=self.state.anomaly_gate,
         )
         self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
+
+        # (3) Proactively re-steer this node's active clients. Done after the
+        # drops so the dead node is already excluded from re-selection.
+        self._redispatch_after_quarantine(node_id, collapse_start)
+
+    def _redispatch_after_quarantine(self, node_id: str, collapse_start: float) -> None:
+        """Re-point every client the quarantined node was serving at the
+        next-best eligible node, installing fresh VIP rewrite rules so the
+        client's retry re-connects with no PacketIn round trip.
+
+        All moved clients go to a single re-selected target: the current
+        EdgeScore argmax already excludes the quarantined node, and re-running
+        the selection per client returns the same winner under the present
+        score (which does not factor in-flight load), so one selection is both
+        correct and cheaper. If every other node is also quarantined, there is
+        nowhere to send them -- their retry will PacketIn and be denied, which
+        is the correct deny-by-default behaviour."""
+        target = self.state.choose_edge_node()
+        if target is None:
+            logger.warning(
+                "Re-dispatch after %s quarantine: no eligible node, "
+                "affected clients will be denied on retry", node_id,
+            )
+            return
+
+        moved = self.state.reassign_dispatches(node_id, target)
+        if not moved:
+            return
+
+        # Fresh VIP pair on every switch, same as the drop rules: only the
+        # client's real ingress switch will ever match, the rest expire idle.
+        for dp in list(self._datapaths.values()):
+            for client_ip, client_port in moved:
+                self._install_vip_pair(dp, client_ip, client_port, target)
+
+        resteer_ms = (time.monotonic() - collapse_start) * 1000.0
+        for client_ip, client_port in moved:
+            self.bus.publish(
+                'reroute', client_ip=client_ip, client_port=client_port,
+                from_node=node_id, to_node=target, resteer_ms=round(resteer_ms, 2),
+            )
+        logger.info(
+            "Re-dispatched %d client(s) from quarantined %s to %s "
+            "(%.2fms after collapse; NFR isolation < 3000ms)",
+            len(moved), node_id, target, resteer_ms,
+        )
 
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py                                         #

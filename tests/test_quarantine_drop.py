@@ -77,4 +77,39 @@ def test_drop_rules_reach_every_switch(app):
     for dp in dps:
         mods = [c.args[0] for c in dp.send_msg.call_args_list]
         adds = [m for m in mods if m.command == ofproto_v1_3.OFPFC_ADD]
+        # No active dispatches -> re-dispatch adds nothing; only the 2 drops.
         assert len(adds) == 2, f'dpid {dp.id} missing drop rules'
+
+
+def test_quarantine_redispatches_active_clients_to_next_best(app):
+    dp = _fake_datapath()
+    app._datapaths = {dp.id: dp}
+
+    # A client is actively being served by srv3.
+    app.state.register_dispatch('10.0.0.5', 5000, 'srv3')
+    # Drive srv3 over the anomaly gate so it is genuinely quarantined in state
+    # (in the live path poll_newly_quarantined only fires once this is true).
+    # One raw-1.0 sample with lambda=0.85 lands well above the 0.5 gate.
+    app.state.set_anomaly_raw('srv3', 1.0)
+    assert app.state.is_quarantined('srv3')
+
+    app._on_trust_collapse('srv3')
+
+    # The re-dispatch re-selected a target, which must not be the dead node.
+    target = app.state.last_routing_decision()['chosen']
+    assert target is not None and target != 'srv3'
+
+    # The client's dispatch now points at the target, inflight moved with it.
+    assert app.state._dispatches[('10.0.0.5', 5000)].node_id == target
+
+    # Fresh VIP rewrite rules (forward + reverse) were installed for the client,
+    # tagged with the target's cookie at connection priority -- distinct from
+    # srv3's drop rules.
+    mods = [c.args[0] for c in dp.send_msg.call_args_list]
+    vip_adds = [
+        m for m in mods
+        if m.command == ofproto_v1_3.OFPFC_ADD
+        and m.priority == app.PRIO_CONNECTION
+        and m.cookie == app._cookie_for(target)
+    ]
+    assert len(vip_adds) == 2, 'expected forward+reverse VIP rules to the target'
