@@ -65,6 +65,63 @@ def _send_task(vip: str, vip_port: int, timeout_s: float) -> Tuple[str, float, O
     return status, latency_ms, local_port
 
 
+def _compute_auth_response(scheme: str, key: bytes, device_id: str, nonce: bytes) -> bytes:
+    """The response a legitimate device returns for an auth challenge.
+
+    Pure and side-effect free so it can be unit-tested against the controller's
+    Authenticator without any HTTP. present80 encrypts the nonce under the
+    shared 80-bit key; hmac matches HmacAuthenticator's device_id||nonce MAC.
+    """
+    if scheme == 'present80':
+        from security.present_cipher import encrypt_bytes
+        return encrypt_bytes(key, nonce)
+    if scheme == 'hmac':
+        import hashlib
+        import hmac
+        return hmac.new(key, device_id.encode() + nonce, hashlib.sha256).digest()
+    raise ValueError(f"unsupported auth scheme: {scheme!r}")
+
+
+def _authenticate(
+    controller: str, controller_port: int, device_id: str,
+    scheme: str, key: bytes, timeout_s: float,
+) -> Optional[str]:
+    """Run the challenge-response handshake with the controller.
+
+    Returns the session token on success, or None if the controller denied the
+    device (wrong key -> 403) or the handshake could not be completed. A None
+    return is the signal for the caller to not join the fleet.
+    """
+    try:
+        conn = http.client.HTTPConnection(controller, controller_port, timeout=timeout_s)
+        conn.request(
+            'POST', '/auth/challenge',
+            body=json.dumps({'device_id': device_id}).encode(),
+            headers={'Content-Type': 'application/json', 'Connection': 'close'},
+        )
+        resp = conn.getresponse()
+        nonce = bytes.fromhex(json.loads(resp.read())['nonce'])
+        conn.close()
+
+        response = _compute_auth_response(scheme, key, device_id, nonce)
+
+        conn = http.client.HTTPConnection(controller, controller_port, timeout=timeout_s)
+        conn.request(
+            'POST', '/auth/verify',
+            body=json.dumps({'device_id': device_id, 'response': response.hex()}).encode(),
+            headers={'Content-Type': 'application/json', 'Connection': 'close'},
+        )
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        if resp.status == 200:
+            return json.loads(body).get('token')
+        return None  # 403 -- denied admission
+    except OSError as exc:
+        logger.warning("Auth handshake failed (network): %s", exc)
+        return None
+
+
 def _report(
     controller: str, controller_port: int, device_id: str,
     vip_src_port: Optional[int], status: str, latency_ms: float, timeout_s: float,
@@ -97,11 +154,27 @@ def _report(
 def run(
     device_id: str, vip: str, vip_port: int, controller: str, controller_port: int,
     interval_s: float, timeout_s: float,
+    auth_scheme: Optional[str] = None, auth_key: Optional[bytes] = None,
 ) -> None:
     logger.info(
         "iot_client %s -> VIP %s:%d, reporting to %s:%d",
         device_id, vip, vip_port, controller, controller_port,
     )
+
+    # Admission control: authenticate before generating any traffic. A device
+    # given the wrong key is denied here and never joins the fleet -- the
+    # malicious-IoT case. Skipped only when no key is supplied (plain runs).
+    if auth_key is not None:
+        token = _authenticate(
+            controller, controller_port, device_id, auth_scheme, auth_key, timeout_s,
+        )
+        if token is None:
+            logger.error(
+                "AUTH DENIED for %s -- refused admission, sending no traffic", device_id,
+            )
+            return
+        logger.info("AUTH OK for %s (session %s...)", device_id, token[:8])
+
     while True:
         status, latency_ms, local_port = _send_task(vip, vip_port, timeout_s)
         logger.info("%s task -> %s (%.1f ms)", device_id, status, latency_ms)
@@ -118,7 +191,18 @@ def main() -> None:
     parser.add_argument('--controller-port', type=int, default=8081)
     parser.add_argument('--interval-s', type=float, default=1.0)
     parser.add_argument('--timeout-s', type=float, default=2.0)
+    parser.add_argument(
+        '--auth-scheme', default='present80', choices=['present80', 'hmac'],
+        help='challenge-response scheme the controller expects',
+    )
+    parser.add_argument(
+        '--auth-key-hex', default=None,
+        help='shared key as hex. If omitted, the device skips authentication '
+             '(plain runs). A wrong key is refused at admission.',
+    )
     args = parser.parse_args()
+
+    auth_key = bytes.fromhex(args.auth_key_hex) if args.auth_key_hex else None
 
     logging.basicConfig(
         level=logging.INFO,
@@ -130,6 +214,7 @@ def main() -> None:
             args.device_id, args.vip, args.vip_port,
             args.controller, args.controller_port,
             args.interval_s, args.timeout_s,
+            auth_scheme=args.auth_scheme, auth_key=auth_key,
         )
     except KeyboardInterrupt:
         pass

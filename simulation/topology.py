@@ -161,18 +161,39 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         srv.cmd(cmd)
         logger.info("Started node_agent on %s (malicious=%s)", node_id, attack)
 
+    # Device authentication (Sprint 2). Legit devices get the shared key from
+    # the config's security block; devices named in malicious_iot_devices get a
+    # deliberately wrong key (correct key with every byte flipped), so the
+    # controller denies them at admission and they generate no VIP traffic.
+    sec_cfg = cfg.get('security', {})
+    auth_scheme = sec_cfg.get('auth_scheme', 'present80')
+    good_key_hex = sec_cfg.get('shared_key_hex')
+    malicious_iot = set(sec_cfg.get('malicious_iot_devices', []))
+    wrong_key_hex = (
+        bytes(b ^ 0xFF for b in bytes.fromhex(good_key_hex)).hex()
+        if good_key_hex else None
+    )
+
     for j in range(1, n_iot + 1):
         device_id = f'iot{j}'
         host = net.get(device_id)
+        auth_args = ''
+        if good_key_hex:
+            key_hex = wrong_key_hex if device_id in malicious_iot else good_key_hex
+            auth_args = f'--auth-scheme {auth_scheme} --auth-key-hex {key_hex} '
         cmd = (
             f'python3 -u -m simulation.iot_client --device-id {device_id} '
             f'--vip {ctrl_cfg["vip"]} --vip-port {ctrl_cfg["vip_port"]} '
             f'--controller {CX_IP} --controller-port {ctrl_cfg["api_port"]} '
             f'--interval-s {report_interval} --timeout-s {task_timeout} '
+            f'{auth_args}'
             f'> logs/{device_id}_client.log 2>&1 &'
         )
         host.cmd(cmd)
-    logger.info("Started iot_client on %d IoT host(s)", n_iot)
+    logger.info(
+        "Started iot_client on %d IoT host(s) (%d malicious/wrong-key)",
+        n_iot, len(malicious_iot),
+    )
 
 
 def _stop_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:

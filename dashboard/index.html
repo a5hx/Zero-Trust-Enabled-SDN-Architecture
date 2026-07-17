@@ -168,6 +168,7 @@
   <span class="sub" id="vip">—</span>
   <div class="spacer"></div>
   <span class="pill" id="formula" title="EdgeScore(n) = w1·T(n) + w2·(1−cpu) + w3·(1−lat)">EdgeScore = —</span>
+  <span class="pill" id="throughput" title="Total measured link throughput across all switch ports (OFPPortStats, real counters)">links —</span>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></span>
 </header>
 
@@ -227,7 +228,16 @@ const S = {
   dots: [],           // in-flight animated packets
   spawnAcc: new Map(),// path key -> fractional dot accumulator
   paths: new Map(),   // path key -> {pts, pps, node, client, dir}
+  portLoad: {},       // dpid -> summed total_bps from `port_stats`
 };
+
+function renderThroughput() {
+  const bps = Object.values(S.portLoad).reduce((a, b) => a + b, 0);
+  const el = document.getElementById('throughput');
+  if (!el) return;
+  const mbps = bps / 1e6;
+  el.textContent = mbps >= 0.01 ? `links ${mbps.toFixed(2)} Mb/s` : 'links —';
+}
 
 const VIP_RE = /ipv4_src=([\d.]+).*tcp_src=(\d+)/;
 const SRV_RE = /ipv4_src=(10\.0\.1\.\d+)/;
@@ -726,6 +736,15 @@ function handle(ev) {
                        .sort((a, b) => a.dpid - b.dpid || a.table - b.table || b.priority - a.priority);
       rebuildPaths(S.flows);
       renderRules();
+      return;   // too frequent to log
+
+    case 'port_stats':
+      // Real per-port bps from OFPPortStats counters. Sum per switch, then
+      // across switches, for the topbar throughput readout. Display only --
+      // never feeds routing (deck fidelity). Not a % of capacity: the measured
+      // bps is what the switch actually reports (see controller/port_stats.py).
+      S.portLoad[ev.dpid] = ev.ports.reduce((a, p) => a + p.total_bps, 0);
+      renderThroughput();
       return;   // too frequent to log
 
     case 'quarantine':

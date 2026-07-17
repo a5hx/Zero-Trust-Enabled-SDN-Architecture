@@ -20,7 +20,15 @@ than fall back to an untrusted node.
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from contracts.thresholds import DEFAULT_ANOMALY_GATE, DEFAULT_ISOLATION_THRESHOLD
+from contracts.thresholds import (
+    DEFAULT_ANOMALY_GATE, DEFAULT_ANOMALY_WARN,
+    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_RATE_LIMIT_TRUST,
+)
+
+# Graduated-response bands, worst to best.
+BAND_QUARANTINED = 'quarantined'
+BAND_RATE_LIMITED = 'rate_limited'
+BAND_FULL = 'full'
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,25 @@ def is_quarantined(
 ) -> bool:
     """True if this node must be excluded from routing entirely."""
     return state.trust < isolation_threshold or state.anomaly >= anomaly_gate
+
+
+def trust_band(
+    state: NodeState,
+    isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
+    anomaly_gate: float = DEFAULT_ANOMALY_GATE,
+    rate_limit_trust: float = DEFAULT_RATE_LIMIT_TRUST,
+    anomaly_warn: float = DEFAULT_ANOMALY_WARN,
+) -> str:
+    """Classify a node into the graduated-response band it currently sits in:
+    BAND_QUARANTINED (excluded), BAND_RATE_LIMITED (served but metered), or
+    BAND_FULL (unrestricted). The quarantine test is applied first so the hard
+    safety rails always win over the softer rate-limit band.
+    """
+    if is_quarantined(state, isolation_threshold, anomaly_gate):
+        return BAND_QUARANTINED
+    if state.trust < rate_limit_trust or state.anomaly >= anomaly_warn:
+        return BAND_RATE_LIMITED
+    return BAND_FULL
 
 
 def edge_score(
