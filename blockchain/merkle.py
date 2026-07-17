@@ -14,9 +14,15 @@ def _hash_leaf(update: TrustUpdate) -> str:
 
 
 def _hash_pair(left: str, right: str) -> str:
-    """Hash two sibling nodes — sort before concatenation for determinism."""
-    pair = ''.join(sorted([left, right]))
-    return hashlib.sha256(pair.encode()).hexdigest()
+    """Hash two sibling nodes by positional concatenation (left then right).
+
+    Concatenation order is significant: a Merkle proof records whether each
+    sibling sits to the left or right of the running hash, and verification
+    must replay that exact order. Sorting the pair here would make the tree
+    order-agnostic and silently weaken every proof, so it is deliberately
+    not done. Callers must pass (left, right) in tree position order.
+    """
+    return hashlib.sha256((left + right).encode()).hexdigest()
 
 
 def build_merkle_root(updates: List[TrustUpdate]) -> str:
@@ -96,6 +102,12 @@ def verify_record(update: TrustUpdate, proof: List[Tuple[str, str]], root: str) 
     current = _hash_leaf(update)
 
     for sibling_hash, position in proof:
-        current = _hash_pair(current, sibling_hash)
+        # `position` is where the sibling sits relative to `current`, so it
+        # dictates concatenation order. Ignoring it only appeared to work
+        # while _hash_pair sorted its inputs (see that function's note).
+        if position == 'left':
+            current = _hash_pair(sibling_hash, current)
+        else:
+            current = _hash_pair(current, sibling_hash)
 
     return current == root
