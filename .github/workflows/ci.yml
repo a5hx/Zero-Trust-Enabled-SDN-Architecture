@@ -1,0 +1,39 @@
+name: CI
+
+# Runs the unit test suite on every push and pull request. The suite needs
+# no sudo and no Mininet -- the controller code talks to os-ken's OpenFlow
+# parser directly with a mocked datapath -- so it runs cleanly on a stock
+# GitHub-hosted runner.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # os-ken defaults to a native green-thread hub (not eventlet); pin it so
+      # importing the controller modules never triggers eventlet monkey-patching
+      # under CI. Mirrors the dev box (see SETUP.md section 0).
+      OSKEN_HUB_TYPE: native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # os-ken is apt-only on the dev box (python3-os-ken); on CI it comes
+          # from PyPI. Everything else is in requirements.txt.
+          pip install os-ken
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
