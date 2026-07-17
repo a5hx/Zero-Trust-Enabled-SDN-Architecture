@@ -20,6 +20,11 @@ trust:
   # A node is excluded from routing when EITHER condition holds:
   isolation_threshold: 0.3   # trust score T falls below this, OR
   anomaly_gate: 0.5          # smoothed anomaly Ā reaches this (quarantine gate).
+
+  # Graduated response middle band: a node above the quarantine rails but below
+  # full trust is still served, but rate-limited (see controller.rate_limit).
+  rate_limit_trust: 0.5      # trust below this (but >= isolation) -> rate-limited
+  anomaly_warn: 0.25         # anomaly at/above this (but < gate) -> rate-limited
   #
   # The anomaly gate is NOT in the original formula. It is required because the
   # published formula cannot isolate a node that lies about its load but still
@@ -85,6 +90,15 @@ controller:
   flow_idle_timeout_s: 10
   flow_hard_timeout_s: 30
   monitor_interval_s: 1.0
+
+  # Graduated response: flows to a mid-band (suspect) edge server are metered
+  # to this rate via an OpenFlow meter. The controller probes each switch for
+  # meter support on connect; if unsupported, it degrades to binary
+  # allow/quarantine and logs it (no crash).
+  rate_limit:
+    enabled: true
+    rate_kbps: 2000      # ~2 Mbps ceiling for a suspect node's inbound flows
+    burst_kb: 200
 
   # Live visualisation dashboard, served by this same controller process on
   # api_port above -- open http://localhost:8081/ while the demo runs.

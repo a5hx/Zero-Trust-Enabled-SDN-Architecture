@@ -32,7 +32,8 @@ from os_ken.lib import hub
 from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
 from os_ken.ofproto import inet, ofproto_v1_3
 
-from controller.edge_selector import EdgeWeights
+from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
+from controller.edge_selector import BAND_RATE_LIMITED, EdgeWeights
 from controller.event_bus import EventBus, NullBus
 from controller.trust_state import TrustState
 from security.authenticator import (
@@ -311,12 +312,27 @@ class TrustBalancerApp(app_manager.OSKenApp):
             edge_weights=EdgeWeights.from_config(cfg['edge_score']),
             isolation_threshold=trust_cfg['isolation_threshold'],
             anomaly_gate=trust_cfg['anomaly_gate'],
+            rate_limit_trust=trust_cfg.get('rate_limit_trust', DEFAULT_RATE_LIMIT_TRUST),
+            anomaly_warn=trust_cfg.get('anomaly_warn', DEFAULT_ANOMALY_WARN),
             anomaly_lambda=trust_cfg['lambda_decay'],
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
         )
 
         ctrl_cfg = cfg['controller']
+
+        # Graduated response: flows to a mid-band ("suspect") node are metered
+        # to this rate. Disabled if the config omits the rate_limit block, or if
+        # a switch turns out not to support OpenFlow meters (capability probe in
+        # switch_features_handler -> _meters_ok).
+        rl_cfg = ctrl_cfg.get('rate_limit', {})
+        self.rate_limit_enabled: bool = bool(rl_cfg.get('enabled', False))
+        self.rate_limit_kbps: int = int(rl_cfg.get('rate_kbps', 1000))
+        self.rate_limit_burst_kb: int = int(rl_cfg.get('burst_kb', 100))
+        # dpid -> bool: does this switch support meters (set by the features probe)
+        self._meters_ok: Dict[int, bool] = {}
+        # dpids on which per-node meters have already been installed
+        self._meters_installed: set = set()
         self.vip_ip: str = ctrl_cfg['vip']
         self.vip_port: int = ctrl_cfg['vip_port']
         self.api_host: str = ctrl_cfg['api_host']
@@ -450,6 +466,14 @@ class TrustBalancerApp(app_manager.OSKenApp):
         l2_miss_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self._install_terminal(dp, self.TABLE_L2, self.PRIO_MISS, parser.OFPMatch(), l2_miss_actions)
 
+        # Graduated response capability probe: ask whether this switch supports
+        # OpenFlow meters. The reply (meter_features_handler) records support and
+        # installs the per-node meters; until then VIP flows are unmetered. If
+        # the switch has no meter table, metering silently degrades to the
+        # binary allow/quarantine behaviour -- never a crash.
+        if self.rate_limit_enabled:
+            dp.send_msg(parser.OFPMeterFeaturesStatsRequest(dp))
+
         logger.info("Switch connected: dpid=%016x", dp.id)
         self.bus.publish('switch_up', dpid=dp.id)
 
@@ -467,6 +491,26 @@ class TrustBalancerApp(app_manager.OSKenApp):
         reason as flow stats above (plain object, can't self-register)."""
         if self.port_stats is not None:
             self.port_stats.handle_reply(ev)
+
+    @set_ev_cls(ofp_event.EventOFPMeterFeaturesStatsReply, MAIN_DISPATCHER)
+    def meter_features_handler(self, ev):
+        """Result of the graduated-response capability probe. If the switch has
+        a usable meter table, record support and install the per-node meters;
+        otherwise flag it unsupported so VIP installs never attach a meter (the
+        rate-limit band degrades to full service on that switch, logged once)."""
+        dp = ev.msg.datapath
+        body = ev.msg.body
+        feat = body[0] if isinstance(body, (list, tuple)) else body
+        max_meter = getattr(feat, 'max_meter', 0) or 0
+        supported = max_meter > 0
+        self._meters_ok[dp.id] = supported
+        if supported:
+            self._install_meters(dp)
+        else:
+            logger.warning(
+                "dpid=%016x reports no meter support (max_meter=%s) -- graduated "
+                "response degrades to binary allow/quarantine here", dp.id, max_meter,
+            )
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -578,10 +622,14 @@ class TrustBalancerApp(app_manager.OSKenApp):
             parser.OFPActionSetField(eth_dst=s_mac),
             parser.OFPActionSetField(ipv4_dst=s_ip),
         ]
+        # Graduated response: a node in the rate-limited band gets its inbound
+        # (client -> server) flow metered. The reverse path is left unmetered --
+        # rate-limiting the *load offered to* a suspect node is the point.
+        meter_id = self._meter_for_node(dp, node_id)
         self._install_goto_l2(
             dp, self.TABLE_VIP, self.PRIO_CONNECTION, forward_match, forward_actions,
             cookie=cookie, idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout,
+            hard_timeout=self.flow_hard_timeout, meter_id=meter_id,
         )
 
         # Reverse direction is installed on the SAME datapath (the client's
@@ -613,12 +661,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
             table=self.TABLE_VIP, priority=self.PRIO_CONNECTION,
             idle_timeout=self.flow_idle_timeout,
             hard_timeout=self.flow_hard_timeout,
+            rate_limited=meter_id is not None,
+            rate_limit_kbps=self.rate_limit_kbps if meter_id is not None else None,
             rules=[
                 {
                     'dir': 'forward',
                     'match': f'ipv4_src={client_ip},tcp_src={client_port},'
                              f'ipv4_dst={self.vip_ip},tcp_dst={self.vip_port}',
-                    'actions': f'set eth_dst={s_mac}, set ipv4_dst={s_ip} -> goto table {self.TABLE_L2}',
+                    'actions': (
+                        (f'meter {meter_id} ({self.rate_limit_kbps} kbps), '
+                         if meter_id is not None else '')
+                        + f'set eth_dst={s_mac}, set ipv4_dst={s_ip} -> goto table {self.TABLE_L2}'
+                    ),
                 },
                 {
                     'dir': 'reverse',
@@ -708,14 +762,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
     def _install_goto_l2(
         self, dp, table_id, priority, match, actions, cookie: int = 0,
-        idle_timeout: int = 0, hard_timeout: int = 0,
+        idle_timeout: int = 0, hard_timeout: int = 0, meter_id: Optional[int] = None,
     ) -> None:
         """Apply-actions (if any) + GotoTable(TABLE_L2) -- used for the
         TABLE_VIP default-miss rule (actions=[]) and the per-connection VIP
-        rewrite rules."""
+        rewrite rules. When meter_id is given, a Meter instruction is prepended
+        so matching packets are metered (rate-limited) before being rewritten
+        and forwarded -- the graduated-response middle band."""
         parser = dp.ofproto_parser
         ofproto = dp.ofproto
         inst = []
+        if meter_id is not None:
+            inst.append(parser.OFPInstructionMeter(meter_id, ofproto.OFPIT_METER))
         if actions:
             inst.append(parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions))
         inst.append(parser.OFPInstructionGotoTable(self.TABLE_L2))
@@ -728,6 +786,48 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
     def _cookie_for(self, node_id: str) -> int:
         return self._cookie_base | srv_index(node_id)
+
+    # ------------------------------------------------------------------ #
+    # Graduated response: OpenFlow meters                                 #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _meter_id_for(node_id: str) -> int:
+        """One meter per edge server, id = server index (>=1; 0 is reserved)."""
+        return srv_index(node_id)
+
+    def _install_meters(self, dp) -> None:
+        """Install one drop-band KBPS meter per edge server on this switch, so
+        a rate-limited node's flows can point at its meter. Idempotent per dpid.
+        Only called for switches whose features probe confirmed meter support."""
+        if dp.id in self._meters_installed:
+            return
+        parser = dp.ofproto_parser
+        ofproto = dp.ofproto
+        for node_id in self.state.node_ids:
+            mid = self._meter_id_for(node_id)
+            band = parser.OFPMeterBandDrop(
+                rate=self.rate_limit_kbps, burst_size=self.rate_limit_burst_kb,
+            )
+            dp.send_msg(parser.OFPMeterMod(
+                datapath=dp, command=ofproto.OFPMC_ADD, flags=ofproto.OFPMF_KBPS,
+                meter_id=mid, bands=[band],
+            ))
+        self._meters_installed.add(dp.id)
+        logger.info(
+            "Installed %d per-node meters on dpid=%016x (%d kbps drop band)",
+            len(self.state.node_ids), dp.id, self.rate_limit_kbps,
+        )
+
+    def _meter_for_node(self, dp, node_id: str) -> Optional[int]:
+        """The meter id to attach to a new VIP flow for this node, or None for
+        full-rate service. Returns a meter only when graduated response is
+        enabled, this switch supports meters, and the node is currently in the
+        rate-limited band."""
+        if not self.rate_limit_enabled or not self._meters_ok.get(dp.id):
+            return None
+        if self.state.band(node_id) != BAND_RATE_LIMITED:
+            return None
+        return self._meter_id_for(node_id)
 
     # ------------------------------------------------------------------ #
     # Quarantine enforcement                                              #

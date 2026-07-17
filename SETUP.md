@@ -203,6 +203,23 @@ latency term. Visible indirectly: `/node/status` (above) shows each node's
 `latency_ms` as the value the *controller measured*, which for an overloaded
 liar will be high regardless of what it claims.
 
+**6. Graduated response (OpenFlow meters).** Zero Trust here is not binary:
+a node below full trust but above the quarantine rails is still served, but
+*rate-limited*. On connect the controller probes each switch for meter support
+(`config/params_trust_demo.yaml` -> `controller.rate_limit`); if a switch has no
+meter table it logs a warning and degrades to plain allow/quarantine. When a
+node enters the middle band, its new inbound VIP flows carry a meter:
+```
+# meters installed on the switch (2 Mbps drop band per node):
+mininet> sh ovs-ofctl -O OpenFlow13 dump-meters s0
+# a metered flow shows a "meter:<id>" instruction:
+mininet> dpctl dump-flows -O OpenFlow13 | grep meter
+```
+Terminal A logs the band and the controller marks `rate_limited` in the
+`flow_install` event, so the dashboard's rules panel shows the cap too. Live,
+an iperf through a rate-limited server tops out near the configured ceiling
+rather than the full link rate.
+
 ## 4. Visualizing "rules" and packet flow (Wireshark)
 
 > **If you just want the visual demo, use the dashboard in section 5 instead.**

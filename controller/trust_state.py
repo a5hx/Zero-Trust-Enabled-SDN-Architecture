@@ -26,9 +26,14 @@ from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from blockchain.commit_backend import CommitBackend, LocalLedgerBackend
-from contracts.thresholds import DEFAULT_ANOMALY_GATE, DEFAULT_ISOLATION_THRESHOLD
+from contracts.thresholds import (
+    DEFAULT_ANOMALY_GATE, DEFAULT_ANOMALY_WARN,
+    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_RATE_LIMIT_TRUST,
+)
 from contracts.trust_update import TrustUpdate
-from controller.edge_selector import EdgeWeights, NodeState, select_edge_node
+from controller.edge_selector import (
+    EdgeWeights, NodeState, select_edge_node, trust_band,
+)
 from security.authenticator import Authenticator, NullAuthenticator
 from trust_engine.trust_calculator import TrustCalculator
 
@@ -58,6 +63,8 @@ class TrustState:
         edge_weights: Optional[EdgeWeights] = None,
         isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
         anomaly_gate: float = DEFAULT_ANOMALY_GATE,
+        rate_limit_trust: float = DEFAULT_RATE_LIMIT_TRUST,
+        anomaly_warn: float = DEFAULT_ANOMALY_WARN,
         anomaly_lambda: float = 0.85,
         max_updates_per_block: int = 10,
         block_commit_timeout_s: float = 5.0,
@@ -70,6 +77,8 @@ class TrustState:
         self.edge_weights = edge_weights or EdgeWeights()
         self.isolation_threshold = isolation_threshold
         self.anomaly_gate = anomaly_gate
+        self.rate_limit_trust = rate_limit_trust
+        self.anomaly_warn = anomaly_warn
         self.anomaly_lambda = anomaly_lambda
         self.max_updates_per_block = max_updates_per_block
         self.block_commit_timeout_s = block_commit_timeout_s
@@ -305,6 +314,22 @@ class TrustState:
             t = self.trust_calc.get_score(node_id)
             a = self._anomaly.get(node_id, 0.0)
             return t < self.isolation_threshold or a >= self.anomaly_gate
+
+    def band(self, node_id: str) -> str:
+        """The graduated-response band this node is in right now: 'full',
+        'rate_limited', or 'quarantined' (see controller.edge_selector)."""
+        with self._lock:
+            ns = NodeState(
+                node_id=node_id,
+                trust=self.trust_calc.get_score(node_id),
+                cpu_load=self._claimed_cpu.get(node_id, 0.5),
+                latency_ms=self._latency_ms.get(node_id, 50.0),
+                anomaly=self._anomaly.get(node_id, 0.0),
+            )
+            return trust_band(
+                ns, self.isolation_threshold, self.anomaly_gate,
+                self.rate_limit_trust, self.anomaly_warn,
+            )
 
     def poll_newly_quarantined(self) -> List[str]:
         """Return node_ids that just crossed into quarantine since the last call.
