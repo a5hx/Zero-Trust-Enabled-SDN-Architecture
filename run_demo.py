@@ -109,9 +109,17 @@ def run_standalone(cfg: Dict[str, Any], duration: int, attack_mode: str) -> None
     node_ids = [f'srv{i}' for i in range(1, num_edge + 1)]
     iot_ids = [f'iot{j}' for j in range(1, num_iot + 1)]
 
-    # Malicious node mapping (for attacks)
-    sybil_target = 'srv3'
-    pktdrop_target = 'srv5'
+    # Malicious node mapping (for attacks). Derived from the actual node list
+    # so reduced configs work -- the old hardcoded srv3/srv5 referenced nodes
+    # that do not exist when num_edge_nodes < 5. An optional
+    # simulation.attack_targets: {sybil, packet_drop} block in the config
+    # overrides the defaults; otherwise pick the 3rd and 5th nodes where they
+    # exist, clamped into range and kept distinct.
+    attack_cfg = cfg['simulation'].get('attack_targets', {})
+    sybil_target = attack_cfg.get('sybil', node_ids[min(2, num_edge - 1)])
+    pktdrop_target = attack_cfg.get('packet_drop', node_ids[min(4, num_edge - 1)])
+    if pktdrop_target == sybil_target and num_edge > 1:
+        pktdrop_target = next(n for n in reversed(node_ids) if n != sybil_target)
 
     # ---- Attack setup ----
     attack_queue: queue.Queue = queue.Queue()
@@ -217,6 +225,11 @@ def run_standalone(cfg: Dict[str, Any], duration: int, attack_mode: str) -> None
             latency = random.uniform(5, 80) if not is_attacked else random.uniform(100, 450)
             device = random.choice(iot_ids)
 
+            # Capture the score *before* the update -- get_score after
+            # update_trust returns the new value, so reading it here recorded
+            # score_before == score_after and zeroed every honest delta.
+            score_before = trust_calc.get_score(nid)
+
             # Update trust
             score = balancer.update_trust(
                 node_id=nid,
@@ -228,7 +241,7 @@ def run_standalone(cfg: Dict[str, Any], duration: int, attack_mode: str) -> None
                 anomaly_flag=False,
             )
 
-            metrics.record_trust_update(nid, trust_calc.get_score(nid), score, False)
+            metrics.record_trust_update(nid, score_before, score, False)
 
         # ---- Routing decision (select best node) ----
         cpu_loads = {nid: random.uniform(0.1, 0.7) for nid in node_ids}
