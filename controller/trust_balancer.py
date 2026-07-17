@@ -241,6 +241,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
     TABLE_VIP = 0
     TABLE_L2 = 1
 
+    PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
     PRIO_CONNECTION = 300
     PRIO_NEW_TASK = 250
@@ -683,13 +684,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # ------------------------------------------------------------------ #
     def _on_trust_collapse(self, node_id: str) -> None:
         """Called by FlowMonitor the instant a node crosses into quarantine.
-        Deletes every VIP rewrite rule for this node across every switch, by
-        cookie -- so no further traffic is ever routed to it, and its existing
-        in-flight connections drain out on their own idle/hard timeout."""
+        Two-step containment on every switch: (1) delete every VIP rewrite
+        rule for this node by cookie, so no further traffic is steered to it;
+        (2) install top-priority drop rules on the node's MAC, so traffic
+        addressed to it directly dies in the data plane too."""
         t = self.state.trust_calc.get_score(node_id)
         a = self.state.get_anomaly(node_id)
         logger.warning(
-            "QUARANTINE: %s trust=%.4f anomaly=%.4f -- deleting VIP rules",
+            "QUARANTINE: %s trust=%.4f anomaly=%.4f -- deleting VIP rules, "
+            "installing drop rules",
             node_id, t, a,
         )
         cookie = self._cookie_for(node_id)
@@ -705,6 +708,39 @@ class TrustBalancerApp(app_manager.OSKenApp):
             )
             dp.send_msg(mod)
             dpids.append(dp.id)
+
+        # The deletes stop the controller *steering* traffic at the node, but
+        # any host could still reach it directly. A flow entry with an empty
+        # instruction set is OpenFlow's drop: matching packets die in the
+        # switch, and the entry's packet counter records exactly how many it
+        # killed (`dpctl dump-flows -O OpenFlow13`, the priority=400 entries).
+        # Matching the MAC as source *and* destination covers every ethertype,
+        # including the node's ARP replies -- an IP-only match would not.
+        node_mac = srv_mac(srv_index(node_id))
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            ofproto = dp.ofproto
+            for match in (
+                parser.OFPMatch(eth_src=node_mac),
+                parser.OFPMatch(eth_dst=node_mac),
+            ):
+                dp.send_msg(parser.OFPFlowMod(
+                    datapath=dp, cookie=cookie, table_id=self.TABLE_VIP,
+                    command=ofproto.OFPFC_ADD,
+                    priority=self.PRIO_QUARANTINE_DROP,
+                    match=match, instructions=[],
+                ))
+            self.bus.publish(
+                'flow_install', dpid=dp.id, node=node_id, cookie=cookie,
+                table=self.TABLE_VIP, priority=self.PRIO_QUARANTINE_DROP,
+                idle_timeout=0, hard_timeout=0,
+                rules=[
+                    {'dir': 'quarantine', 'match': f'eth_src={node_mac}',
+                     'actions': 'drop'},
+                    {'dir': 'quarantine', 'match': f'eth_dst={node_mac}',
+                     'actions': 'drop'},
+                ],
+            )
 
         self.bus.publish(
             'quarantine', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
