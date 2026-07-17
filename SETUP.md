@@ -142,6 +142,51 @@ Logs land in `logs/srvN_agent.log` / `logs/iotN_client.log` per host, plus
 whatever Terminal A prints (routing decisions, quarantine events, honesty
 deviations).
 
+### 3b-extra. Verifying the Sprint 2 containment upgrades
+
+The quarantine path now does more than delete `srv3`'s VIP rules. Once you
+see `QUARANTINE: srv3 ... deleting VIP rules, installing drop rules` in
+Terminal A, check each of the following from the Mininet CLI (Terminal B).
+
+**1. Data-plane drop rules with climbing counters.** Quarantine installs
+`priority=400` drop entries (empty action = drop) matching `srv3`'s MAC as
+both source and destination. Dump them and watch `n_packets` rise as traffic
+still aimed at `srv3` dies in the switch:
+```
+mininet> dpctl dump-flows -O OpenFlow13 | grep priority=400
+```
+Re-run it a couple of seconds apart -- `n_packets` on those two entries
+should be increasing. That counter is exactly how many packets the switch
+killed on `srv3`'s behalf.
+
+**2. `srv3` is unreachable directly, healthy servers still respond.** The
+drop rules cover direct traffic, not just VIP-steered traffic:
+```
+mininet> iot1 ping -c 3 srv3      # should be 100% loss
+mininet> iot1 ping -c 3 srv2      # should succeed
+```
+
+**3. Re-dispatch of `srv3`'s clients.** Terminal A logs one line per
+quarantine:
+```
+Re-dispatched N client(s) from quarantined srv3 to srvM (X.XXms after collapse; NFR isolation < 3000ms)
+```
+`X.XX` is the measured collapse-to-re-steer time and must be well under the
+3000 ms isolation NFR (it is microseconds -- it runs in the same poll cycle).
+`srvM` is whichever healthy server won re-selection. Confirm those clients'
+new VIP rewrite rules now carry `srvM`'s cookie low byte, not `srv3`'s:
+```
+mininet> dpctl dump-flows -O OpenFlow13 | grep cookie=0x5a
+```
+
+**4. Routing already prefers genuinely responsive nodes.** The EdgeScore
+latency term now uses the controller-measured `/status` round-trip time, not
+each node's self-reported `latency_ms`. Nothing extra to run here -- it means
+a node that lies "my latency is 1 ms" but answers slowly will not win the
+latency term. Visible indirectly: `/node/status` (above) shows each node's
+`latency_ms` as the value the *controller measured*, which for an overloaded
+liar will be high regardless of what it claims.
+
 ## 4. Visualizing "rules" and packet flow (Wireshark)
 
 > **If you just want the visual demo, use the dashboard in section 5 instead.**
