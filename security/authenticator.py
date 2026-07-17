@@ -91,6 +91,68 @@ class NullAuthenticator:
         return device_id in self._sessions
 
 
+class Present80Authenticator:
+    """Challenge-response device admission using the PRESENT-80 cipher.
+
+    This is the Sprint 2 realisation of the deck's five-step handshake (see the
+    module docstring). The response a device must return is the challenge nonce
+    encrypted under the shared 80-bit key with PRESENT-80:
+
+        RESPONSE = PRESENT80(key, nonce)          (step 3)
+
+    The controller re-derives the same value and compares in constant time. A
+    device that does not hold the key -- the "malicious IoT device" case in the
+    adversary model -- cannot produce it and is denied at admission, before any
+    trust/routing logic ever sees it. Device binding comes from the per-device
+    nonce map: verify_response only accepts the response to the exact nonce this
+    controller issued to that device_id.
+
+    Drop-in for HmacAuthenticator: same Authenticator protocol, same 64-bit
+    nonce and 30 s replay TTL, so nothing in the controller or the
+    /auth endpoints changes when this replaces it. See security.present_cipher
+    for the cipher itself (pinned to published test vectors).
+    """
+
+    def __init__(self, shared_key: bytes) -> None:
+        if len(shared_key) != 10:
+            raise ValueError(
+                f"PRESENT-80 key must be 10 bytes (80 bits), got {len(shared_key)}"
+            )
+        self._key = shared_key
+        self._nonces: Dict[str, tuple[bytes, float]] = {}
+        self._sessions: Dict[str, str] = {}
+
+    def issue_challenge(self, device_id: str) -> bytes:
+        nonce = secrets.token_bytes(8)  # 64-bit, per the SRS
+        self._nonces[device_id] = (nonce, time.time())
+        return nonce
+
+    def expected_response(self, nonce: bytes) -> bytes:
+        """What a legitimate device holding the shared key must send back:
+        the nonce encrypted under PRESENT-80."""
+        from security.present_cipher import encrypt_bytes
+        return encrypt_bytes(self._key, nonce)
+
+    def verify_response(self, device_id: str, response: bytes) -> str:
+        entry = self._nonces.pop(device_id, None)
+        if entry is None:
+            raise AuthError(f"No outstanding challenge for {device_id}")
+
+        nonce, issued_at = entry
+        if time.time() - issued_at > NONCE_TTL_S:
+            raise AuthError(f"Nonce for {device_id} expired (replay protection)")
+
+        if not hmac.compare_digest(self.expected_response(nonce), response):
+            raise AuthError(f"Bad auth response from {device_id}")
+
+        token = secrets.token_hex(16)
+        self._sessions[device_id] = token
+        return token
+
+    def is_authenticated(self, device_id: str) -> bool:
+        return device_id in self._sessions
+
+
 class HmacAuthenticator:
     """Real (if lightweight) challenge–response, used until PRESENT-80 lands.
 
