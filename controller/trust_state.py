@@ -151,6 +151,11 @@ class TrustState:
         weights, identical to the old plain attribute."""
         return self.optimizer.active_weights()
 
+    @property
+    def optimizer_enabled(self) -> bool:
+        """True when a live (non-static) weight optimizer is driving routing."""
+        return self._optimizer_enabled
+
     # ------------------------------------------------------------------ #
     # Telemetry ingestion                                                 #
     # ------------------------------------------------------------------ #

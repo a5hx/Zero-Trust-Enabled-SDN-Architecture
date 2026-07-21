@@ -34,6 +34,7 @@ from os_ken.ofproto import inet, ofproto_v1_3
 
 from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
 from controller.edge_selector import BAND_RATE_LIMITED, EdgeWeights
+from trust_engine.ai_optimizer import build_optimizer
 from controller.event_bus import EventBus, NullBus
 from controller.trust_state import TrustState
 from security.authenticator import (
@@ -304,12 +305,24 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         blockchain_cfg = cfg.get('blockchain', {})
 
+        # AI weight optimizer: off unless config has `optimizer.enabled: true`, in
+        # which case build_optimizer returns a UCB1 bandit; otherwise a
+        # StaticWeightOptimizer wrapping the fixed edge_score weights (unchanged
+        # routing). The fixed weights double as the bandit's fallback.
+        edge_weights = EdgeWeights.from_config(cfg['edge_score'])
+        optimizer_cfg = cfg.get('optimizer')
+        reward_cfg = (optimizer_cfg or {}).get('reward', {})
+
         self.state = TrustState(
             node_ids=node_ids,
             trust_calculator=trust_calc,
             commit_backend=LocalLedgerBackend(),
             authenticator=_build_authenticator(cfg),
-            edge_weights=EdgeWeights.from_config(cfg['edge_score']),
+            edge_weights=edge_weights,
+            optimizer=build_optimizer(optimizer_cfg, fallback=edge_weights),
+            optimizer_window_s=(optimizer_cfg or {}).get('window_s', 10.0),
+            reward_latency_penalty=reward_cfg.get('latency_penalty', 0.2),
+            reward_imbalance_penalty=reward_cfg.get('imbalance_penalty', 0.2),
             isolation_threshold=trust_cfg['isolation_threshold'],
             anomaly_gate=trust_cfg['anomaly_gate'],
             rate_limit_trust=trust_cfg.get('rate_limit_trust', DEFAULT_RATE_LIMIT_TRUST),
@@ -1049,6 +1062,20 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'isolation': self.state.isolation_threshold,
                 'anomaly_gate': self.state.anomaly_gate,
             },
+        }
+
+    def optimizer_status(self) -> Dict[str, Any]:
+        """AI weight-optimizer state for GET /api/optimizer and the dashboard: the
+        live weights, whether the optimizer is on, and (for UCB1) per-arm pull
+        counts and mean rewards. `arms` is empty when the optimizer is off."""
+        opt = self.state.optimizer
+        w = opt.active_weights()
+        return {
+            'enabled': self.state.optimizer_enabled,
+            'active_weights': {
+                'w1_trust': w.w1_trust, 'w2_cpu': w.w2_cpu, 'w3_latency': w.w3_latency,
+            },
+            'arms': opt.stats() if hasattr(opt, 'stats') else [],
         }
 
     def flow_table(self) -> List[Dict[str, Any]]:
