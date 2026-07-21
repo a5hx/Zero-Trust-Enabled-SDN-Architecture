@@ -310,8 +310,19 @@ What to watch, in order:
    separates from its **observed load** bar in the Trust panel. This is the
    novelty claim, made visible: the controller counts load itself, so the lie
    cannot hide.
-4. `srv3` gets quarantined — struck out in red, its link goes dashed, its rules
-   vanish from the rules table, and traffic re-steers to the others.
+4. `srv3` gets quarantined — struck out in red, its link goes dashed, its VIP
+   rules vanish from the rules table, and traffic re-steers to the others. A
+   **priority-400 `drop` rule** appears for it (red row), and the **`dropped N
+   pkts`** pill in the header climbs — the packets of clients still trying to
+   reach the isolated node, killed in the data plane. That is "packet dropping"
+   made visible.
+5. **AI Optimizer panel** (bottom-right): the UCB1 bandit tuning the EdgeScore
+   weights live. The stacked bar is the weights in use *right now*; each arm row
+   shows its pull count (`4×`) and mean reward, with `◀` the active arm and `★`
+   the best-scoring one. Watch the header `EdgeScore = …` formula and the trust
+   panel's scores update the instant the bandit switches arms — the weights are
+   no longer hardcoded. See `docs/AI_OPTIMIZER.md`. Turn it off with
+   `optimizer.enabled: false` in the config.
 
 Note **which gate catches it**: `srv3` is usually isolated by the anomaly gate
 (Ā ≥ 0.5), not the trust threshold — its trust score alone never falls far
@@ -330,6 +341,17 @@ Events are re-emitted with their original timing, so the run paces exactly as it
 did live. Two uses: iterating on the UI without root, and **demo-day insurance** —
 keep a recording of a good run, and you can show the whole story even if the live
 network misbehaves in front of an examiner.
+
+**No recording yet, or want a fresh one without Mininet?** Regenerate it from the
+real components (seed-fixed, no root):
+```bash
+python3 -m dashboard.generate_demo_recording --out data/events.jsonl
+```
+This drives the real `TrustState`/`FlowMonitor`/UCB1 optimizer with scripted
+telemetry (the same standalone abstraction Phase B validated), so the replay
+shows the full arc — routing, the sybil catch, drop rules, **and the AI optimizer
+learning** — with every trust/EdgeScore/reward number computed by production code.
+This is the recommended, safest path for an advisor demo on this box.
 
 ### What the dots do and don't mean
 
