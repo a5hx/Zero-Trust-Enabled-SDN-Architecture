@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zero-Trust SDN - Packet Tracer Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1c2129;
+  --border: #2d333b;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --accent: #58a6ff;
+  --vip: #bc8cff;
+  --packet-tcp: #4a9eff;
+  --packet-arp: #ffa94d;
+  --packet-icmp: #ff6b6b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 300px 1fr 350px;
+  grid-template-rows: 60px 1fr 250px;
+  height: 100vh;
+  gap: 1px;
+  background: var(--border);
+}
+
+/* Header */
+header {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 2px solid var(--accent);
+}
+
+header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.status-bar {
+  display: flex;
+  gap: 20px;
+  font-size: 12px;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--good);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Left Panel - Device List */
+#device-panel {
+  background: var(--panel);
+  padding: 15px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.device-section {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.device-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.device-item {
+  background: var(--panel);
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  border-left: 3px solid var(--good);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 12px;
+}
+
+.device-item:hover {
+  background: var(--panel-2);
+  transform: translateX(4px);
+}
+
+.device-item.quarantined {
+  border-left-color: var(--bad);
+  opacity: 0.6;
+}
+
+.device-item.selected {
+  border-left-width: 5px;
+  background: var(--panel-2);
+}
+
+.device-name {
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.device-info {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+/* Center - Topology Canvas */
+#topology-canvas {
+  background: var(--bg);
+  position: relative;
+  overflow: hidden;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.canvas-controls {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  display: flex;
+  gap: 8px;
+  z-index: 10;
+}
+
+.canvas-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.canvas-btn:hover {
+  background: var(--panel-2);
+  border-color: var(--accent);
+}
+
+.canvas-btn.active {
+  background: var(--accent);
+  color: #000;
+}
+
+/* Right Panel - Packet Inspector */
+#packet-inspector {
+  background: var(--panel);
+  padding: 15px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#packet-inspector h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.packet-list {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.packet-entry {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: monospace;
+  transition: background 0.2s;
+}
+
+.packet-entry:hover {
+  background: var(--panel);
+}
+
+.packet-entry.selected {
+  background: var(--accent);
+  color: #000;
+}
+.packet-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.packet-protocol {
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.packet-protocol.tcp { background: var(--packet-tcp); color: #000; }
+.packet-protocol.arp { background: var(--packet-arp); color: #000; }
+.packet-protocol.icmp { background: var(--packet-icmp); color: #fff; }
+
+.packet-detail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 11px;
+  margin-top: 10px;
+}
+
+.detail-section {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.detail-title {
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 5px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  color: var(--muted);
+}
+
+.detail-row span:first-child {
+  color: var(--text);
+}
+/* Bottom - Wireshark-style Packet Capture */
+#capture-panel {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border-top: 2px solid var(--accent);
+  display: flex;
+  flex-direction: column;
+}
+
+.capture-toolbar {
+  padding: 10px 15px;
+  background: var(--panel-2);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.capture-btn {
+  background: var(--good);
+  color: #000;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.capture-btn:hover {
+  opacity: 0.8;
+}
+
+.capture-btn.stop {
+  background: var(--bad);
+  color: #fff;
+}
+
+.capture-filter {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.capture-stats {
+  display: flex;
+  gap: 15px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.capture-table {
+  flex: 1;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 11px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  z-index: 1;
+}
+
+th {
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
+  color: var(--accent);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+tbody tr {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+tbody tr:hover {
+  background: var(--panel-2);
+}
+
+tbody tr.selected {
+  background: var(--accent);
+  color: #000;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+/* Packet Animation */
+.packet-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 8px currentColor;
+  z-index: 5;
+}
+
+.packet-dot.tcp { background: var(--packet-tcp); }
+.packet-dot.arp { background: var(--packet-arp); }
+.packet-dot.icmp { background: var(--packet-icmp); }
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 100;
+  max-width: 300px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+.tooltip .tooltip-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+
+.tooltip .tooltip-row {
+  margin: 2px 0;
+  font-family: monospace;
+}
+
+/* Loading Indicator */
+.loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 16px;
+  color: var(--muted);
+}
+
+.spinner {
+  border: 3px solid var(--border);
+  border-top: 3px solid var(--accent);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 10px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <header>
+    <h1>🔒 Zero-Trust SDN - Packet Tracer Dashboard</h1>
+    <div class="status-bar">
+      <div class="status-item">
+        <div class="status-dot"></div>
+        <span id="connection-status">Connected</span>
+      </div>
+      <div class="status-item">
+        <span>Packets: <strong id="packet-count">0</strong></span>
+      </div>
+      <div class="status-item">
+        <span>Flow Rate: <strong id="flow-rate">0</strong> pps</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Left Panel: Device List -->
+  <aside id="device-panel">
+    <div class="device-section">
+      <h3>IoT Devices</h3>
+      <div id="iot-devices"></div>
+    </div>
+    <div class="device-section">
+      <h3>Edge Servers</h3>
+      <div id="edge-servers"></div>
+    </div>
+    <div class="device-section">
+      <h3>Switches</h3>
+      <div id="switches"></div>
+    </div>
+  </aside>
+
+  <!-- Center: Topology Canvas -->
+  <main id="topology-canvas">
+    <canvas id="canvas"></canvas>
+    <div class="canvas-controls">
+      <button class="canvas-btn active" id="btn-auto-layout">Auto Layout</button>
+      <button class="canvas-btn" id="btn-zoom-in">Zoom +</button>
+      <button class="canvas-btn" id="btn-zoom-out">Zoom -</button>
+      <button class="canvas-btn" id="btn-reset-view">Reset</button>
+    </div>
+  </main>
+
+  <!-- Right Panel: Packet Inspector -->
+  <aside id="packet-inspector">
+    <h2>📦 Packet Inspector</h2>
+    <div class="packet-list" id="recent-packets"></div>
+    <div class="packet-detail" id="packet-detail">
+      <div style="color: var(--muted); text-align: center; padding: 20px;">
+        Select a packet to view details
+      </div>
+    </div>
+  </aside>
+
+  <!-- Bottom: Wireshark-style Capture Panel -->
+  <section id="capture-panel">
+    <div class="capture-toolbar">
+      <button class="capture-btn" id="btn-capture">▶ Start Capture</button>
+      <input type="text" class="capture-filter" id="filter-input" placeholder="Display filter (e.g., tcp.port == 80, ip.src == 10.0.0.1)">
+      <button class="canvas-btn" id="btn-clear">Clear</button>
+      <button class="canvas-btn" id="btn-export">Export PCAP</button>
+      <div class="capture-stats">
+        <span>Captured: <strong id="capture-count">0</strong></span>
+        <span>Displayed: <strong id="display-count">0</strong></span>
+      </div>
+    </div>
+    <div class="capture-table">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 60px;">No.</th>
+            <th style="width: 100px;">Time</th>
+            <th style="width: 140px;">Source</th>
+            <th style="width: 140px;">Destination</th>
+            <th style="width: 80px;">Protocol</th>
+            <th style="width: 80px;">Length</th>
+            <th>Info</th>
+          </tr>
+        </thead>
+        <tbody id="capture-tbody">
+          <tr><td colspan="7" style="text-align: center; color: var(--muted); padding: 20px;">
+            Click "Start Capture" to begin monitoring packets
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+// ============================================================================
+// Global State
+// ============================================================================
+const state = {
+  devices: [],
+  packets: [],
+  capturedPackets: [],
+  selectedDevice: null,
+  selectedPacket: null,
+  capturing: false,
+  filterExpression: '',
+  topology: { iot: [], edge: [], switches: [], links: [] },
+  zoom: 1.0,
+  pan: { x: 0, y: 0 },
+  animatingPackets: []
+};
+
+const API_BASE = 'http://localhost:8080/api';
+let eventSource = null;
+let canvas, ctx;
+let animationFrame;
+
+// ============================================================================
+// Initialization
+// ============================================================================
+document.addEventListener('DOMContentLoaded', () => {
+  canvas = document.getElementById('canvas');
+  ctx = canvas.getContext('2d');
+  
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  
+  // Event Listeners
+  document.getElementById('btn-capture').addEventListener('click', toggleCapture);
+  document.getElementById('btn-clear').addEventListener('click', clearCapture);
+  document.getElementById('btn-export').addEventListener('click', exportPCAP);
+  document.getElementById('filter-input').addEventListener('input', applyFilter);
+  document.getElementById('btn-zoom-in').addEventListener('click', () => adjustZoom(1.2));
+  document.getElementById('btn-zoom-out').addEventListener('click', () => adjustZoom(0.8));
+  document.getElementById('btn-reset-view').addEventListener('click', resetView);
+  
+  // Start fetching data
+  initializeConnection();
+  startRenderLoop();
+});
+
+function resizeCanvas() {
+  const container = document.getElementById('topology-canvas');
+  canvas.width = container.clientWidth;
+  canvas.height = container.clientHeight;
+  renderTopology();
+}
+
+// ============================================================================
+// API & SSE Connection
+// ============================================================================
+async function initializeConnection() {
+  try {
+    // Fetch initial topology
+    await fetchTopology();
+    
+    // Connect to SSE for real-time events
+    connectSSE();
+    
+    document.getElementById('connection-status').textContent = 'Connected';
+  } catch (err) {
+    console.error('Connection failed:', err);
+    document.getElementById('connection-status').textContent = 'Disconnected';
+    setTimeout(initializeConnection, 5000); // Retry
+  }
+}
+
+async function fetchTopology() {
+  const res = await fetch(`${API_BASE}/topology`);
+  const data = await res.json();
+  state.topology = data;
+  renderDeviceList();
+  renderTopology();
+}
+
+function connectSSE() {
+  if (eventSource) eventSource.close();
+  
+  eventSource = new EventSource(`${API_BASE}/events`);
+  
+  eventSource.addEventListener('packet', (e) => {
+    const packet = JSON.parse(e.data);
+    handlePacketEvent(packet);
+  });
+  
+  eventSource.addEventListener('flow_stats', (e) => {
+    const stats = JSON.parse(e.data);
+    updateFlowRate(stats);
+  });
+  
+  eventSource.addEventListener('trust_update', (e) => {
+    const update = JSON.parse(e.data);
+    updateDeviceTrust(update);
+  });
+  
+  eventSource.onerror = () => {
+    console.error('SSE connection lost');
+    document.getElementById('connection-status').textContent = 'Reconnecting...';
+    setTimeout(() => connectSSE(), 3000);
+  };
+}
+
+// ============================================================================
+// Packet Handling
+// ============================================================================
+function handlePacketEvent(packet) {
+  // Add timestamp if not present
+  if (!packet.timestamp) {
+    packet.timestamp = Date.now();
+  }
+  
+  // Store packet
+  state.packets.unshift(packet);
+  if (state.packets.length > 100) state.packets.pop();
+  
+  if (state.capturing) {
+    state.capturedPackets.push(packet);
+    updateCaptureTable();
+  }
+  
+  // Update counter
+  document.getElementById('packet-count').textContent = state.packets.length;
+  
+  // Render packet inspector
+  renderPacketList();
+  
+  // Animate packet on canvas
+  animatePacket(packet);
+}
+
+function animatePacket(packet) {
+  const src = findDevicePosition(packet.src_ip || packet.eth_src);
+  const dst = findDevicePosition(packet.dst_ip || packet.eth_dst);
+  
+  if (!src || !dst) return;
+  
+  const anim = {
+    packet,
+    startX: src.x,
+    startY: src.y,
+    endX: dst.x,
+    endY: dst.y,
+    progress: 0,
+    speed: 0.02, // Adjustable based on pps
+    protocol: packet.protocol || 'TCP'
+  };
+  
+  state.animatingPackets.push(anim);
+}
+
+function findDevicePosition(identifier) {
+  // Search in topology for device by IP or MAC
+  const allDevices = [
+    ...state.topology.iot,
+    ...state.topology.edge,
+    ...state.topology.switches
+  ];
+  
+  for (const device of allDevices) {
+    if (device.ip === identifier || device.mac === identifier || device.id === identifier) {
+      return device.position || calculateDevicePosition(device);
+    }
+  }
+  return null;
+}
+
+function calculateDevicePosition(device) {
+  // Auto-layout algorithm (simplified - you can enhance this)
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  
+  if (device.type === 'switch') {
+    return { x: centerX, y: centerY };
+  } else if (device.type === 'iot') {
+    const index = state.topology.iot.indexOf(device);
+    const angle = (index / state.topology.iot.length) * Math.PI * 2;
+    return {
+      x: centerX + Math.cos(angle) * 200,
+      y: centerY + Math.sin(angle) * 200
+    };
+  } else if (device.type === 'edge') {
+    const index = state.topology.edge.indexOf(device);
+    const angle = (index / state.topology.edge.length) * Math.PI * 2;
+    return {
+      x: centerX + Math.cos(angle) * 350,
+      y: centerY + Math.sin(angle) * 350
+    };
+  }
+  return { x: centerX, y: centerY };
+}
+
+// ============================================================================
+// Rendering
+// ============================================================================
+function startRenderLoop() {
+  function loop() {
+    renderTopology();
+    updateAnimations();
+    animationFrame = requestAnimationFrame(loop);
+  }
+  loop();
+}
+
+function renderTopology() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  ctx.save();
+  ctx.translate(state.pan.x, state.pan.y);
+  ctx.scale(state.zoom, state.zoom);
+  
+  // Draw links first (behind devices)
+  drawLinks();
+  
+  // Draw devices
+  drawDevices();
+  
+  ctx.restore();
+}
+
+function drawLinks() {
+  ctx.strokeStyle = '#2d333b';
+  ctx.lineWidth = 2;
+  
+  // Draw links between switches and devices
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  
+  [...state.topology.iot, ...state.topology.edge].forEach(device => {
+    const pos = device.position || calculateDevicePosition(device);
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+  });
+}
+
+function drawDevices() {
+  const allDevices = [
+    ...state.topology.switches.map(d => ({...d, type: 'switch'})),
+    ...state.topology.iot.map(d => ({...d, type: 'iot'})),
+    ...state.topology.edge.map(d => ({...d, type: 'edge'}))
+  ];
+  
+  allDevices.forEach(device => {
+    const pos = device.position || calculateDevicePosition(device);
+    
+    // Device icon
+    ctx.fillStyle = getDeviceColor(device);
+    ctx.beginPath();
+    
+    if (device.type === 'switch') {
+      // Draw rectangle for switch
+      ctx.fillRect(pos.x - 30, pos.y - 20, 60, 40);
+    } else {
+      // Draw circle for IoT/Edge
+      ctx.arc(pos.x, pos.y, 20, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // Device label
+    ctx.fillStyle = var(--text);
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(device.id || device.name, pos.x, pos.y + 35);
+    
+    // Trust score (if available)
+    if (device.trust_score !== undefined) {
+      ctx.fillStyle = device.trust_score > 0.7 ? '#3fb950' : (device.trust_score > 0.4 ? '#d29922' : '#f85149');
+      ctx.font = '10px sans-serif';
+      ctx.fillText(`T: ${device.trust_score.toFixed(2)}`, pos.x, pos.y + 48);
+    }
+  });
+}
+
+function getDeviceColor(device) {
+  if (device.quarantined) return '#f85149';
+  if (device.type === 'switch') return '#58a6ff';
+  if (device.type === 'edge') return '#3fb950';
+  if (device.type === 'iot') return '#bc8cff';
+  return '#8b949e';
+}
+
+function updateAnimations() {
+  ctx.save();
+  ctx.translate(state.pan.x, state.pan.y);
+  ctx.scale(state.zoom, state.zoom);
+  
+  state.animatingPackets = state.animatingPackets.filter(anim => {
+    anim.progress += anim.speed;
+    
+    if (anim.progress >= 1) return false; // Remove finished animations
+    
+    // Linear interpolation
+    const x = anim.startX + (anim.endX - anim.startX) * anim.progress;
+    const y = anim.startY + (anim.endY - anim.startY) * anim.progress;
+    
+    // Draw packet dot
+    const color = anim.protocol === 'ARP' ? '#ffa94d' : (anim.protocol === 'ICMP' ? '#ff6b6b' : '#4a9eff');
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    
+    return true;
+  });
+  
+  ctx.restore();
+}
+
+// ============================================================================
+// UI Updates
+// ============================================================================
+function renderDeviceList() {
+  const iotContainer = document.getElementById('iot-devices');
+  const edgeContainer = document.getElementById('edge-servers');
+  const switchContainer = document.getElementById('switches');
+  
+  iotContainer.innerHTML = state.topology.iot.map(device => `
+    <div class="device-item" data-id="${device.id}">
+      <div class="device-name">💡 ${device.id}</div>
+      <div class="device-info">${device.ip}</div>
+    </div>
+  `).join('');
+  
+  edgeContainer.innerHTML = state.topology.edge.map(device => `
+    <div class="device-item ${device.quarantined ? 'quarantined' : ''}" data-id="${device.id}">
+      <div class="device-name">🖥️ ${device.id}</div>
+      <div class="device-info">${device.ip} | T: ${(device.trust_score || 0).toFixed(2)}</div>
+    </div>
+  `).join('');
+  
+  switchContainer.innerHTML = state.topology.switches.map(device => `
+    <div class="device-item" data-id="${device.id}">
+      <div class="device-name">⚡ ${device.id}</div>
+      <div class="device-info">Switch</div>
+    </div>
+  `).join('');
+  
+  // Add click listeners
+  document.querySelectorAll('.device-item').forEach(el => {
+    el.addEventListener('click', () => selectDevice(el.dataset.id));
+  });
+}
+
+function selectDevice(deviceId) {
+  document.querySelectorAll('.device-item').forEach(el => el.classList.remove('selected'));
+  document.querySelector(`[data-id="${deviceId}"]`)?.classList.add('selected');
+  state.selectedDevice = deviceId;
+}
+
+function renderPacketList() {
+  const container = document.getElementById('recent-packets');
+  container.innerHTML = state.packets.slice(0, 20).map((pkt, idx) => `
+    <div class="packet-entry" data-idx="${idx}">
+      <div class="packet-header">
+        <span class="packet-protocol ${pkt.protocol?.toLowerCase() || 'tcp'}">${pkt.protocol || 'TCP'}</span>
+        <span style="font-size: 10px; color: var(--muted);">${new Date(pkt.timestamp).toLocaleTimeString()}</span>
+      </div>
+      <div style="font-size: 10px; margin-top: 2px;">
+        ${pkt.src_ip || pkt.eth_src} → ${pkt.dst_ip || pkt.eth_dst}
+      </div>
+    </div>
+  `).join('');
+  
+  container.querySelectorAll('.packet-entry').forEach(el => {
+    el.addEventListener('click', () => selectPacket(parseInt(el.dataset.idx)));
+  });
+}
+
+function selectPacket(idx) {
+  document.querySelectorAll('.packet-entry').forEach(el => el.classList.remove('selected'));
+  document.querySelector(`[data-idx="${idx}"]`)?.classList.add('selected');
+  
+  const packet = state.packets[idx];
+  state.selectedPacket = packet;
+  
+  const detailContainer = document.getElementById('packet-detail');
+  detailContainer.innerHTML = `
+    <div class="detail-section">
+      <div class="detail-title">Frame ${idx + 1}</div>
+      <div class="detail-row"><span>Time:</span><span>${new Date(packet.timestamp).toISOString()}</span></div>
+      <div class="detail-row"><span>Length:</span><span>${packet.length || 0} bytes</span></div>
+      <div class="detail-row"><span>Protocol:</span><span>${packet.protocol || 'Unknown'}</span></div>
+    </div>
+    
+    <div class="detail-section">
+      <div class="detail-title">Ethernet</div>
+      <div class="detail-row"><span>Source:</span><span>${packet.eth_src || 'N/A'}</span></div>
+      <div class="detail-row"><span>Destination:</span><span>${packet.eth_dst || 'N/A'}</span></div>
+    </div>
+    
+    ${packet.src_ip ? `
+    <div class="detail-section">
+      <div class="detail-title">IPv4</div>
+      <div class="detail-row"><span>Source:</span><span>${packet.src_ip}</span></div>
+      <div class="detail-row"><span>Destination:</span><span>${packet.dst_ip}</span></div>
+    </div>
+    ` : ''}
+    
+    ${packet.tcp_src ? `
+    <div class="detail-section">
+      <div class="detail-title">TCP</div>
+      <div class="detail-row"><span>Source Port:</span><span>${packet.tcp_src}</span></div>
+      <div class="detail-row"><span>Dest Port:</span><span>${packet.tcp_dst}</span></div>
+      <div class="detail-row"><span>Flags:</span><span>${packet.tcp_flags || 'N/A'}</span></div>
+    </div>
+    ` : ''}
+    
+    ${packet.info ? `
+    <div class="detail-section">
+      <div class="detail-title">Info</div>
+      <div class="detail-row"><span colspan="2">${packet.info}</span></div>
+    </div>
+    ` : ''}
+  `;
+}
+
+function updateCaptureTable() {
+  const tbody = document.getElementById('capture-tbody');
+  const filtered = applyDisplayFilter();
+  
+  document.getElementById('capture-count').textContent = state.capturedPackets.length;
+  document.getElementById('display-count').textContent = filtered.length;
+  
+  tbody.innerHTML = filtered.slice(-100).map((pkt, idx) => `
+    <tr onclick="selectCapturedPacket(${idx})">
+      <td>${idx + 1}</td>
+      <td>${((pkt.timestamp - state.capturedPackets[0].timestamp) / 1000).toFixed(3)}</td>
+      <td>${pkt.src_ip || pkt.eth_src}</td>
+      <td>${pkt.dst_ip || pkt.eth_dst}</td>
+      <td><span class="packet-protocol ${pkt.protocol?.toLowerCase() || 'tcp'}">${pkt.protocol || 'TCP'}</span></td>
+      <td>${pkt.length || 0}</td>
+      <td style="text-align: left;">${pkt.info || '-'}</td>
+    </tr>
+  `).join('');
+}
+
+function applyDisplayFilter() {
+  const filter = state.filterExpression.toLowerCase().trim();
+  if (!filter) return state.capturedPackets;
+  
+  return state.capturedPackets.filter(pkt => {
+    // Simple filter parser
+    if (filter.includes('tcp.port')) {
+      const port = parseInt(filter.match(/\d+/)?.[0]);
+      return pkt.tcp_src === port || pkt.tcp_dst === port;
+    }
+    if (filter.includes('ip.src')) {
+      const ip = filter.match(/[\d.]+/)?.[0];
+      return pkt.src_ip === ip;
+    }
+    if (filter.includes('ip.dst')) {
+      const ip = filter.match(/[\d.]+/)?.[0];
+      return pkt.dst_ip === ip;
+    }
+    // Generic search
+    return JSON.stringify(pkt).toLowerCase().includes(filter);
+  });
+}
+
+function updateFlowRate(stats) {
+  document.getElementById('flow-rate').textContent = (stats.pps || 0).toFixed(1);
+}
+
+function updateDeviceTrust(update) {
+  // Find and update device in topology
+  const device = [...state.topology.edge, ...state.topology.iot].find(d => d.id === update.node_id);
+  if (device) {
+    device.trust_score = update.trust_score;
+    device.quarantined = update.quarantined;
+    renderDeviceList();
+  }
+}
+
+// ============================================================================
+// Controls
+// ============================================================================
+function toggleCapture() {
+  const btn = document.getElementById('btn-capture');
+  state.capturing = !state.capturing;
+  
+  if (state.capturing) {
+    btn.textContent = '⏸ Stop Capture';
+    btn.classList.add('stop');
+    state.capturedPackets = [];
+  } else {
+    btn.textContent = '▶ Start Capture';
+    btn.classList.remove('stop');
+  }
+}
+
+function clearCapture() {
+  state.capturedPackets = [];
+  updateCaptureTable();
+}
+
+function exportPCAP() {
+  // Export to JSON (simplified, real PCAP would need proper format)
+  const data = JSON.stringify(state.capturedPackets, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `capture_${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function applyFilter(e) {
+  state.filterExpression = e.target.value;
+  updateCaptureTable();
+}
+
+function adjustZoom(factor) {
+  state.zoom *= factor;
+  state.zoom = Math.max(0.5, Math.min(3, state.zoom));
+}
+
+function resetView() {
+  state.zoom = 1.0;
+  state.pan = { x: 0, y: 0 };
+}
+
+function selectCapturedPacket(idx) {
+  selectPacket(idx);
+}
+
+// Pan & Zoom with mouse
+let isDragging = false;
+let dragStart = { x: 0, y: 0 };
+
+canvas.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  dragStart = { x: e.clientX - state.pan.x, y: e.clientY - state.pan.y };
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (isDragging) {
+    state.pan.x = e.clientX - dragStart.x;
+    state.pan.y = e.clientY - dragStart.y;
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  isDragging = false;
+});
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+  adjustZoom(zoomFactor);
+});
+</script>
+</body>
+</html>

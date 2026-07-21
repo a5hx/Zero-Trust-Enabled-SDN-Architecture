@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zero-Trust SDN - Packet Tracer Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1c2129;
+  --border: #2d333b;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --accent: #58a6ff;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 250px 1fr 300px;
+  grid-template-rows: 60px 1fr 200px;
+  height: 100vh;
+  gap: 2px;
+  background: var(--border);
+}
+
+header {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 2px solid var(--accent);
+}
+
+header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.status-bar {
+  display: flex;
+  gap: 15px;
+  font-size: 12px;
+}
+
+#device-panel, #packet-inspector, #capture-panel {
+  background: var(--panel);
+  padding: 15px;
+  overflow-y: auto;
+}
+
+#topology-canvas {
+  background: var(--bg);
+  position: relative;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.device-item {
+  background: var(--panel-2);
+  padding: 10px;
+  margin: 5px 0;
+  border-radius: 4px;
+  border-left: 3px solid var(--good);
+  font-size: 12px;
+}
+
+.device-name {
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.device-info {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+h2 {
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.packet-entry {
+  background: var(--panel-2);
+  padding: 8px;
+  margin: 5px 0;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: monospace;
+  cursor: pointer;
+}
+
+.packet-entry:hover {
+  background: var(--panel);
+}
+
+table {
+  width: 100%;
+  font-size: 11px;
+  font-family: monospace;
+}
+
+th {
+  text-align: left;
+  padding: 8px;
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+button {
+  background: var(--accent);
+  color: #000;
+  border: none;
+  padding: 8px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+button:hover {
+  opacity: 0.8;
+}
+
+.controls {
+  margin-bottom: 10px;
+  display: flex;
+  gap: 10px;
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🔒 Zero-Trust SDN - Packet Tracer Dashboard</h1>
+    <div class="status-bar">
+      <span id="status">Status: <strong id="connection-status">Loading...</strong></span>
+      <span>Packets: <strong id="packet-count">0</strong></span>
+    </div>
+  </header>
+
+  <aside id="device-panel">
+    <h2>📱 IoT Devices</h2>
+    <div id="iot-list"></div>
+    
+    <h2 style="margin-top: 20px;">🖥️ Edge Servers</h2>
+    <div id="edge-list"></div>
+    
+    <h2 style="margin-top: 20px;">⚡ Switches</h2>
+    <div id="switch-list"></div>
+  </aside>
+
+  <main id="topology-canvas">
+    <canvas id="canvas"></canvas>
+  </main>
+
+  <aside id="packet-inspector">
+    <h2>📦 Recent Packets</h2>
+    <div id="packet-list"></div>
+  </aside>
+
+  <section id="capture-panel">
+    <div class="controls">
+      <button id="btn-start">▶ Start Capture</button>
+      <button id="btn-test">🧪 Send Test Packet</button>
+      <button id="btn-clear">Clear</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>No.</th>
+          <th>Time</th>
+          <th>Source</th>
+          <th>Destination</th>
+          <th>Protocol</th>
+          <th>Info</th>
+        </tr>
+      </thead>
+      <tbody id="packet-table"></tbody>
+    </table>
+  </section>
+</div>
+
+<script>
+const state = {
+  packets: [],
+  capturing: false,
+  packetId: 0,
+  topology: {
+    iot: [],
+    edge: [],
+    switches: []
+  }
+};
+
+let canvas, ctx;
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+  canvas = document.getElementById('canvas');
+  ctx = canvas.getContext('2d');
+  
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  
+  // Event listeners
+  document.getElementById('btn-start').addEventListener('click', toggleCapture);
+  document.getElementById('btn-test').addEventListener('click', sendTestPacket);
+  document.getElementById('btn-clear').addEventListener('click', clearPackets);
+  
+  // Try to connect to API
+  checkConnection();
+  
+  // Render initial state
+  loadMockTopology();
+  renderDevices();
+  renderTopology();
+  
+  // Start animation loop
+  requestAnimationFrame(animate);
+});
+
+function resizeCanvas() {
+  const container = document.getElementById('topology-canvas');
+  canvas.width = container.clientWidth;
+  canvas.height = container.clientHeight;
+  renderTopology();
+}
+
+async function checkConnection() {
+  try {
+    const res = await fetch('http://localhost:8080/api/stats');
+    if (res.ok) {
+      document.getElementById('connection-status').textContent = 'Connected';
+      document.getElementById('connection-status').style.color = '#3fb950';
+      loadTopology();
+      connectSSE(); // Connect to live events
+    }
+  } catch (err) {
+    document.getElementById('connection-status').textContent = 'Standalone Mode';
+    document.getElementById('connection-status').style.color = '#d29922';
+  }
+}
+
+async function loadTopology() {
+  try {
+    const res = await fetch('http://localhost:8080/api/topology');
+    if (res.ok) {
+      state.topology = await res.json();
+      renderDevices();
+      renderTopology();
+    }
+  } catch (err) {
+    console.log('Using mock topology');
+  }
+}
+
+function loadMockTopology() {
+  state.topology = {
+    iot: [
+      { id: 'iot1', ip: '10.0.0.1', mac: '00:00:00:00:00:01' },
+      { id: 'iot2', ip: '10.0.0.2', mac: '00:00:00:00:00:02' },
+      { id: 'iot3', ip: '10.0.0.3', mac: '00:00:00:00:00:03' }
+    ],
+    edge: [
+      { id: 'srv1', ip: '10.0.1.1', mac: '00:00:00:00:01:01', trust_score: 0.95 },
+      { id: 'srv2', ip: '10.0.1.2', mac: '00:00:00:00:01:02', trust_score: 0.85 }
+    ],
+    switches: [
+      { id: 's0', name: 'Core Switch' }
+    ]
+  };
+}
+
+function renderDevices() {
+  // IoT devices
+  const iotHTML = state.topology.iot.map(d => `
+    <div class="device-item">
+      <div class="device-name">💡 ${d.id}</div>
+      <div class="device-info">${d.ip}</div>
+    </div>
+  `).join('');
+  document.getElementById('iot-list').innerHTML = iotHTML;
+  
+  // Edge servers
+  const edgeHTML = state.topology.edge.map(d => `
+    <div class="device-item">
+      <div class="device-name">🖥️ ${d.id}</div>
+      <div class="device-info">${d.ip} | T: ${d.trust_score ? d.trust_score.toFixed(2) : 'N/A'}</div>
+    </div>
+  `).join('');
+  document.getElementById('edge-list').innerHTML = edgeHTML;
+  
+  // Switches
+  const switchHTML = state.topology.switches.map(d => `
+    <div class="device-item" style="border-left-color: #58a6ff;">
+      <div class="device-name">⚡ ${d.id}</div>
+      <div class="device-info">${d.name || 'Switch'}</div>
+    </div>
+  `).join('');
+  document.getElementById('switch-list').innerHTML = switchHTML;
+}
+
+function renderTopology() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  
+  // Draw core switch
+  ctx.fillStyle = '#58a6ff';
+  ctx.fillRect(cx - 40, cy - 25, 80, 50);
+  ctx.fillStyle = '#e6edf3';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('s0', cx, cy + 5);
+  
+  // Draw IoT devices in a circle
+  state.topology.iot.forEach((d, i) => {
+    const angle = (i / state.topology.iot.length) * Math.PI * 2 - Math.PI / 2;
+    const x = cx + Math.cos(angle) * 150;
+    const y = cy + Math.sin(angle) * 150;
+    
+    // Link
+    ctx.strokeStyle = '#2d333b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    
+    // Device
+    ctx.fillStyle = '#bc8cff';
+    ctx.beginPath();
+    ctx.arc(x, y, 15, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Label
+    ctx.fillStyle = '#e6edf3';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(d.id, x, y + 30);
+  });
+  
+  // Draw edge servers
+  state.topology.edge.forEach((d, i) => {
+    const angle = (i / state.topology.edge.length) * Math.PI * 2 + Math.PI / 4;
+    const x = cx + Math.cos(angle) * 250;
+    const y = cy + Math.sin(angle) * 200;
+    
+    // Link
+    ctx.strokeStyle = '#2d333b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    
+    // Device
+    ctx.fillStyle = '#3fb950';
+    ctx.beginPath();
+    ctx.arc(x, y, 18, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Label
+    ctx.fillStyle = '#e6edf3';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(d.id, x, y + 35);
+  });
+}
+
+function animate() {
+  renderTopology();
+  requestAnimationFrame(animate);
+}
+
+function toggleCapture() {
+  state.capturing = !state.capturing;
+  const btn = document.getElementById('btn-start');
+  btn.textContent = state.capturing ? '⏸ Stop Capture' : '▶ Start Capture';
+}
+
+function sendTestPacket() {
+  state.packetId++;
+  const packet = {
+    id: state.packetId,
+    timestamp: Date.now(),
+    src_ip: '10.0.0.1',
+    dst_ip: '10.0.1.1',
+    protocol: 'TCP',
+    tcp_src: 12345,
+    tcp_dst: 80,
+    info: 'Test packet',
+    length: 66
+  };
+  
+  addPacket(packet);
+}
+
+function addPacket(pkt) {
+  state.packets.unshift(pkt);
+  if (state.packets.length > 100) state.packets.pop();
+  
+  document.getElementById('packet-count').textContent = state.packets.length;
+  
+  // Update recent packets list
+  const recent = state.packets.slice(0, 10).map(p => `
+    <div class="packet-entry">
+      <strong>${p.protocol}</strong> ${p.src_ip} → ${p.dst_ip}<br>
+      <span style="color: #8b949e; font-size: 10px;">${new Date(p.timestamp).toLocaleTimeString()}</span>
+    </div>
+  `).join('');
+  document.getElementById('packet-list').innerHTML = recent;
+  
+  // Update capture table
+  if (state.capturing) {
+    updateCaptureTable();
+  }
+}
+
+function updateCaptureTable() {
+  const tbody = document.getElementById('packet-table');
+  const rows = state.packets.slice(0, 20).map((p, i) => `
+    <tr>
+      <td>${p.id}</td>
+      <td>${((p.timestamp - state.packets[state.packets.length - 1].timestamp) / 1000).toFixed(3)}</td>
+      <td>${p.src_ip}</td>
+      <td>${p.dst_ip}</td>
+      <td>${p.protocol}</td>
+      <td>${p.info}</td>
+    </tr>
+  `).join('');
+  tbody.innerHTML = rows || '<tr><td colspan="6" style="text-align: center; color: #8b949e;">No packets captured</td></tr>';
+}
+
+function clearPackets() {
+  state.packets = [];
+  state.packetId = 0;
+  document.getElementById('packet-count').textContent = '0';
+  document.getElementById('packet-list').innerHTML = '';
+  document.getElementById('packet-table').innerHTML = '<tr><td colspan="6" style="text-align: center; color: #8b949e;">No packets captured</td></tr>';
+}
+
+// SSE Connection for real-time packets
+function connectSSE() {
+  const eventSource = new EventSource('http://localhost:8080/api/events');
+  
+  eventSource.addEventListener('packet', (e) => {
+    try {
+      const packet = JSON.parse(e.data);
+      packet.id = ++state.packetId;
+      addPacket(packet);
+      animatePacket(packet);
+    } catch (err) {
+      console.error('Failed to parse packet:', err);
+    }
+  });
+  
+  eventSource.addEventListener('flow_stats', (e) => {
+    const stats = JSON.parse(e.data);
+    // Update flow rate display
+    console.log('Flow stats:', stats);
+  });
+  
+  eventSource.addEventListener('trust_update', (e) => {
+    const update = JSON.parse(e.data);
+    // Update device trust scores
+    console.log('Trust update:', update);
+  });
+  
+  eventSource.onerror = () => {
+    console.error('SSE connection lost');
+    document.getElementById('connection-status').textContent = 'Reconnecting...';
+    document.getElementById('connection-status').style.color = '#d29922';
+    setTimeout(checkConnection, 3000);
+  };
+  
+  console.log('SSE connected to http://localhost:8080/api/events');
+}
+
+// Animate packet flow on canvas
+const animatingPackets = [];
+
+function animatePacket(packet) {
+  // Find source and destination positions
+  const src = findDevicePosition(packet.src_ip || packet.eth_src);
+  const dst = findDevicePosition(packet.dst_ip || packet.eth_dst);
+  
+  if (src && dst) {
+    animatingPackets.push({
+      packet,
+      startX: src.x,
+      startY: src.y,
+      endX: dst.x,
+      endY: dst.y,
+      progress: 0,
+      speed: 0.02
+    });
+  }
+}
+
+function findDevicePosition(identifier) {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  
+  // Check IoT devices
+  for (let i = 0; i < state.topology.iot.length; i++) {
+    const d = state.topology.iot[i];
+    if (d.ip === identifier || d.mac === identifier) {
+      const angle = (i / state.topology.iot.length) * Math.PI * 2 - Math.PI / 2;
+      return {
+        x: cx + Math.cos(angle) * 150,
+        y: cy + Math.sin(angle) * 150
+      };
+    }
+  }
+  
+  // Check edge servers
+  for (let i = 0; i < state.topology.edge.length; i++) {
+    const d = state.topology.edge[i];
+    if (d.ip === identifier || d.mac === identifier) {
+      const angle = (i / state.topology.edge.length) * Math.PI * 2 + Math.PI / 4;
+      return {
+        x: cx + Math.cos(angle) * 250,
+        y: cy + Math.sin(angle) * 200
+      };
+    }
+  }
+  
+  // Default to center (switch)
+  return { x: cx, y: cy };
+}
+
+function animate() {
+  renderTopology();
+  
+  // Animate packets
+  for (let i = animatingPackets.length - 1; i >= 0; i--) {
+    const anim = animatingPackets[i];
+    anim.progress += anim.speed;
+    
+    if (anim.progress >= 1) {
+      animatingPackets.splice(i, 1);
+      continue;
+    }
+    
+    const x = anim.startX + (anim.endX - anim.startX) * anim.progress;
+    const y = anim.startY + (anim.endY - anim.startY) * anim.progress;
+    
+    // Draw packet dot
+    ctx.fillStyle = anim.packet.protocol === 'ARP' ? '#ffa94d' : '#4a9eff';
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  
+  requestAnimationFrame(animate);
+}
+</script>
+</body>
+</html>
