@@ -191,6 +191,17 @@ class FlowMonitor:
 
         self.state.flush_if_stale()
 
+        # Drive the AI weight optimizer (no-op unless it is enabled). On a window
+        # close it returns a summary we log and stream to the dashboard.
+        summary = self.state.optimizer_tick()
+        if summary:
+            logger.info(
+                "OPTIMIZER: window closed reward=%.4f (%d outcomes) weights %s -> %s",
+                summary['reward'], summary['outcomes'],
+                summary['prev_weights'], summary['next_weights'],
+            )
+            self.bus.publish('optimizer', **summary)
+
     def _fetch_status(self, node_id: str) -> StatusProbe:
         host = srv_ip(srv_index(node_id))
         start = time.monotonic()

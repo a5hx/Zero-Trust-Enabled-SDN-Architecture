@@ -147,3 +147,60 @@ def test_choose_edge_node_denies_when_all_quarantined():
     state.set_anomaly_raw('srv1', 1.0)
     state.set_anomaly_raw('srv2', 1.0)
     assert state.choose_edge_node() is None
+
+
+# ------------------------------------------------------------------------- #
+# AI weight optimizer wiring                                                 #
+# ------------------------------------------------------------------------- #
+from controller.edge_selector import EdgeWeights
+from trust_engine.ai_optimizer import UCB1WeightOptimizer
+
+
+def test_optimizer_disabled_by_default_uses_fixed_weights():
+    """No optimizer passed -> StaticWeightOptimizer -> edge_weights is the fixed
+    configured value and optimizer_tick does nothing (byte-for-byte the old
+    behaviour)."""
+    fixed = EdgeWeights(0.6, 0.3, 0.1)
+    state = _make_state(edge_weights=fixed)
+    assert state.edge_weights == fixed
+    assert state.optimizer_tick() is None
+    assert state.edge_weights == fixed  # never changes
+
+
+def test_optimizer_window_rollover_swaps_to_a_valid_arm():
+    arms = [EdgeWeights(0.50, 0.30, 0.20), EdgeWeights(0.70, 0.20, 0.10)]
+    state = _make_state(
+        node_ids=['srv1', 'srv2'],
+        optimizer=UCB1WeightOptimizer(arms),
+        optimizer_window_s=0.05,
+    )
+    # A window that has not elapsed yet does nothing.
+    assert state.optimizer_tick() is None
+
+    # Record some outcomes, wait out the window, then tick.
+    for status in ('success', 'success', 'timeout'):
+        state.record_task_outcome(TrustUpdate(
+            device_id='iot1', edge_node_id='srv1', task_status=status,
+            cpu_usage=0.3, reported_cpu=0.3, latency_ms=20,
+        ))
+    time.sleep(0.06)
+    summary = state.optimizer_tick()
+    assert summary is not None
+    assert summary['outcomes'] == 3
+    # The active weights are now one of the configured arms.
+    assert state.edge_weights in arms
+
+
+def test_optimizer_never_reenables_a_quarantined_node():
+    """Whatever arm the bandit picks, a quarantined node stays excluded -- the
+    optimizer tunes the score weights, never the safety gates."""
+    arms = [EdgeWeights(0.50, 0.30, 0.20), EdgeWeights(0.70, 0.20, 0.10)]
+    state = _make_state(
+        node_ids=['srv1', 'srv2'],
+        optimizer=UCB1WeightOptimizer(arms),
+        optimizer_window_s=0.0,  # every tick closes a window
+    )
+    state.set_anomaly_raw('srv1', 1.0)  # quarantine srv1 by anomaly
+    for _ in range(10):
+        state.optimizer_tick()
+        assert state.choose_edge_node() == 'srv2'  # never srv1, whatever the arm

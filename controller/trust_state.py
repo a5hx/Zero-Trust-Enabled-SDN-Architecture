@@ -35,6 +35,9 @@ from controller.edge_selector import (
     EdgeWeights, NodeState, select_edge_node, trust_band,
 )
 from security.authenticator import Authenticator, NullAuthenticator
+from trust_engine.ai_optimizer import (
+    RewardWindow, StaticWeightOptimizer, WeightOptimizer, compute_reward,
+)
 from trust_engine.trust_calculator import TrustCalculator
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,10 @@ class TrustState:
         commit_backend: Optional[CommitBackend] = None,
         authenticator: Optional[Authenticator] = None,
         edge_weights: Optional[EdgeWeights] = None,
+        optimizer: Optional[WeightOptimizer] = None,
+        optimizer_window_s: float = 10.0,
+        reward_latency_penalty: float = 0.2,
+        reward_imbalance_penalty: float = 0.2,
         isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
         anomaly_gate: float = DEFAULT_ANOMALY_GATE,
         rate_limit_trust: float = DEFAULT_RATE_LIMIT_TRUST,
@@ -74,7 +81,24 @@ class TrustState:
         self.trust_calc = trust_calculator or TrustCalculator()
         self.commit_backend = commit_backend or LocalLedgerBackend()
         self.authenticator = authenticator or NullAuthenticator()
-        self.edge_weights = edge_weights or EdgeWeights()
+
+        # Weight selection goes through a WeightOptimizer so the AI optimizer can
+        # tune w1/w2/w3 live. The default StaticWeightOptimizer is inert -- it
+        # returns the configured fixed weights forever, so routing is byte-for-byte
+        # identical to the pre-optimizer controller. `edge_weights` below is a
+        # read-only property delegating to whatever optimizer is active, so the
+        # REST weight-readout reflects the live arm with no change to that code.
+        self.optimizer: WeightOptimizer = optimizer or StaticWeightOptimizer(
+            edge_weights or EdgeWeights()
+        )
+        # Only a real (non-static) optimizer runs the reward-window machinery.
+        self._optimizer_enabled = not isinstance(self.optimizer, StaticWeightOptimizer)
+        self._optimizer_window_s = optimizer_window_s
+        self._reward_latency_penalty = reward_latency_penalty
+        self._reward_imbalance_penalty = reward_imbalance_penalty
+        self._reward_window = RewardWindow()
+        self._window_started_at = time.time()
+
         self.isolation_threshold = isolation_threshold
         self.anomaly_gate = anomaly_gate
         self.rate_limit_trust = rate_limit_trust
@@ -118,6 +142,14 @@ class TrustState:
         # OpenFlow app) can detect the instant a node crosses into quarantine and
         # react (OFPFC_DELETE) rather than only ever consulting current state.
         self._was_quarantined: Dict[str, bool] = {nid: False for nid in self.node_ids}
+
+    @property
+    def edge_weights(self) -> EdgeWeights:
+        """The weights currently used for routing. Read-only: it delegates to the
+        active optimizer, so callers (routing, the REST weight-readout) always see
+        the live arm. When the optimizer is off this is the fixed configured
+        weights, identical to the old plain attribute."""
+        return self.optimizer.active_weights()
 
     # ------------------------------------------------------------------ #
     # Telemetry ingestion                                                 #
@@ -258,6 +290,10 @@ class TrustState:
             self._recent_statuses.setdefault(
                 upd.edge_node_id, deque(maxlen=10)
             ).append(upd.task_status)
+            if self._optimizer_enabled:
+                # Credit this outcome to the arm currently active, for the reward
+                # of the window it lands in (window-granularity attribution).
+                self._reward_window.record_outcome(upd.task_status)
             if self._oldest_pending_at is None:
                 self._oldest_pending_at = time.time()
             if len(self._pending_updates) >= self.max_updates_per_block:
@@ -360,9 +396,18 @@ class TrustState:
                 )
                 for nid in self.node_ids
             ]
+            weights = self.optimizer.active_weights()
             chosen, score, ranked = select_edge_node(
-                states, self.edge_weights, self.isolation_threshold, self.anomaly_gate
+                states, weights, self.isolation_threshold, self.anomaly_gate
             )
+            if self._optimizer_enabled and chosen is not None:
+                # Feed the chosen node's normalized latency into the reward window,
+                # so the optimizer is rewarded for routing to fast nodes even when
+                # the success rate is saturated (see compute_reward's latency term).
+                max_lat = max((s.latency_ms for s in states), default=1.0)
+                self._reward_window.record_latency(
+                    self._latency_ms.get(chosen, 50.0) / max(max_lat, 1.0)
+                )
             self._routing_decisions.append({
                 'timestamp': time.time(),
                 'chosen': chosen,
@@ -370,6 +415,45 @@ class TrustState:
                 'ranked': ranked,
             })
             return chosen
+
+    def optimizer_tick(self) -> Optional[Dict[str, Any]]:
+        """Drive the AI optimizer one step. Call ~1 Hz (flow_monitor's poll loop).
+
+        When the reward window has elapsed: snapshot per-node load for the
+        imbalance term, score the arm that was active over the window, feed that
+        reward back to the optimizer, and switch to the arm it selects for the next
+        window. Returns a summary on a window close (for logging / SSE), else None.
+
+        A no-op when the optimizer is disabled (StaticWeightOptimizer), so the
+        controller is unaffected unless the optimizer is explicitly turned on.
+        """
+        if not self._optimizer_enabled:
+            return None
+        with self._lock:
+            if time.time() - self._window_started_at < self._optimizer_window_s:
+                return None
+            # observed_load re-enters the lock (RLock) -- safe, and it must be read
+            # here rather than per-decision because load is a point-in-time gauge.
+            self._reward_window.load_samples = [
+                self.observed_load(nid) for nid in self.node_ids
+            ]
+            reward = compute_reward(
+                self._reward_window,
+                self._reward_latency_penalty,
+                self._reward_imbalance_penalty,
+            )
+            prev = self.optimizer.active_weights()
+            self.optimizer.observe(reward)
+            nxt = self.optimizer.select()
+            summary: Dict[str, Any] = {
+                'reward': round(reward, 4),
+                'outcomes': self._reward_window.total_outcomes,
+                'prev_weights': [prev.w1_trust, prev.w2_cpu, prev.w3_latency],
+                'next_weights': [nxt.w1_trust, nxt.w2_cpu, nxt.w3_latency],
+            }
+            self._reward_window = RewardWindow()
+            self._window_started_at = time.time()
+            return summary
 
     @property
     def routing_decisions(self) -> List[Dict[str, Any]]:
