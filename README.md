@@ -57,19 +57,20 @@ and no `ryu-manager` in this project.
 ## Repository structure
 
 ```
-config/            params.yaml (full scale), params_demo.yaml, params_trust_demo.yaml
-contracts/         data contracts (trust_update, block schema, thresholds)
-trust_engine/      trust_calculator.py, ai_optimizer.py (planned)
-controller/        trust_balancer.py, flow_monitor.py, edge_selector.py,
-                   northbound_api.py, event_bus.py, flow_stats.py,
-                   osken_manager.py (hand-written app launcher)
-blockchain/        merkle.py, block.py, ledger.py, commit_backend.py, raft.py (planned)
-security/          authenticator.py (HMAC seam), present_cipher.py (planned)
-simulation/        topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
-evaluation/        metrics.py, plots.py, baseline.py (planned), stats.py (planned)
-dashboard/         index.html, replay.py, generate_demo_recording.py
-tests/             pytest suite (no sudo/Mininet required)
-uml_diagrams/      class, sequence, DFD, ER, activity
+config/                  params.yaml (full scale), params_demo.yaml, params_trust_demo.yaml
+contracts/               data contracts (trust_update, block schema, thresholds)
+trust_engine/            trust_calculator.py, ai_optimizer.py (planned)
+controller/              trust_balancer.py, flow_monitor.py, edge_selector.py,
+                         northbound_api.py, event_bus.py, flow_stats.py,
+                         osken_manager.py (hand-written app launcher)
+blockchain/              merkle.py, block.py, ledger.py, commit_backend.py, raft.py (planned)
+security/                authenticator.py (HMAC seam), present_cipher.py (planned)
+simulation/              topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
+evaluation/              metrics.py, plots.py, baseline.py (planned), stats.py (planned)
+dashboard/               index.html, replay.py, generate_demo_recording.py
+trust_convergence_demo/  standalone demo proving trust base values are computed
+tests/                   pytest suite (no sudo/Mininet required)
+uml_diagrams/            class, sequence, DFD, ER, activity
 ```
 
 ---
@@ -109,6 +110,13 @@ Mininet) — see `SETUP.md` §3b.
 
 ```bash
 python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:8082
+```
+
+**Trust convergence demonstration** (prove base values are computed, not referenced):
+
+```bash
+cd trust_convergence_demo
+python3 simulate_network.py   # See START_HERE.md for details
 ```
 
 ---

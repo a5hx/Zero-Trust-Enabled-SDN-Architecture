@@ -1,0 +1,12 @@
+# Trust Convergence Demo Dependencies
+# Install with: pip3 install -r requirements.txt
+
+# Core dependencies (required)
+# Note: json is built-in to Python
+
+# Optional dependencies (for visualization)
+matplotlib>=3.5.0
+numpy>=1.21.0
+
+# For Mininet topology testing (optional)
+# mininet is typically installed system-wide, not via pip

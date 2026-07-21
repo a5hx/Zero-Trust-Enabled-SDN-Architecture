@@ -37,6 +37,12 @@ def cfg():
 def test_topology_graph_matches_mininet_attachment(cfg):
     """ZeroTrustTopo.build() attaches iot_j to edge switch (j-1) % n_edge. The
     dashboard graph must use the same rule or the drawing is wrong."""
+    # This test needs Mininet's real Topo machinery: ZeroTrustTopo(cfg=...)
+    # relies on mininet.topo.Topo.__init__ calling build(cfg), which populates
+    # iot_to_edge. Where Mininet is not installed (e.g. the CI runner, which
+    # only pip-installs os-ken), topology.py falls back to a stub Topo base and
+    # this construction can't run -- skip rather than fail.
+    pytest.importorskip('mininet')
     from simulation.topology import ZeroTrustTopo
 
     n_edge = cfg['simulation']['num_edge_nodes']
@@ -101,6 +107,18 @@ class _FakeApp:
     def flow_table(self):
         return self._flows
 
+    def optimizer_status(self):
+        return {
+            'enabled': True,
+            'active_weights': {'w1_trust': 0.70, 'w2_cpu': 0.20, 'w3_latency': 0.10},
+            'arms': [
+                {'arm': 0, 'weights': [0.50, 0.30, 0.20], 'count': 3,
+                 'mean_reward': 0.61, 'active': False},
+                {'arm': 1, 'weights': [0.70, 0.20, 0.10], 'count': 5,
+                 'mean_reward': 0.82, 'active': True},
+            ],
+        }
+
 
 @pytest.fixture
 def server():
@@ -128,6 +146,16 @@ def test_api_flows_exposes_live_counters(server):
     assert len(flows) == 1
     assert flows[0]['pps'] == 12.5          # the number the animation is scaled by
     assert flows[0]['node'] == 'srv1'
+
+
+def test_api_optimizer_reports_arm_stats(server):
+    _, _, base = server
+    with urllib.request.urlopen(f'{base}/api/optimizer', timeout=3) as r:
+        body = json.loads(r.read())
+    assert body['enabled'] is True
+    assert body['active_weights']['w1_trust'] == 0.70
+    active = [a for a in body['arms'] if a['active']]
+    assert len(active) == 1 and active[0]['arm'] == 1
 
 
 def test_dashboard_html_is_served(server):
