@@ -815,6 +815,10 @@ function log(ev) {
       desc = `<b>${ev.node}</b> isolated — trust ${ev.trust} (&lt; ${ev.isolation_threshold}) ` +
              `or Ā ${ev.anomaly} (≥ ${ev.anomaly_gate})`;
       break;
+    case 'recovered':
+      desc = `<b>${ev.node}</b> released — trust ${ev.trust} (≥ ${ev.isolation_threshold}) ` +
+             `and Ā ${ev.anomaly} (&lt; ${ev.anomaly_gate})`;
+      break;
     case 'flow_delete': desc = `VIP rules for <b>${ev.node}</b> deleted on ${ev.dpids.length} switch(es)`; break;
     case 'flow_install': desc = `rewrite pair for <b>${ev.node}</b> on s${ev.dpid - 1}`; break;
     case 'anomaly': desc = `<b>${ev.node}</b> — ${ev.reasons.join('; ')}`; break;

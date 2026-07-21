@@ -1,0 +1,1019 @@
+<title>Trust-Weighted Routing Under Live Load — An Empirical Study</title>
+
+<style>
+  :root {
+    color-scheme: light;
+    --ground:   #f4f6f7;
+    --surface:  #fafbfb;
+    --raised:   #eef1f3;
+    --ink:      #131a21;
+    --ink-2:    #4a5763;
+    --ink-3:    #75818c;
+    --rule:     #dde3e7;
+    --rule-2:   #c9d2d8;
+    --accent:   #9e5518;
+    --s1: #2a78d6;
+    --s2: #eb6834;
+    --s3: #1baf7a;
+    --s4: #eda100;
+    --good:     #1b7f4f;
+    --warn:     #9a6100;
+    --crit:     #b3332f;
+
+    --f-display: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --f-body: "Iowan Old Style", "Palatino Linotype", Palatino, Palladio, Georgia, serif;
+    --f-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    --measure: 68ch;
+    --gap: 1.6rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:  #0d1319;
+      --surface: #141c24;
+      --raised:  #1b242d;
+      --ink:     #e6ecf1;
+      --ink-2:   #9daab6;
+      --ink-3:   #6c7a87;
+      --rule:    #243039;
+      --rule-2:  #33424e;
+      --accent:  #d3894c;
+      --s1: #3987e5;
+      --s2: #d95926;
+      --s3: #199e70;
+      --s4: #c98500;
+      --good:   #4bab77;
+      --warn:   #d0a03f;
+      --crit:   #e07b76;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:  #0d1319;
+    --surface: #141c24;
+    --raised:  #1b242d;
+    --ink:     #e6ecf1;
+    --ink-2:   #9daab6;
+    --ink-3:   #6c7a87;
+    --rule:    #243039;
+    --rule-2:  #33424e;
+    --accent:  #d3894c;
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --s4: #c98500;
+    --good:   #4bab77;
+    --warn:   #d0a03f;
+    --crit:   #e07b76;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --ground:  #f4f6f7; --surface: #fafbfb; --raised: #eef1f3;
+    --ink: #131a21; --ink-2: #4a5763; --ink-3: #75818c;
+    --rule: #dde3e7; --rule-2: #c9d2d8; --accent: #9e5518;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+    --good: #1b7f4f; --warn: #9a6100; --crit: #b3332f;
+  }
+
+  * { box-sizing: border-box; }
+
+  .page {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 1.0625rem;
+    line-height: 1.66;
+    padding: clamp(1.25rem, 4vw, 3.5rem) clamp(1rem, 4vw, 2rem) 6rem;
+    min-height: 100vh;
+  }
+  /* Single centred measure. Everything — prose, figures, tables — shares one
+     left AND right edge, so nothing reads as ragged or off-axis. */
+  .wrap { max-width: 45rem; margin: 0 auto; }
+
+  .col, .wide { min-width: 0; }
+
+  /* the numbered rail duplicated the section eyebrows; eyebrows won */
+  .rail { display: none; }
+
+  section > .col + .col,
+  section > .col + .wide,
+  section > .wide + .col,
+  section > .wide + .wide { margin-top: var(--gap); }
+
+  h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; }
+  h1 {
+    font-size: clamp(1.95rem, 4.6vw, 3.05rem);
+    font-weight: 680;
+    letter-spacing: -0.028em;
+    line-height: 1.08;
+  }
+  h2 {
+    font-size: clamp(1.3rem, 2.6vw, 1.65rem);
+    font-weight: 660;
+    letter-spacing: -0.019em;
+    line-height: 1.2;
+  }
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 640;
+    letter-spacing: -0.008em;
+  }
+  p { margin: 0; }
+  .col > * + *, .wide > * + * { margin-top: var(--gap); }
+
+  section { margin-top: clamp(3rem, 6vw, 4.75rem); }
+  section:first-of-type { margin-top: 0; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .lede {
+    font-size: 1.2rem;
+    line-height: 1.55;
+    color: var(--ink-2);
+  }
+  .masthead { border-bottom: 1px solid var(--rule-2); padding-bottom: 2rem; }
+
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1.75rem;
+    font-family: var(--f-mono); font-size: 0.75rem;
+    color: var(--ink-3); letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  a { color: inherit; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+  a:hover { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  code, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  code {
+    font-size: 0.855em;
+    background: var(--raised);
+    padding: 0.1em 0.36em;
+    border-radius: 3px;
+    color: var(--ink-2);
+  }
+
+  /* ---------- key findings ---------- */
+  .findings { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+  .finding { background: var(--surface); padding: 1.15rem 1.3rem; display: grid; grid-template-columns: 2.1rem 1fr; gap: 0.9rem; }
+  .finding .k {
+    font-family: var(--f-mono); font-size: 0.72rem; color: var(--accent);
+    letter-spacing: 0.06em; padding-top: 0.2rem;
+  }
+  .finding h3 { margin: 0 0 0.3rem; }
+  .finding p { font-size: 0.965rem; color: var(--ink-2); line-height: 1.55; }
+
+  /* ---------- figures ---------- */
+  figure {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 1.35rem 1.4rem 1.15rem;
+  }
+  figcaption {
+    margin-top: 1rem; padding-top: 0.85rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.9rem; line-height: 1.5; color: var(--ink-2);
+  }
+  figcaption b {
+    font-family: var(--f-mono); font-size: 0.72rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 400;
+    display: block; margin-bottom: 0.3rem;
+  }
+  .fig-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .fig-title { font-family: var(--f-display); font-weight: 640; font-size: 1rem; letter-spacing: -0.008em; }
+  .fig-unit { font-family: var(--f-mono); font-size: 0.7rem; color: var(--ink-3); letter-spacing: 0.05em; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; margin-bottom: 0.9rem; }
+  .lg { display: inline-flex; align-items: center; gap: 0.42rem; font-family: var(--f-mono); font-size: 0.72rem; color: var(--ink-2); letter-spacing: 0.02em; }
+  .lg i { width: 11px; height: 11px; border-radius: 2px; display: block; flex: none; }
+  .lg.dim { color: var(--ink-3); }
+
+  .plot { position: relative; overflow-x: auto; }
+  .plot svg { display: block; width: 100%; height: auto; }
+  .grid-line { stroke: var(--rule); stroke-width: 1; }
+  .axis-txt { fill: var(--ink-3); font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.03em; }
+  .mark-lbl { fill: var(--ink-2); font-family: var(--f-mono); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .series-lbl { font-family: var(--f-mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; }
+
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--ink); color: var(--ground);
+    font-family: var(--f-mono); font-size: 0.72rem; line-height: 1.5;
+    padding: 0.5rem 0.62rem; border-radius: 4px; white-space: nowrap; z-index: 5;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 4px 14px rgba(0,0,0,.18);
+  }
+  .tip.on { opacity: 1; }
+  .tip u { display: block; text-decoration: none; opacity: .62; margin-bottom: 0.18rem; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.66rem; }
+  .tip s { display: inline-block; text-decoration: none; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+  /* ---------- tables ---------- */
+  .tbl-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-family: var(--f-mono); font-size: 0.79rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { color: var(--ink-3); font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.68rem; border-bottom-color: var(--rule-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  td b { font-weight: 600; }
+  .zero { color: var(--crit); }
+
+  details { border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+  summary {
+    cursor: pointer; padding: 0.7rem 1rem;
+    font-family: var(--f-mono); font-size: 0.72rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  summary:hover { color: var(--accent); }
+  details[open] summary { border-bottom: 1px solid var(--rule); }
+  .details-body { padding: 0.9rem 1rem 1rem; }
+
+  /* ---------- callout ---------- */
+  .note {
+    border-left: 2px solid var(--accent);
+    padding: 0.15rem 0 0.15rem 1.15rem;
+    color: var(--ink-2);
+    font-size: 0.985rem;
+  }
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+  .stat { background: var(--surface); padding: 0.95rem 1.1rem; }
+  .stat .v { font-family: var(--f-mono); font-size: 1.45rem; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; display: block; line-height: 1.15; }
+  .stat .l { font-family: var(--f-mono); font-size: 0.67rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); display: block; margin-top: 0.3rem; }
+
+  ul.tight { margin: 0; padding-left: 1.15rem; }
+  ul.tight li + li { margin-top: 0.5rem; }
+  ul.tight li::marker { color: var(--ink-3); }
+
+  hr.div { border: none; border-top: 1px solid var(--rule); margin: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  /* ---------- print control (screen only) ---------- */
+  .printbar { display: flex; justify-content: flex-end; margin-bottom: 0.9rem; }
+  .btn-print {
+    font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--rule-2);
+    border-radius: 3px; padding: 0.5rem 0.85rem; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 0.5rem;
+  }
+  .btn-print:hover { color: var(--accent); border-color: var(--accent); }
+  .print-only { display: none; }
+
+  /* =======================================================================
+     PRINT — A4/Letter hardcopy.
+     Light tokens are forced regardless of theme, colour is preserved so
+     chart fills survive, and every figure is kept whole on one page.
+     ======================================================================= */
+  @page { size: A4 portrait; margin: 17mm 15mm 15mm; }
+
+  @media print {
+    /* :root:root:root is deliberate. prefers-color-scheme still evaluates while
+       printing, and the dark rule above is :root:not([data-theme="light"]) at
+       specificity (0,2,0) — a plain :root here (0,1,0) loses to it, and the
+       sheet prints near-white text on white paper. Tripling the pseudo-class
+       lifts this to (0,3,0) so the print palette wins outright, whatever the
+       viewer's OS theme or toggle says. */
+    :root:root:root,
+    :root:root[data-theme="dark"],
+    :root:root[data-theme="light"] {
+      color-scheme: light;
+      --ground:  #ffffff;
+      --surface: #ffffff;
+      --raised:  #eef1f3;
+      --ink:     #10151a;
+      --ink-2:   #3d4750;
+      --ink-3:   #6b757e;
+      --rule:    #ccd2d7;
+      --rule-2:  #a8b2b9;
+      --accent:  #8a4a14;
+      --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+      --good: #1b7f4f; --warn: #9a6100; --crit: #b3332f;
+    }
+
+    /* keep chart fills, tile hairlines and severity colour on paper */
+    *, *::before, *::after {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+
+    .page { background: #fff; padding: 0; min-height: 0; font-size: 10.2pt; line-height: 1.5; }
+    .wrap { max-width: none; }
+    .col, .wide { max-width: none; }
+    .col > * + *, .wide > * + * { margin-top: 0.8rem; }
+    section > .col + .col,
+    section > .col + .wide,
+    section > .wide + .col,
+    section > .wide + .wide { margin-top: 0.8rem; }
+
+    /* the rail duplicates the eyebrows, which read better inline on paper */
+    .rail, .printbar, .tip, .btn-print { display: none !important; }
+    .print-only { display: block; }
+
+    h1 { font-size: 22pt; letter-spacing: -0.02em; }
+    h2 { font-size: 13.5pt; }
+    h3 { font-size: 10.6pt; }
+    .lede { font-size: 11.4pt; }
+    .eyebrow, .meta, .fig-unit, .axis-txt { font-size: 7.6pt; }
+    figcaption { font-size: 8.9pt; }
+    table { font-size: 8.1pt; }
+    .stat .v { font-size: 15pt; }
+
+    section { margin-top: 15mm; }
+    .masthead { padding-bottom: 1rem; }
+
+    /* pagination */
+    figure, .findings, .stat-row, .finding, table, .note { break-inside: avoid; }
+    h1, h2, h3 { break-after: avoid; }
+    section { break-inside: auto; }
+    ul.tight li { break-inside: avoid; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+
+    /* start the three long sections on a fresh sheet */
+    #sec-trust, #sec-defence, #sec-method { break-before: page; }
+
+    /* appendix tables must be readable, not folded away */
+    details { border: none; }
+    details > summary { display: none; }
+    .details-body { padding: 0; }
+    .appendix-table { break-inside: avoid; margin-top: 0.9rem; }
+    .appendix-table > h3 {
+      font-family: var(--f-mono); font-size: 7.6pt; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--ink-3); font-weight: 400;
+      margin-bottom: 0.4rem;
+    }
+
+    /* charts: constrain height so a figure never overruns a sheet */
+    .plot { overflow: visible; }
+    .plot svg { max-height: 78mm; }
+
+    figure { padding: 0.7rem 0.8rem 0.6rem; border-color: var(--rule-2); }
+    a { text-decoration: none; color: inherit; }
+  }
+</style>
+
+<div class="page">
+<div class="wrap">
+
+  <!-- ============ MASTHEAD ============ -->
+  <div class="rail">Rec 01</div>
+  <header class="col masthead">
+    <div class="printbar">
+      <button class="btn-print" type="button" id="btn-print" aria-label="Print this study">Print / Save as PDF</button>
+    </div>
+    <p class="eyebrow">Zero-Trust SDN &middot; Controller telemetry study</p>
+    <h1>Trust-weighted routing concentrates load, and cannot tell "untested" from "untrusted"</h1>
+    <p class="lede">An empirical read of 3,742 live routing decisions on a Mininet testbed. The trust term that protects the fleet from a dishonest node also, by the same mechanism, permanently locks out a healthy one.</p>
+    <div class="meta">
+      <span><b>Run</b> 498 s continuous</span>
+      <span><b>Decisions</b> 3,742</span>
+      <span><b>Outcomes</b> 3,741</span>
+      <span><b>Fleet</b> 4 edge nodes &middot; 12 IoT clients</span>
+      <span><b>Controller</b> os-ken / OpenFlow 1.3</span>
+    </div>
+    <p class="meta print-only" style="margin-top:.55rem">
+      <span>Figures generated from the controller event bus (<code>data/events.jsonl</code>). Sections 1&ndash;4, 6 and the appendix describe one continuous 498&nbsp;s run; Section&nbsp;5 references an earlier 24-minute run and is labelled accordingly.</span>
+    </p>
+  </header>
+
+  <!-- ============ SUMMARY ============ -->
+  <section class="col">
+    <p class="eyebrow">Summary of findings</p>
+    <div class="findings">
+      <div class="finding">
+        <span class="k">F1</span>
+        <div>
+          <h3>Half the fleet never received a single task</h3>
+          <p>Two of four nodes served all 3,742 requests. The other two — one healthy, one hostile — were selected zero times. Capacity utilisation was 50% while every served task succeeded.</p>
+        </div>
+      </div>
+      <div class="finding">
+        <span class="k">F2</span>
+        <div>
+          <h3>The trust signal is self-reinforcing</h3>
+          <p>Trust is earned only by completing tasks, and tasks are awarded by a score that weights trust most heavily. A node that starts fractionally behind can never catch up. srv2 — healthy, fast, honest — sat frozen at its initial 0.500 for the entire run.</p>
+        </div>
+      </div>
+      <div class="finding">
+        <span class="k">F3</span>
+        <div>
+          <h3>Scoring and quarantine defend against opposite attacks</h3>
+          <p>The score starves an attacker that looks bad; quarantine catches one that looks good. The sybil node was neutralised by the former and never triggered the latter — it was avoided, not detected.</p>
+        </div>
+      </div>
+      <div class="finding">
+        <span class="k">F4</span>
+        <div>
+          <h3>Three defects were measurement artefacts, not logic errors</h3>
+          <p>Every false quarantine observed during development traced to comparing two quantities sampled on different time bases. The detector was sound; its inputs were not commensurable.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ METHOD ============ -->
+  <section>
+    <div class="rail">§ 1</div>
+    <div class="col">
+      <p class="eyebrow">Section one</p>
+      <h2>Method</h2>
+      <p>The system under study is a trust-aware SDN load balancer. Twelve emulated IoT clients issue tasks to a virtual service address; an OpenFlow controller intercepts each new connection, selects an edge node, and installs a rewrite rule pair steering that flow to the chosen server. Selection maximises a weighted score:</p>
+      <p class="note"><code>EdgeScore(n) = w₁·trust(n) + w₂·(1 − cpu(n)) + w₃·(1 − latency(n))</code>, with weights tuned online by a UCB1 bandit over five fixed arms.</p>
+      <p>Trust is updated only on a completed task outcome. Nodes report CPU load over a health endpoint; the controller measures that endpoint's round-trip itself rather than trusting the node's self-reported figure.</p>
+      <p>One node, <code>srv3</code>, runs a <b>sybil</b> attack: it reports a fixed <code>cpu_load = 0.10</code> while burning four background CPU threads. One client, <code>iot12</code>, holds a deliberately wrong PRESENT-80 key. The remaining three nodes and eleven clients are honest.</p>
+      <p>All figures below are drawn from the controller's own event stream — routing decisions, per-second node snapshots, and switch flow counters — for one continuous 498-second run. Section 5 additionally references an earlier 24-minute run, and is labelled where it does.</p>
+    </div>
+  </section>
+
+  <!-- ============ F1 ============ -->
+  <section>
+    <div class="rail">§ 2</div>
+    <div class="col">
+      <p class="eyebrow">Finding one</p>
+      <h2>Load concentrates on half the fleet</h2>
+      <p>Across every one of 3,742 routing decisions, the controller chose <code>srv4</code> or <code>srv1</code>. It never once chose <code>srv2</code> or <code>srv3</code>.</p>
+    </div>
+
+    <div class="wide">
+      <div class="stat-row">
+        <div class="stat"><span class="v">3,742</span><span class="l">Decisions</span></div>
+        <div class="stat"><span class="v">2 / 4</span><span class="l">Nodes ever selected</span></div>
+        <div class="stat"><span class="v">100%</span><span class="l">Task success rate</span></div>
+        <div class="stat"><span class="v">0</span><span class="l">Denied routings</span></div>
+      </div>
+
+      <figure>
+        <div class="fig-head">
+          <span class="fig-title">Routing share by node</span>
+          <span class="fig-unit">tasks dispatched · 498 s</span>
+        </div>
+        <div class="plot" id="p-share"></div>
+        <figcaption><b>Figure 1</b>The split between srv1 and srv4 is near-even, and the remaining two nodes are not merely under-used but entirely unselected. srv3 is the sybil; srv2 is a fully healthy node.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="fig-head">
+          <span class="fig-title">Where each node placed in the ranking</span>
+          <span class="fig-unit">share of 3,742 decisions by rank position</span>
+        </div>
+        <div class="legend" id="lg-rank"></div>
+        <div class="plot" id="p-rank"></div>
+        <figcaption><b>Figure 2</b>srv2 reached second place in 585 decisions but first place in none — it was competitive throughout and still never won. srv3 placed last in 3,625 of 3,742. Rank is computed from the <code>ranked</code> array the controller records with every decision.</figcaption>
+      </figure>
+    </div>
+
+    <div class="col">
+      <p>The distinction matters. A node that ranks last is being <i>correctly</i> avoided; a node that ranks second and never wins is being <i>starved</i>. Figure 2 separates the two cases, and the next section explains why the second one is stable rather than transient.</p>
+    </div>
+  </section>
+
+  <!-- ============ F2 ============ -->
+  <section id="sec-trust">
+    <div class="rail">§ 3</div>
+    <div class="col">
+      <p class="eyebrow">Finding two &middot; principal result</p>
+      <h2>Trust compounds, so an early gap never closes</h2>
+      <p>Trust changes only when a task completes. A node that is not selected therefore holds its score indefinitely — not decaying, not recovering, simply frozen at whatever it last was.</p>
+    </div>
+
+    <div class="wide">
+      <figure>
+        <div class="fig-head">
+          <span class="fig-title">Trust trajectory</span>
+          <span class="fig-unit">T(n) · 0–1 · sampled per second</span>
+        </div>
+        <div class="legend" id="lg-trust"></div>
+        <div class="plot" id="p-trust"></div>
+        <figcaption><b>Figure 3</b>srv1 and srv4 leave the 0.500 initial score as successful outcomes accumulate, then oscillate in a band of roughly 0.60–0.79 — the trust EMA reacts to every completed task — ending the run at 0.653 and 0.684. srv2 and srv3 trace an identical flat line at exactly 0.500 for all 498 seconds — the two are superimposed. Neither ever completed a task, so neither ever had a trust update to apply.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="fig-head">
+          <span class="fig-title">EdgeScore separation over time</span>
+          <span class="fig-unit">mean score per 100 s window</span>
+        </div>
+        <div class="legend" id="lg-score"></div>
+        <div class="plot" id="p-score"></div>
+        <figcaption><b>Figure 4</b>The mechanism in one picture. At the start of the run srv2 trails the leaders by roughly 0.04 — well within noise. As srv1 and srv4 convert task successes into trust, and trust is the heaviest-weighted term, the gap widens to 0.07–0.09 and stops being recoverable.</figcaption>
+      </figure>
+    </div>
+
+    <div class="col">
+      <p>This is a preferential-attachment loop. Selection grants the only evidence that improves the score that governs selection, so a marginal early lead compounds into a permanent one. Three consequences follow.</p>
+      <ul class="tight">
+        <li><b>Half the fleet's capacity is unavailable</b> while the system reports every node healthy and every task successful. Nothing in the telemetry flags a problem.</li>
+        <li><b>The score cannot represent uncertainty.</b> A node that has never been tried and a node that has been tried and found mediocre both sit at 0.500. The system has no way to express "unknown" as distinct from "average".</li>
+        <li><b>Starvation is indistinguishable from correct avoidance.</b> srv3 is avoided because it is genuinely slow; srv2 is avoided for no reason at all. Both appear in the telemetry as a node with 0.500 trust receiving no traffic.</li>
+      </ul>
+      <p>The standard remedy is to make the selector occasionally sample nodes it does not favour, which is precisely the explore/exploit trade-off the project already solves with UCB1 — but applies to <i>weight tuning</i> rather than to <i>node selection</i>. The bandit optimises how to rank; it does not ensure the ranking is informed.</p>
+    </div>
+  </section>
+
+  <!-- ============ F3 ============ -->
+  <section id="sec-defence">
+    <div class="rail">§ 4</div>
+    <div class="col">
+      <p class="eyebrow">Finding three</p>
+      <h2>Two defences, aimed in opposite directions</h2>
+      <p>The controller can exclude a node two ways: the score can rank it out of contention, or the anomaly gate can quarantine it outright. Which one engages depends on whether the attack makes the node look <i>attractive</i> or <i>unattractive</i>.</p>
+    </div>
+
+    <div class="wide">
+      <figure>
+        <div class="fig-head">
+          <span class="fig-title">Health-probe round-trip, measured by the controller</span>
+          <span class="fig-unit">milliseconds · min / median / p90 / max</span>
+        </div>
+        <div class="plot" id="p-lat"></div>
+        <figcaption><b>Figure 5</b>The sybil's tell. srv3 claims <code>cpu_load = 0.10</code>, but answering a trivial health endpoint takes it a median 133.6 ms against 29.3–29.6 ms for the honest three — a 4.5× separation, rising to 16× at the tail. Because the controller times this round-trip itself, it is the one quantity the node cannot misreport.</figcaption>
+      </figure>
+    </div>
+
+    <div class="col">
+      <p>That measured latency feeds the score's third term, so the sybil sinks to last place and is starved of traffic. The attack fails — but it fails silently. Trust never collapses, because trust requires completed tasks, and it is given none. It ends the run at 0.500, indistinguishable from a node nobody happened to pick.</p>
+      <p>The reverse case is the packet-drop attack, which the same codebase supports. A dropping node accepts connections and never answers, so it reports genuinely idle CPU and answers its health probe fast — the most attractive profile on the board. It attracts maximum traffic, every task times out, and the timeout tell trips the anomaly gate within four outcomes. It cannot starve itself, because looking good is the whole attack.</p>
+      <p class="note">The project's own threshold contract anticipates exactly this asymmetry: the anomaly gate exists because the trust formula "cannot isolate a node that lies about its load but still serves tasks well" — it floors around 0.44, never crossing the 0.3 isolation line. Scoring handles what it can see as bad; quarantine is the backstop for what looks good and behaves badly.</p>
+    </div>
+
+    <div class="wide">
+      <figure>
+        <div class="fig-head">
+          <span class="fig-title">Quarantine and release events</span>
+          <span class="fig-unit">498 s timeline · all four nodes</span>
+        </div>
+        <div class="plot" id="p-qr"></div>
+        <figcaption><b>Figure 6</b>Every quarantine in this run was raised by an unreachable health probe, and every one was released automatically. The opening event at t=0 is all four nodes marked unreachable before their agents finish starting, cleared at t=82 s. The six later events are srv3 alone, each lasting about 1.1 s: under its own CPU load the sybil's health endpoint intermittently stalls past the probe timeout, then answers again.</figcaption>
+      </figure>
+    </div>
+
+    <div class="col">
+      <p>The releases matter as much as the detections. Quarantine installs data-plane drop rules; if those rules also blocked the health probe, the signal that clears a node would be the signal quarantine suppresses, and every quarantine would be permanent. The 1.1-second round trips in Figure 6 are that recovery path working — nine raised, nine cleared, none stuck.</p>
+    </div>
+  </section>
+
+  <!-- ============ F4 ============ -->
+  <section id="sec-method">
+    <div class="rail">§ 5</div>
+    <div class="col">
+      <p class="eyebrow">Finding four &middot; methodology</p>
+      <h2>Sampling two quantities on different time bases</h2>
+      <p>Reaching the run above required fixing three defects that presented as false quarantines. All three shared one root cause, and it is a measurement problem rather than a logic one. <i>This section draws on an earlier 24-minute run.</i></p>
+      <p>The honesty check asks whether a node's claimed CPU matches the load the controller believes it has placed there. Both sides of that comparison were being sampled incorrectly.</p>
+
+      <h3>The controller's side</h3>
+      <p>Observed load was computed as <code>inflight / concurrency</code> read at the polling instant. With concurrency 4 that is a step function over {0, 0.25, 0.50, …}. A node serving two concurrent requests at the sampled millisecond reads 0.50; against a truthful claim of 0.00 that is a 0.50 deviation, past the 0.40 threshold on its own. A healthy node was quarantined for it:</p>
+    </div>
+
+    <div class="wide">
+      <figure>
+        <div class="fig-head"><span class="fig-title">srv2 — quarantined on a single sample</span><span class="fig-unit">earlier run</span></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Claimed</th><th>Observed</th><th>Inflight</th><th>Ā</th><th>State</th></tr></thead>
+            <tbody>
+              <tr><td>18:02:40</td><td>0.00</td><td>0.00</td><td>0</td><td>0.00</td><td>ok</td></tr>
+              <tr><td>18:02:42</td><td>0.00</td><td><b>0.50</b></td><td><b>2</b></td><td>0.85</td><td class="zero">quarantined</td></tr>
+              <tr><td>18:02:43</td><td>0.00</td><td>0.00</td><td>0</td><td>0.98</td><td class="zero">quarantined</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figcaption><b>Table A</b>Two requests in flight for one instant. Little's Law describes a time-average, not an instantaneous queue depth; the fix integrates occupancy over a 3-second window.</figcaption>
+      </figure>
+    </div>
+
+    <div class="col">
+      <h3>The node's side</h3>
+      <p>Averaging only the controller's half made it worse in the opposite direction. The agent samples <code>active / concurrency</code> the moment its handler runs, so its claim is a step function too. Once the controller's side was a 3-second integral and the node's side was still an instant, the check began firing the other way — a node caught mid-burst reporting 0.50 against a windowed 0.03.</p>
+      <p>Replaying all 1,320 recorded honesty trips from that run, averaging the node's claim over the same window avoids exactly three. Those three are the trips that started each cascade. The remaining 1,189 are downstream of the third defect.</p>
+
+      <h3>The lock</h3>
+      <p>The sweep that reclaims abandoned dispatches ran only when a new dispatch was registered. Once every node was quarantined, nothing registered — so the sweep stopped exactly when it was needed. Whatever was in flight at that moment stayed in flight: <code>inflight</code> froze at 3 for eight minutes, holding observed load at 0.75 against a truthful 0.00 and re-tripping the check every second. A transient false positive became terminal.</p>
+      <p class="note">The general lesson is worth stating plainly, because it is not specific to this system: <b>a detector that compares two measurements is only as sound as their commensurability.</b> Each quantity here was individually correct. The defect was that one was an instantaneous sample and the other a time integral, and nothing in the type system or the tests said they could not be subtracted.</p>
+    </div>
+  </section>
+
+  <!-- ============ DISCUSSION ============ -->
+  <section>
+    <div class="rail">§ 6</div>
+    <div class="col">
+      <p class="eyebrow">Section six</p>
+      <h2>Discussion</h2>
+      <p>Read together, the findings describe a system whose defensive properties are stronger than its distributive ones.</p>
+      <p>On defence the result is genuinely good. Across 3,742 decisions the dishonest node received no client traffic at all, and the unauthorised client was refused admission in 77 ms by the PRESENT-80 handshake, before any routing logic saw it. No task was ever served by a node that would have mishandled it. That the sybil was never formally quarantined is, arguably, the stronger claim: the defence held without needing to detect the attack, because the score is computed from a quantity the attacker does not control.</p>
+      <p>On distribution the same mechanism misfires. Trust-weighting assumes the score reflects a node's quality, but for an unsampled node it reflects only its history of not being sampled. The system conflates two very different statements — "this node performs at 0.5" and "this node has never been asked" — and the consequence is that half a healthy fleet sat idle for the entire run while the telemetry reported everything nominal.</p>
+      <p>Whether that trade is acceptable depends on the deployment. Where capacity is plentiful and hostility likely, starving anything suspicious is the right default. Where capacity is scarce, permanently idling 50% of it because of early noise is a serious cost — and one that would not appear in any dashboard the system currently produces.</p>
+    </div>
+  </section>
+
+  <!-- ============ LIMITATIONS ============ -->
+  <section>
+    <div class="rail">§ 7</div>
+    <div class="col">
+      <p class="eyebrow">Section seven</p>
+      <h2>Limitations</h2>
+      <ul class="tight">
+        <li><b>Single run, single topology.</b> Findings come from one 498-second run on one 4-node fleet. The starvation result in particular depends on initial conditions; a different early ordering may distribute differently, and repeated runs would be needed to establish how often srv2's outcome occurs.</li>
+        <li><b>Offered load is low.</b> At roughly 7.5 tasks per second across four nodes, queue occupancy is near zero almost always. The CPU-honesty check depends on occupancy being informative, and at this load it is not — which is why the sybil's queue-based tell never fires and its latency tell does all the work.</li>
+        <li><b>One attack of each kind.</b> The drop-attack analysis in Section 4 is derived from the agent implementation and threshold contract, not observed in this run — no node was configured to drop during it.</li>
+        <li><b>Emulated timing.</b> Mininet link delays are synthetic and the controller shares a host with the data plane, so absolute latencies are not meaningful. Only the separation between nodes is, and that is what the argument rests on.</li>
+        <li><b>The observer is the system.</b> All measurements come from the controller's own event bus. Section 5 is a direct demonstration that this instrument can be wrong; the figures here postdate those fixes but are not independently corroborated.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ APPENDIX ============ -->
+  <section>
+    <div class="rail">App.</div>
+    <div class="col">
+      <p class="eyebrow">Appendix</p>
+      <h2>Data tables</h2>
+      <p>Values underlying Figures 1–6, for readers who prefer the numbers to the marks.</p>
+    </div>
+    <div class="wide">
+      <details>
+        <summary>Per-node summary &middot; 498 s run</summary>
+        <div class="details-body tbl-wrap" id="t-main"></div>
+      </details>
+      <details>
+        <summary>Rank position counts</summary>
+        <div class="details-body tbl-wrap" id="t-rank"></div>
+      </details>
+      <details>
+        <summary>Quarantine / release event log</summary>
+        <div class="details-body tbl-wrap" id="t-qr"></div>
+      </details>
+    </div>
+  </section>
+
+  <div class="rail"></div>
+  <footer class="col" style="margin-top:4rem;padding-top:1.5rem;border-top:1px solid var(--rule-2)">
+    <p class="meta"><span>Source: controller event bus, <code>data/events.jsonl</code></span></p>
+    <p class="meta" style="margin-top:.5rem"><span>Figures generated from 3,742 routing decisions, 3,741 task outcomes, 379 per-second node snapshots.</span></p>
+  </footer>
+
+</div>
+</div>
+
+<script type="application/json" id="figdata">{"meta":{"span_s":498.1,"routes":3742,"reports":3741},"share":{"srv1":1812,"srv2":0,"srv3":0,"srv4":1930},"ranks":{"srv1":[1812,1576,329,25],"srv2":[0,585,3157,0],"srv3":[0,0,36,3625],"srv4":[1930,1581,220,11]},"latency":{"srv1":{"min":28.9,"p50":29.6,"p90":50.0,"max":83.4,"mean":36.4},"srv2":{"min":28.8,"p50":29.4,"p90":50.0,"max":83.6,"mean":33.5},"srv3":{"min":46.1,"p50":133.6,"p90":294.9,"max":480.2,"mean":154.2},"srv4":{"min":28.7,"p50":29.3,"p90":50.0,"max":83.2,"mean":35.6}},"outcomes":{"srv1":{"success":1812},"srv2":{},"srv3":{},"srv4":{"success":1929}},"trust":{"srv1":[[0.0,0.5],[4.0,0.5],[9.8,0.5],[13.9,0.5],[18.0,0.5],[22.0,0.5],[26.1,0.5],[30.2,0.5],[34.2,0.5],[38.3,0.5],[44.4,0.5],[48.5,0.5],[52.5,0.5],[56.6,0.5],[60.6,0.5],[64.7,0.5],[68.8,0.5],[72.8,0.5],[78.9,0.5],[83.3,0.7201],[88.1,0.6706],[92.6,0.7582],[97.7,0.6724],[102.3,0.6499],[107.0,0.7192],[113.5,0.6263],[118.3,0.6795],[123.1,0.7706],[127.9,0.6562],[132.8,0.6036],[137.7,0.6036],[144.5,0.7691],[149.4,0.7067],[154.1,0.6984],[158.8,0.746],[163.6,0.6201],[168.3,0.7128],[172.9,0.7402],[179.7,0.6582],[184.6,0.6281],[189.5,0.6953],[194.0,0.6209],[198.9,0.6843],[203.7,0.7424],[208.3,0.6681],[215.2,0.72],[220.2,0.6545],[224.8,0.6071],[229.6,0.6071],[234.6,0.626],[239.3,0.732],[243.8,0.617],[250.4,0.7683],[255.3,0.7306],[260.1,0.6806],[264.8,0.6503],[269.4,0.7001],[274.0,0.7529],[278.6,0.6341],[285.6,0.6055],[290.5,0.6055],[295.0,0.6267],[299.5,0.6774],[304.6,0.7829],[309.5,0.6675],[316.2,0.6773],[321.1,0.5993],[326.0,0.7935],[330.7,0.7029],[335.7,0.6692],[340.7,0.6853],[345.6,0.7124],[352.5,0.6844],[357.3,0.6351],[361.7,0.6702],[366.4,0.7049],[371.0,0.7079],[375.6,0.7615],[380.2,0.7135],[387.1,0.7299],[392.0,0.7116],[396.7,0.71],[401.1,0.7736],[406.0,0.6674],[410.7,0.7065],[415.5,0.6023],[421.9,0.622],[426.7,0.6467],[431.4,0.5887],[436.2,0.5887],[440.6,0.5887],[445.5,0.6896],[450.0,0.6948],[457.1,0.667],[461.8,0.6827],[466.4,0.7366],[471.3,0.6845],[476.1,0.7318],[480.7,0.6999],[485.5,0.6907],[492.2,0.7095],[496.8,0.6531]],"srv2":[[0.0,0.5],[4.0,0.5],[9.8,0.5],[13.9,0.5],[18.0,0.5],[22.0,0.5],[26.1,0.5],[30.2,0.5],[34.2,0.5],[38.3,0.5],[44.4,0.5],[48.5,0.5],[52.5,0.5],[56.6,0.5],[60.6,0.5],[64.7,0.5],[68.8,0.5],[72.8,0.5],[78.9,0.5],[83.3,0.5],[88.1,0.5],[92.6,0.5],[97.7,0.5],[102.3,0.5],[107.0,0.5],[113.5,0.5],[118.3,0.5],[123.1,0.5],[127.9,0.5],[132.8,0.5],[137.7,0.5],[144.5,0.5],[149.4,0.5],[154.1,0.5],[158.8,0.5],[163.6,0.5],[168.3,0.5],[172.9,0.5],[179.7,0.5],[184.6,0.5],[189.5,0.5],[194.0,0.5],[198.9,0.5],[203.7,0.5],[208.3,0.5],[215.2,0.5],[220.2,0.5],[224.8,0.5],[229.6,0.5],[234.6,0.5],[239.3,0.5],[243.8,0.5],[250.4,0.5],[255.3,0.5],[260.1,0.5],[264.8,0.5],[269.4,0.5],[274.0,0.5],[278.6,0.5],[285.6,0.5],[290.5,0.5],[295.0,0.5],[299.5,0.5],[304.6,0.5],[309.5,0.5],[316.2,0.5],[321.1,0.5],[326.0,0.5],[330.7,0.5],[335.7,0.5],[340.7,0.5],[345.6,0.5],[352.5,0.5],[357.3,0.5],[361.7,0.5],[366.4,0.5],[371.0,0.5],[375.6,0.5],[380.2,0.5],[387.1,0.5],[392.0,0.5],[396.7,0.5],[401.1,0.5],[406.0,0.5],[410.7,0.5],[415.5,0.5],[421.9,0.5],[426.7,0.5],[431.4,0.5],[436.2,0.5],[440.6,0.5],[445.5,0.5],[450.0,0.5],[457.1,0.5],[461.8,0.5],[466.4,0.5],[471.3,0.5],[476.1,0.5],[480.7,0.5],[485.5,0.5],[492.2,0.5],[496.8,0.5]],"srv3":[[0.0,0.5],[4.0,0.5],[9.8,0.5],[13.9,0.5],[18.0,0.5],[22.0,0.5],[26.1,0.5],[30.2,0.5],[34.2,0.5],[38.3,0.5],[44.4,0.5],[48.5,0.5],[52.5,0.5],[56.6,0.5],[60.6,0.5],[64.7,0.5],[68.8,0.5],[72.8,0.5],[78.9,0.5],[83.3,0.5],[88.1,0.5],[92.6,0.5],[97.7,0.5],[102.3,0.5],[107.0,0.5],[113.5,0.5],[118.3,0.5],[123.1,0.5],[127.9,0.5],[132.8,0.5],[137.7,0.5],[144.5,0.5],[149.4,0.5],[154.1,0.5],[158.8,0.5],[163.6,0.5],[168.3,0.5],[172.9,0.5],[179.7,0.5],[184.6,0.5],[189.5,0.5],[194.0,0.5],[198.9,0.5],[203.7,0.5],[208.3,0.5],[215.2,0.5],[220.2,0.5],[224.8,0.5],[229.6,0.5],[234.6,0.5],[239.3,0.5],[243.8,0.5],[250.4,0.5],[255.3,0.5],[260.1,0.5],[264.8,0.5],[269.4,0.5],[274.0,0.5],[278.6,0.5],[285.6,0.5],[290.5,0.5],[295.0,0.5],[299.5,0.5],[304.6,0.5],[309.5,0.5],[316.2,0.5],[321.1,0.5],[326.0,0.5],[330.7,0.5],[335.7,0.5],[340.7,0.5],[345.6,0.5],[352.5,0.5],[357.3,0.5],[361.7,0.5],[366.4,0.5],[371.0,0.5],[375.6,0.5],[380.2,0.5],[387.1,0.5],[392.0,0.5],[396.7,0.5],[401.1,0.5],[406.0,0.5],[410.7,0.5],[415.5,0.5],[421.9,0.5],[426.7,0.5],[431.4,0.5],[436.2,0.5],[440.6,0.5],[445.5,0.5],[450.0,0.5],[457.1,0.5],[461.8,0.5],[466.4,0.5],[471.3,0.5],[476.1,0.5],[480.7,0.5],[485.5,0.5],[492.2,0.5],[496.8,0.5]],"srv4":[[0.0,0.5],[4.0,0.5],[9.8,0.5],[13.9,0.5],[18.0,0.5],[22.0,0.5],[26.1,0.5],[30.2,0.5],[34.2,0.5],[38.3,0.5],[44.4,0.5],[48.5,0.5],[52.5,0.5],[56.6,0.5],[60.6,0.5],[64.7,0.5],[68.8,0.5],[72.8,0.5],[78.9,0.5],[83.3,0.5],[88.1,0.7313],[92.6,0.7403],[97.7,0.7158],[102.3,0.7719],[107.0,0.6372],[113.5,0.6627],[118.3,0.588],[123.1,0.744],[127.9,0.633],[132.8,0.6538],[137.7,0.6475],[144.5,0.6551],[149.4,0.6825],[154.1,0.6659],[158.8,0.6222],[163.6,0.6691],[168.3,0.7163],[172.9,0.6768],[179.7,0.6775],[184.6,0.7359],[189.5,0.7211],[194.0,0.7211],[198.9,0.7417],[203.7,0.7172],[208.3,0.7053],[215.2,0.7224],[220.2,0.6612],[224.8,0.782],[229.6,0.6411],[234.6,0.6039],[239.3,0.6182],[243.8,0.6815],[250.4,0.7421],[255.3,0.6297],[260.1,0.6634],[264.8,0.6744],[269.4,0.6831],[274.0,0.6376],[278.6,0.6607],[285.6,0.768],[290.5,0.629],[295.0,0.7346],[299.5,0.5951],[304.6,0.6771],[309.5,0.6948],[316.2,0.7401],[321.1,0.7663],[326.0,0.6218],[330.7,0.7297],[335.7,0.741],[340.7,0.7043],[345.6,0.6956],[352.5,0.6832],[357.3,0.662],[361.7,0.7288],[366.4,0.6781],[371.0,0.699],[375.6,0.65],[380.2,0.7334],[387.1,0.6975],[392.0,0.6818],[396.7,0.6828],[401.1,0.6369],[406.0,0.7475],[410.7,0.6427],[415.5,0.6759],[421.9,0.6016],[426.7,0.6715],[431.4,0.6082],[436.2,0.6472],[440.6,0.6479],[445.5,0.6845],[450.0,0.7443],[457.1,0.7749],[461.8,0.6476],[466.4,0.6523],[471.3,0.7248],[476.1,0.7033],[480.7,0.6946],[485.5,0.7163],[492.2,0.7419],[496.8,0.6835]]},"score":{"srv1":[[82.0,0.6768],[84.6,0.7134],[88.1,0.8311],[91.4,0.6246],[94.6,0.8587],[97.8,0.8338],[101.2,0.8411],[104.2,0.831],[107.5,0.838],[112.7,0.7724],[116.1,0.4282],[119.3,0.6401],[122.4,0.382],[125.8,0.8308],[129.1,0.8137],[132.2,0.8354],[135.5,0.8381],[138.9,0.845],[144.3,0.8522],[147.6,0.7134],[150.5,0.8006],[153.7,0.8593],[157.0,0.7712],[160.4,0.8325],[163.7,0.8481],[167.1,0.7385],[170.2,0.8216],[173.4,0.7826],[178.7,0.7847],[182.1,0.855],[185.3,0.8248],[188.5,0.8215],[191.8,0.8543],[194.9,0.6224],[198.1,0.8857],[201.6,0.8332],[204.8,0.6459],[208.0,0.8324],[213.3,0.7571],[216.7,0.8698],[219.6,0.8253],[222.9,0.8575],[226.3,0.8513],[229.6,0.8316],[232.6,0.8759],[236.0,0.7537],[239.3,0.8426],[242.4,0.6928],[247.7,0.8462],[251.1,0.815],[254.3,0.8327],[257.4,0.7145],[260.8,0.8941],[264.0,0.8512],[267.3,0.73],[270.5,0.8172],[273.7,0.8233],[277.0,0.7265],[282.1,0.8235],[285.5,0.7043],[288.6,0.7162],[292.0,0.788],[295.3,0.685],[298.6,0.8232],[301.5,0.6058],[305.0,0.8606],[308.3,0.8181],[311.6,0.849],[316.7,0.8444],[320.2,0.8554],[323.3,0.7882],[326.4,0.7369],[329.8,0.8962],[333.0,0.8817],[336.1,0.814],[339.5,0.8704],[342.9,0.812],[346.2,0.6944],[351.1,0.7528],[354.4,0.7738],[357.8,0.7063],[361.0,0.6791],[364.2,0.6121],[367.4,0.8626],[370.8,0.8379],[373.8,0.8468],[376.9,0.8453],[380.4,0.859],[385.7,0.8263],[388.9,0.8108],[392.1,0.8241],[395.6,0.8533],[398.6,0.8253],[401.7,0.7243],[405.2,0.8823],[408.5,0.7586],[411.4,0.7232],[414.7,0.7075],[420.1,0.6733],[423.5,0.8202],[426.4,0.8105],[429.7,0.8015],[433.1,0.7507],[436.2,0.7744],[439.4,0.7539],[442.8,0.708],[446.2,0.8577],[449.1,0.8149],[454.8,0.8597],[458.2,0.8422],[461.4,0.7615],[464.5,0.7018],[467.9,0.8186],[471.2,0.7617],[474.5,0.6173],[477.6,0.8564],[481.1,0.5598],[484.2,0.7131],[489.5,0.7692],[492.9,0.8654],[495.9,0.8413]],"srv2":[[82.0,0.67],[84.6,0.7744],[88.1,0.7741],[91.4,0.558],[94.6,0.7688],[97.8,0.7565],[101.2,0.7576],[104.2,0.7635],[107.5,0.7423],[112.7,0.7165],[116.1,0.3379],[119.3,0.5992],[122.4,0.5549],[125.8,0.7454],[129.1,0.7782],[132.2,0.8006],[135.5,0.8033],[138.9,0.7639],[144.3,0.7859],[147.6,0.7703],[150.5,0.735],[153.7,0.7533],[157.0,0.7145],[160.4,0.7666],[163.7,0.8072],[167.1,0.8054],[170.2,0.7535],[173.4,0.7015],[178.7,0.7308],[182.1,0.747],[185.3,0.7673],[188.5,0.7338],[191.8,0.7766],[194.9,0.6901],[198.1,0.8071],[201.6,0.7321],[204.8,0.5847],[208.0,0.776],[213.3,0.7688],[216.7,0.7676],[219.6,0.756],[222.9,0.7625],[226.3,0.8149],[229.6,0.7958],[232.6,0.8176],[236.0,0.7112],[239.3,0.7636],[242.4,0.6529],[247.7,0.7192],[251.1,0.7261],[254.3,0.7643],[257.4,0.797],[260.8,0.8191],[264.0,0.8002],[267.3,0.6846],[270.5,0.7282],[273.7,0.6877],[277.0,0.6327],[282.1,0.6356],[285.5,0.6325],[288.6,0.6424],[292.0,0.6337],[295.3,0.597],[298.6,0.7215],[301.5,0.6411],[305.0,0.7328],[308.3,0.7343],[311.6,0.7745],[316.7,0.7849],[320.2,0.76],[323.3,0.7298],[326.4,0.7638],[329.8,0.8119],[333.0,0.8094],[336.1,0.7563],[339.5,0.8073],[342.9,0.6967],[346.2,0.7196],[351.1,0.7282],[354.4,0.6383],[357.8,0.6118],[361.0,0.6272],[364.2,0.6606],[367.4,0.7965],[370.8,0.7683],[373.8,0.7622],[376.9,0.7537],[380.4,0.7629],[385.7,0.7118],[388.9,0.7138],[392.1,0.7179],[395.6,0.7219],[398.6,0.771],[401.7,0.7865],[405.2,0.8034],[408.5,0.6413],[411.4,0.6076],[414.7,0.6362],[420.1,0.5935],[423.5,0.7666],[426.4,0.7617],[429.7,0.6879],[433.1,0.7064],[436.2,0.73],[439.4,0.7107],[442.8,0.7558],[446.2,0.7623],[449.1,0.7238],[454.8,0.7832],[458.2,0.7854],[461.4,0.6367],[464.5,0.6229],[467.9,0.6376],[471.2,0.6309],[474.5,0.5366],[477.6,0.7918],[481.1,0.5984],[484.2,0.7152],[489.5,0.689],[492.9,0.7599],[495.9,0.7516]],"srv3":[[83.3,0.314],[86.6,0.314],[89.4,0.3413],[92.7,0.314],[95.8,0.63],[98.9,0.63],[102.3,0.63],[105.2,0.63],[110.4,0.63],[113.7,0.63],[117.7,0.314],[120.9,0.314],[124.0,0.314],[127.0,0.62],[130.4,0.62],[133.4,0.62],[136.6,0.62],[140.1,0.314],[145.3,0.314],[148.1,0.314],[151.3,0.63],[154.6,0.63],[157.7,0.63],[160.6,0.62],[163.9,0.62],[167.2,0.62],[170.3,0.314],[173.4,0.314],[178.7,0.314],[181.9,0.63],[185.0,0.63],[189.1,0.63],[192.4,0.62],[195.7,0.62],[198.5,0.62],[201.7,0.314],[205.0,0.314],[208.0,0.314],[213.3,0.63],[216.5,0.63],[219.4,0.63],[222.8,0.63],[225.9,0.62],[228.9,0.62],[232.1,0.62],[235.4,0.314],[238.5,0.314],[241.5,0.314],[244.6,0.314],[249.9,0.63],[252.9,0.63],[256.1,0.62],[259.3,0.62],[262.3,0.62],[265.5,0.62],[268.8,0.52],[271.8,0.52],[275.0,0.52],[278.1,0.53],[283.3,0.53],[287.5,0.53],[290.8,0.53],[293.6,0.53],[296.8,0.53],[300.2,0.52],[304.4,0.52],[307.4,0.52],[310.7,0.314],[315.9,0.314],[319.0,0.63],[322.1,0.63],[325.2,0.63],[328.5,0.63],[331.5,0.62],[334.6,0.62],[337.9,0.62],[340.8,0.52],[345.3,0.52],[350.6,0.52],[353.4,0.53],[356.7,0.53],[359.8,0.53],[362.8,0.314],[366.1,0.314],[369.2,0.314],[372.2,0.63],[375.6,0.63],[378.5,0.63],[381.7,0.63],[386.8,0.52],[390.1,0.52],[393.2,0.52],[396.4,0.62],[399.4,0.62],[402.7,0.62],[405.6,0.62],[408.8,0.53],[412.2,0.53],[415.1,0.53],[420.1,0.314],[423.5,0.314],[426.4,0.314],[429.7,0.52],[432.8,0.52],[436.0,0.52],[439.2,0.52],[442.0,0.63],[445.3,0.63],[448.7,0.63],[454.0,0.62],[457.2,0.62],[460.4,0.62],[463.3,0.53],[466.7,0.53],[470.0,0.53],[472.8,0.314],[477.2,0.314],[480.3,0.314],[483.6,0.52],[488.8,0.52],[491.8,0.52],[495.2,0.63],[498.1,0.63]],"srv4":[[82.0,0.6768],[84.6,0.7745],[88.1,0.85],[91.4,0.6216],[94.6,0.8618],[97.8,0.8414],[101.2,0.837],[104.2,0.8463],[107.5,0.8041],[112.7,0.8118],[116.1,0.3665],[119.3,0.6276],[122.4,0.6463],[125.8,0.7902],[129.1,0.8802],[132.2,0.8417],[135.5,0.8455],[138.9,0.7221],[144.3,0.8451],[147.6,0.8225],[150.5,0.8243],[153.7,0.8278],[157.0,0.8147],[160.4,0.8083],[163.7,0.865],[167.1,0.8751],[170.2,0.8148],[173.4,0.7636],[178.7,0.8124],[182.1,0.8168],[185.3,0.8565],[188.5,0.8412],[191.8,0.8372],[194.9,0.7755],[198.1,0.8725],[201.6,0.7839],[204.8,0.3722],[208.0,0.8447],[213.3,0.8754],[216.7,0.8542],[219.6,0.8419],[222.9,0.8189],[226.3,0.8886],[229.6,0.8436],[232.6,0.8529],[236.0,0.7947],[239.3,0.8039],[242.4,0.7351],[247.7,0.7718],[251.1,0.6883],[254.3,0.8742],[257.4,0.8639],[260.8,0.7735],[264.0,0.8895],[267.3,0.8175],[270.5,0.8246],[273.7,0.7573],[277.0,0.8093],[282.1,0.7133],[285.5,0.8341],[288.6,0.7662],[292.0,0.7242],[295.3,0.761],[298.6,0.7692],[301.5,0.7798],[305.0,0.8214],[308.3,0.8589],[311.6,0.8223],[316.7,0.8674],[320.2,0.822],[323.3,0.8307],[326.4,0.8276],[329.8,0.8866],[333.0,0.8693],[336.1,0.817],[339.5,0.8908],[342.9,0.7704],[346.2,0.8291],[351.1,0.8195],[354.4,0.7667],[357.8,0.7099],[361.0,0.8126],[364.2,0.7203],[367.4,0.8575],[370.8,0.8409],[373.8,0.8537],[376.9,0.8214],[380.4,0.8638],[385.7,0.7236],[388.9,0.8205],[392.1,0.809],[395.6,0.8137],[398.6,0.8513],[401.7,0.8331],[405.2,0.8647],[408.5,0.7646],[411.4,0.7073],[414.7,0.7961],[420.1,0.6279],[423.5,0.8014],[426.4,0.811],[429.7,0.742],[433.1,0.82],[436.2,0.8022],[439.4,0.7799],[442.8,0.8563],[446.2,0.8455],[449.1,0.8144],[454.8,0.8446],[458.2,0.8607],[461.4,0.74],[464.5,0.7592],[467.9,0.7762],[471.2,0.7643],[474.5,0.3537],[477.6,0.8465],[481.1,0.6683],[484.2,0.8109],[489.5,0.7847],[492.9,0.8542],[495.9,0.8341]]},"qr":[{"t":0.0,"type":"quarantine","node":"srv1","trust":0.5,"anomaly":0.85},{"t":0.0,"type":"quarantine","node":"srv2","trust":0.5,"anomaly":0.85},{"t":0.0,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":0.0,"type":"quarantine","node":"srv4","trust":0.5,"anomaly":0.85},{"t":82.0,"type":"recovered","node":"srv1","trust":0.5,"anomaly":0.15},{"t":82.0,"type":"recovered","node":"srv2","trust":0.5,"anomaly":0.15},{"t":82.0,"type":"recovered","node":"srv4","trust":0.5,"anomaly":0.15},{"t":83.3,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.15},{"t":116.1,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":117.2,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.1275},{"t":186.1,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":187.3,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.1275},{"t":283.4,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":284.5,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.1275},{"t":301.0,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":302.2,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.1275},{"t":343.3,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":344.4,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.1275},{"t":473.9,"type":"quarantine","node":"srv3","trust":0.5,"anomaly":0.85},{"t":475.0,"type":"recovered","node":"srv3","trust":0.5,"anomaly":0.1275}],"anomaly_reasons":{"/status unreachable":307}}</script>
+<script>
+(() => {
+  const D = JSON.parse(document.getElementById('figdata').textContent);
+  const NODES = ['srv1','srv2','srv3','srv4'];
+  const COLOR = { srv1:'var(--s1)', srv2:'var(--s2)', srv3:'var(--s3)', srv4:'var(--s4)' };
+  const NOTE  = { srv1:'', srv2:' (healthy, starved)', srv3:' (sybil)', srv4:'' };
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const el = (n, a = {}) => { const e = document.createElementNS(SVGNS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const fmt = n => n.toLocaleString('en-US');
+
+  // ---- shared tooltip -------------------------------------------------
+  function tipFor(host) {
+    const t = document.createElement('div');
+    t.className = 'tip';
+    host.appendChild(t);
+    return {
+      show(x, y, html) {
+        t.innerHTML = html; t.classList.add('on');
+        const w = t.offsetWidth, hb = host.getBoundingClientRect();
+        let left = x + 14;
+        if (left + w > hb.width) left = x - w - 14;
+        t.style.left = Math.max(0, left) + 'px';
+        t.style.top = Math.max(0, y - t.offsetHeight - 10) + 'px';
+      },
+      hide() { t.classList.remove('on'); }
+    };
+  }
+  const swatch = n => `<s style="background:${COLOR[n]}"></s>`;
+
+  // ---- legend ---------------------------------------------------------
+  function legend(id, items) {
+    const box = document.getElementById(id);
+    if (!box) return;
+    box.innerHTML = items.map(i =>
+      `<span class="lg${i.dim ? ' dim' : ''}"><i style="background:${i.c}"></i>${i.t}</span>`).join('');
+  }
+
+  // ================= FIG 1 — routing share (horizontal bars) ===========
+  (() => {
+    const host = document.getElementById('p-share');
+    const W = 760, rowH = 38, padL = 62, padR = 128, H = NODES.length * rowH + 18;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Routing share by node' });
+    const max = Math.max(...NODES.map(n => D.share[n])) || 1;
+    const scale = v => (v / max) * (W - padL - padR);
+    const tip = tipFor(host);
+
+    NODES.forEach((n, i) => {
+      const y = i * rowH + 12, bh = 17;
+      svg.appendChild(el('text', { x: padL - 12, y: y + bh - 3, 'text-anchor': 'end', class: 'axis-txt' })).textContent = n;
+      // track
+      const tr = el('rect', { x: padL, y, width: W - padL - padR, height: bh, rx: 3, fill: 'var(--raised)' });
+      svg.appendChild(tr);
+      const v = D.share[n];
+      if (v > 0) {
+        const r = el('rect', { x: padL, y, width: Math.max(4, scale(v)), height: bh, rx: 4, fill: COLOR[n] });
+        svg.appendChild(r);
+      }
+      const lbl = el('text', { x: padL + (v > 0 ? scale(v) : 0) + 10, y: y + bh - 3, class: 'mark-lbl' });
+      lbl.textContent = v > 0 ? fmt(v) : '0 — never selected';
+      if (v === 0) lbl.setAttribute('fill', 'var(--crit)');
+      svg.appendChild(lbl);
+      // Role (sybil / healthy) is carried by the caption and the tooltip, not a
+      // second line here: right-anchored into a 62px gutter it overflowed left.
+
+      const hit = el('rect', { x: padL, y: y - 6, width: W - padL - padR, height: bh + 12, fill: 'transparent' });
+      hit.addEventListener('mousemove', ev => {
+        const b = host.getBoundingClientRect();
+        const pct = (v / D.meta.routes * 100).toFixed(1);
+        tip.show(ev.clientX - b.left, ev.clientY - b.top,
+          `<u>${n}${NOTE[n]}</u>${swatch(n)}${fmt(v)} tasks · ${pct}%`);
+      });
+      hit.addEventListener('mouseleave', tip.hide);
+      svg.appendChild(hit);
+    });
+    host.appendChild(svg);
+  })();
+
+  // ================= FIG 2 — rank position (stacked bars) =============
+  (() => {
+    const host = document.getElementById('p-rank');
+    const RANKC = ['var(--ink)', 'var(--ink-2)', 'var(--rule-2)', 'var(--raised)'];
+    const RANKL = ['1st (chosen)', '2nd', '3rd', '4th'];
+    legend('lg-rank', RANKL.map((t, i) => ({ c: RANKC[i], t, dim: i > 1 })));
+
+    const W = 760, rowH = 44, padL = 62, padR = 20, H = NODES.length * rowH + 16;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Rank position distribution' });
+    const total = D.meta.routes;
+    const tip = tipFor(host);
+
+    NODES.forEach((n, i) => {
+      const y = i * rowH + 10, bh = 20;
+      svg.appendChild(el('text', { x: padL - 12, y: y + bh - 5, 'text-anchor': 'end', class: 'axis-txt' })).textContent = n;
+      let x = padL;
+      D.ranks[n].forEach((c, r) => {
+        if (c <= 0) return;
+        const w = (c / total) * (W - padL - padR);
+        const seg = el('rect', { x, y, width: Math.max(1, w - 2), height: bh, rx: 2, fill: RANKC[r] });
+        svg.appendChild(seg);
+        if (w > 54) {
+          const t = el('text', { x: x + 7, y: y + bh - 6, class: 'mark-lbl' });
+          t.setAttribute('fill', r < 2 ? 'var(--surface)' : 'var(--ink-2)');
+          t.textContent = fmt(c);
+          svg.appendChild(t);
+        }
+        const hit = el('rect', { x, y, width: Math.max(1, w), height: bh, fill: 'transparent' });
+        hit.addEventListener('mousemove', ev => {
+          const b = host.getBoundingClientRect();
+          tip.show(ev.clientX - b.left, ev.clientY - b.top,
+            `<u>${n} — ${RANKL[r]}</u>${fmt(c)} decisions · ${(c / total * 100).toFixed(1)}%`);
+        });
+        hit.addEventListener('mouseleave', tip.hide);
+        svg.appendChild(hit);
+        x += w;
+      });
+    });
+    host.appendChild(svg);
+  })();
+
+  // ================= line chart helper =================================
+  function lineChart(hostId, series, opts) {
+    const host = document.getElementById(hostId);
+    const W = 760, H = opts.h || 300, padL = 52, padR = 74, padT = 14, padB = 30;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': opts.label });
+    const xs = v => padL + (v / opts.xmax) * (W - padL - padR);
+    const ys = v => H - padB - ((v - opts.ymin) / (opts.ymax - opts.ymin)) * (H - padT - padB);
+    const tip = tipFor(host);
+
+    // Belt and braces: if a domain ever fails to cover the data, clip rather
+    // than paint over the axes and captions.
+    const cid = 'clip-' + hostId;
+    const defs = el('defs'); const cp = el('clipPath', { id: cid });
+    cp.appendChild(el('rect', { x: padL, y: padT - 2, width: W - padL - padR, height: H - padT - padB + 4 }));
+    defs.appendChild(cp); svg.appendChild(defs);
+    const plotG = el('g', { 'clip-path': `url(#${cid})` });
+
+    (opts.yticks || []).forEach(t => {
+      svg.appendChild(el('line', { x1: padL, x2: W - padR, y1: ys(t), y2: ys(t), class: 'grid-line' }));
+      svg.appendChild(el('text', { x: padL - 10, y: ys(t) + 3.5, 'text-anchor': 'end', class: 'axis-txt' }))
+        .textContent = t.toFixed(opts.ydp ?? 2);
+    });
+    (opts.xticks || []).forEach(t => {
+      svg.appendChild(el('text', { x: xs(t), y: H - 10, 'text-anchor': 'middle', class: 'axis-txt' }))
+        .textContent = t + 's';
+    });
+
+    series.forEach(s => {
+      const d = s.pts.map((p, i) => `${i ? 'L' : 'M'}${xs(p[0]).toFixed(1)},${ys(p[1]).toFixed(1)}`).join(' ');
+      plotG.appendChild(el('path', {
+        d, fill: 'none', stroke: s.color, 'stroke-width': 2,
+        'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+        ...(s.dash ? { 'stroke-dasharray': s.dash } : {})
+      }));
+    });
+    svg.appendChild(plotG);
+    series.forEach(s => {
+      const last = s.pts[s.pts.length - 1];
+      const lab = el('text', { x: xs(last[0]) + 9, y: ys(last[1]) + 3.5, class: 'series-lbl', fill: s.color });
+      lab.textContent = s.label;
+      svg.appendChild(lab);
+    });
+
+    // crosshair
+    // stroke set inline, not via .grid-line — a class would win over the attribute
+    const cross = el('line', { y1: padT, y2: H - padB, style: 'stroke:var(--rule-2);stroke-width:1', opacity: 0 });
+    svg.appendChild(cross);
+    const dots = series.map(s => {
+      const c = el('circle', { r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2, opacity: 0 });
+      svg.appendChild(c); return c;
+    });
+    const hit = el('rect', { x: padL, y: padT, width: W - padL - padR, height: H - padT - padB, fill: 'transparent' });
+    hit.addEventListener('mousemove', ev => {
+      const b = svg.getBoundingClientRect();
+      const px = (ev.clientX - b.left) / b.width * W;
+      const xv = Math.max(0, Math.min(opts.xmax, (px - padL) / (W - padL - padR) * opts.xmax));
+      cross.setAttribute('x1', xs(xv)); cross.setAttribute('x2', xs(xv)); cross.setAttribute('opacity', 1);
+      const rows = series.map((s, i) => {
+        let best = s.pts[0];
+        for (const p of s.pts) if (Math.abs(p[0] - xv) < Math.abs(best[0] - xv)) best = p;
+        dots[i].setAttribute('cx', xs(best[0])); dots[i].setAttribute('cy', ys(best[1]));
+        dots[i].setAttribute('opacity', 1);
+        return { s, v: best[1] };
+      }).sort((a, b2) => b2.v - a.v);
+      const hb = host.getBoundingClientRect();
+      tip.show(ev.clientX - hb.left, ev.clientY - hb.top,
+        `<u>t ≈ ${Math.round(xv)} s</u>` + rows.map(r =>
+          `<s style="background:${r.s.color}"></s>${r.s.label} &nbsp;${r.v.toFixed(opts.ydp ?? 3)}`).join('<br>'));
+    });
+    hit.addEventListener('mouseleave', () => {
+      cross.setAttribute('opacity', 0); dots.forEach(d => d.setAttribute('opacity', 0)); tip.hide();
+    });
+    svg.appendChild(hit);
+    host.appendChild(svg);
+  }
+
+  // ================= FIG 3 — trust ====================================
+  (() => {
+    legend('lg-trust', [
+      { c: 'var(--s1)', t: 'srv1 — earning' },
+      { c: 'var(--s4)', t: 'srv4 — earning' },
+      { c: 'var(--s2)', t: 'srv2 — frozen (healthy)' },
+      { c: 'var(--s3)', t: 'srv3 — frozen (sybil)' }
+    ]);
+    lineChart('p-trust', [
+      { pts: D.trust.srv1, color: 'var(--s1)', label: 'srv1' },
+      { pts: D.trust.srv4, color: 'var(--s4)', label: 'srv4' },
+      { pts: D.trust.srv2, color: 'var(--s2)', label: 'srv2' },
+      { pts: D.trust.srv3.map(p => [p[0], p[1]]), color: 'var(--s3)', label: 'srv3', dash: '5 4' }
+    ], { xmax: D.meta.span_s, ymin: 0.47, ymax: 0.82, yticks: [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80], xticks: [0, 100, 200, 300, 400], ydp: 2, h: 300, label: 'Trust trajectory per node' });
+  })();
+
+  // ================= FIG 4 — edgescore ================================
+  (() => {
+    legend('lg-score', NODES.map(n => ({ c: COLOR[n], t: n + NOTE[n] })));
+    lineChart('p-score', NODES.map(n => ({ pts: D.score[n], color: COLOR[n], label: n })),
+      { xmax: D.meta.span_s, ymin: 0.29, ymax: 0.92, yticks: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90], xticks: [0, 100, 200, 300, 400], ydp: 2, h: 320, label: 'EdgeScore over time per node' });
+  })();
+
+  // ================= FIG 5 — latency range bars =======================
+  (() => {
+    const host = document.getElementById('p-lat');
+    const W = 760, rowH = 54, padL = 62, padR = 92, H = NODES.length * rowH + 24;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Health probe latency distribution' });
+    const max = 500, xs = v => padL + (v / max) * (W - padL - padR);
+    const tip = tipFor(host);
+
+    [0, 100, 200, 300, 400, 500].forEach(t => {
+      svg.appendChild(el('line', { x1: xs(t), x2: xs(t), y1: 8, y2: H - 22, class: 'grid-line' }));
+      svg.appendChild(el('text', { x: xs(t), y: H - 6, 'text-anchor': 'middle', class: 'axis-txt' })).textContent = t;
+    });
+
+    NODES.forEach((n, i) => {
+      const L = D.latency[n], y = i * rowH + 22, bh = 12;
+      svg.appendChild(el('text', { x: padL - 12, y: y + bh - 2, 'text-anchor': 'end', class: 'axis-txt' })).textContent = n;
+      // min→max whisker
+      svg.appendChild(el('line', { x1: xs(L.min), x2: xs(L.max), y1: y + bh / 2, y2: y + bh / 2, stroke: 'var(--rule-2)', 'stroke-width': 2, 'stroke-linecap': 'round' }));
+      // min→p90 body
+      svg.appendChild(el('rect', { x: xs(L.min), y, width: Math.max(3, xs(L.p90) - xs(L.min)), height: bh, rx: 3, fill: COLOR[n], opacity: 0.34 }));
+      // median marker
+      svg.appendChild(el('circle', { cx: xs(L.p50), cy: y + bh / 2, r: 5, fill: COLOR[n], stroke: 'var(--surface)', 'stroke-width': 2 }));
+      const t = el('text', { x: xs(L.max) + 10, y: y + bh - 1, class: 'mark-lbl' });
+      t.textContent = `p50 ${L.p50}  max ${L.max}`;
+      svg.appendChild(t);
+
+      const hit = el('rect', { x: padL, y: y - 8, width: W - padL - padR, height: bh + 16, fill: 'transparent' });
+      hit.addEventListener('mousemove', ev => {
+        const b = host.getBoundingClientRect();
+        tip.show(ev.clientX - b.left, ev.clientY - b.top,
+          `<u>${n}${NOTE[n]}</u>${swatch(n)}min ${L.min} · p50 ${L.p50} · p90 ${L.p90} · max ${L.max} ms`);
+      });
+      hit.addEventListener('mouseleave', tip.hide);
+      svg.appendChild(hit);
+    });
+    host.appendChild(svg);
+  })();
+
+  // ================= FIG 6 — quarantine timeline ======================
+  (() => {
+    const host = document.getElementById('p-qr');
+    const W = 760, padL = 62, padR = 24, rowH = 34, H = NODES.length * rowH + 34;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Quarantine and release timeline' });
+    const xmax = D.meta.span_s, xs = v => padL + (v / xmax) * (W - padL - padR);
+    const tip = tipFor(host);
+
+    [0, 100, 200, 300, 400].forEach(t => {
+      svg.appendChild(el('line', { x1: xs(t), x2: xs(t), y1: 6, y2: H - 26, class: 'grid-line' }));
+      svg.appendChild(el('text', { x: xs(t), y: H - 10, 'text-anchor': 'middle', class: 'axis-txt' })).textContent = t + 's';
+    });
+
+    NODES.forEach((n, i) => {
+      const y = i * rowH + 16;
+      svg.appendChild(el('text', { x: padL - 12, y: y + 4, 'text-anchor': 'end', class: 'axis-txt' })).textContent = n;
+      svg.appendChild(el('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: 'var(--rule)', 'stroke-width': 1 }));
+
+      const ev = D.qr.filter(e => e.node === n).sort((a, b) => a.t - b.t);
+      for (let k = 0; k < ev.length; k++) {
+        if (ev[k].type !== 'quarantine') continue;
+        const rel = ev.slice(k + 1).find(e => e.type === 'recovered');
+        const x1 = xs(ev[k].t), x2 = rel ? xs(rel.t) : xs(xmax);
+        const dur = rel ? (rel.t - ev[k].t) : null;
+        const g = el('rect', { x: x1, y: y - 7, width: Math.max(3, x2 - x1), height: 14, rx: 3, fill: 'var(--crit)', opacity: 0.82 });
+        svg.appendChild(g);
+        const hit = el('rect', { x: x1 - 5, y: y - 12, width: Math.max(12, x2 - x1 + 10), height: 24, fill: 'transparent' });
+        hit.addEventListener('mousemove', e2 => {
+          const b = host.getBoundingClientRect();
+          tip.show(e2.clientX - b.left, e2.clientY - b.top,
+            `<u>${n} quarantined</u>raised t=${ev[k].t}s · Ā ${ev[k].anomaly.toFixed(2)}<br>` +
+            (rel ? `released t=${rel.t}s · held ${dur.toFixed(1)}s` : 'not released'));
+        });
+        hit.addEventListener('mouseleave', tip.hide);
+        svg.appendChild(hit);
+      }
+    });
+    host.appendChild(svg);
+  })();
+
+  // ================= tables ===========================================
+  const tbl = (head, rows) =>
+    `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${
+      rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+
+  document.getElementById('t-main').innerHTML = tbl(
+    ['Node', 'Role', 'Tasks', 'Success', 'Trust (end)', 'RTT p50', 'RTT max'],
+    NODES.map(n => {
+      const oc = D.outcomes[n] || {}, s = oc.success || 0;
+      const tr = D.trust[n][D.trust[n].length - 1][1];
+      return [n, n === 'srv3' ? 'sybil' : 'honest',
+        D.share[n] ? fmt(D.share[n]) : '<span class="zero">0</span>',
+        s ? fmt(s) : '<span class="zero">—</span>',
+        `<b>${tr.toFixed(4)}</b>`, D.latency[n].p50 + ' ms', D.latency[n].max + ' ms'];
+    }));
+
+  document.getElementById('t-rank').innerHTML = tbl(
+    ['Node', '1st (chosen)', '2nd', '3rd', '4th'],
+    NODES.map(n => [n, ...D.ranks[n].map((c, i) =>
+      c === 0 && i === 0 ? '<span class="zero">0</span>' : fmt(c))]));
+
+  document.getElementById('t-qr').innerHTML = tbl(
+    ['t (s)', 'Event', 'Node', 'Trust', 'Ā'],
+    D.qr.map(e => [e.t.toFixed(1), e.type === 'quarantine' ? '<span class="zero">quarantine</span>' : 'released',
+      e.node, e.trust.toFixed(3), e.anomaly.toFixed(3)]));
+
+  // ================= print support ====================================
+  // On paper the <summary> toggles are hidden, so each appendix table
+  // carries its own heading; and a closed <details> prints empty, so they
+  // are forced open for the print pass and restored afterwards.
+  document.querySelectorAll('details').forEach(d => {
+    const body = d.querySelector('.details-body'), sum = d.querySelector('summary');
+    if (!body || !sum) return;
+    body.classList.add('appendix-table');
+    const h = document.createElement('h3');
+    h.className = 'print-only';
+    h.textContent = sum.textContent.trim();
+    body.prepend(h);
+  });
+
+  const openForPrint = () => document.querySelectorAll('details').forEach(d => {
+    if (!d.open) { d.dataset.wasClosed = '1'; d.open = true; }
+  });
+  const restoreAfterPrint = () => document.querySelectorAll('details[data-was-closed]').forEach(d => {
+    d.open = false; delete d.dataset.wasClosed;
+  });
+
+  window.addEventListener('beforeprint', openForPrint);
+  window.addEventListener('afterprint', restoreAfterPrint);
+  document.getElementById('btn-print').addEventListener('click', () => {
+    openForPrint();
+    // let layout settle before the print dialog snapshots the page
+    requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+  });
+})();
+</script>

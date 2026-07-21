@@ -77,6 +77,7 @@ class FlowMonitor:
         honesty_deviation_threshold: float,
         on_quarantine: Callable[[str], None],
         bus: Optional[Any] = None,
+        on_recover: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.state = state
         self.node_ids = list(node_ids)
@@ -84,6 +85,10 @@ class FlowMonitor:
         self.poll_interval_s = poll_interval_s
         self.honesty_deviation_threshold = honesty_deviation_threshold
         self.on_quarantine = on_quarantine
+        # Optional so existing callers (run_demo.py, the unit tests) keep
+        # working unchanged -- they never quarantine anything, so they have
+        # nothing to undo.
+        self.on_recover = on_recover if on_recover is not None else (lambda _nid: None)
         self.bus = bus if bus is not None else NullBus()
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, len(self.node_ids)), thread_name_prefix='flow-monitor-poll',
@@ -107,6 +112,12 @@ class FlowMonitor:
         self._executor.shutdown(wait=False)
 
     def _poll_once(self) -> None:
+        # Before reading any occupancy: drop dispatches the client never
+        # reported. Driven from here rather than from register_dispatch alone so
+        # the sweep keeps running when routing has stopped -- see
+        # TrustState.reap_stale_dispatches.
+        self.state.reap_stale_dispatches()
+
         results = dict(zip(
             self.node_ids,
             self._executor.map(self._fetch_status, self.node_ids),
@@ -119,7 +130,9 @@ class FlowMonitor:
             reasons: List[str] = []
 
             if status is not None:
-                claimed_cpu = status.get('cpu_load', 0.5)
+                raw_cpu = status.get('cpu_load')
+                has_claim = isinstance(raw_cpu, (int, float))
+                claimed_cpu = float(raw_cpu) if has_claim else 0.5
                 # Feed the *measured* RTT, not the node's self-reported
                 # latency_ms, into the routing latency term. Fall back to the
                 # self-report only if the probe somehow carried no RTT (it
@@ -134,17 +147,31 @@ class FlowMonitor:
                 if concurrency:
                     self.state.set_concurrency(node_id, int(concurrency))
 
+                # Both sides averaged over the same window. The node samples
+                # active/concurrency the instant its handler runs, so its claim
+                # is a quantised step function; the controller's estimate is an
+                # integral. Comparing one against the other is comparing two
+                # different quantities, and it false-positives in whichever
+                # direction happens to be ahead -- a node caught mid-burst reads
+                # claimed 0.50 against observed 0.03, and one caught idle reads
+                # claimed 0.00 against observed 0.62. Neither is dishonesty.
                 observed = self.state.observed_load(node_id)
-                deviation = abs(claimed_cpu - observed)
-                if deviation > self.honesty_deviation_threshold:
+                claimed_avg = self.state.claimed_load(node_id)
+                # Only cross-check a figure the node actually sent. Falling back
+                # to 0.5 and then comparing against that accuses the node of
+                # lying about a value it never claimed -- and the invented 0.5
+                # against an idle observed 0.0 is itself a 0.50 deviation, over
+                # the threshold before the node has done anything at all.
+                deviation = abs(claimed_avg - observed) if has_claim else 0.0
+                if has_claim and deviation > self.honesty_deviation_threshold:
                     logger.warning(
                         "%s: honesty deviation %.3f (claimed=%.3f observed=%.3f) > %.3f",
-                        node_id, deviation, claimed_cpu, observed,
+                        node_id, deviation, claimed_avg, observed,
                         self.honesty_deviation_threshold,
                     )
                     anomaly_raw = 1.0
                     reasons.append(
-                        f'CPU honesty: |claimed {claimed_cpu:.2f} - observed '
+                        f'CPU honesty: |claimed {claimed_avg:.2f} - observed '
                         f'{observed:.2f}| = {deviation:.2f} > {self.honesty_deviation_threshold:.2f}'
                     )
             else:
@@ -183,11 +210,17 @@ class FlowMonitor:
         # make it render torn intermediate states.
         self.bus.publish('node_status', nodes=self.state.snapshot())
 
-        for node_id in self.state.poll_newly_quarantined():
+        newly_quarantined, newly_recovered = self.state.poll_quarantine_transitions()
+        for node_id in newly_quarantined:
             try:
                 self.on_quarantine(node_id)
             except Exception:
                 logger.exception("on_quarantine callback failed for %s", node_id)
+        for node_id in newly_recovered:
+            try:
+                self.on_recover(node_id)
+            except Exception:
+                logger.exception("on_recover callback failed for %s", node_id)
 
         self.state.flush_if_stale()
 

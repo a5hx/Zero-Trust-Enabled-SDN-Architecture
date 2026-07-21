@@ -40,7 +40,7 @@ from controller.trust_state import TrustState
 from security.authenticator import (
     HmacAuthenticator, NullAuthenticator, Present80Authenticator,
 )
-from simulation.addressing import VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
+from simulation.addressing import CX_IP, VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +276,12 @@ class TrustBalancerApp(app_manager.OSKenApp):
     TABLE_VIP = 0
     TABLE_L2 = 1
 
+    # Above the drop rules: quarantine must not black-hole the health check that
+    # would clear it. FlowMonitor's /status poll is the only thing that can drive
+    # Ā back down, so dropping it too makes quarantine a one-way door and
+    # contradicts flow_monitor's own contract ("Ā decays back down ... once
+    # misbehaviour stops"). Service traffic is still fully cut.
+    PRIO_HEALTH_CHECK = 450
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
     PRIO_CONNECTION = 300
@@ -348,6 +354,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._meters_installed: set = set()
         self.vip_ip: str = ctrl_cfg['vip']
         self.vip_port: int = ctrl_cfg['vip_port']
+        # Clients dial the VIP on vip_port; the node agents listen on this one.
+        # The VIP rewrite has to translate between them, so the value is needed
+        # here as well as by FlowMonitor's /status polling below.
+        self.node_port: int = cfg.get('agents', {}).get('node_port', 8000)
         self.api_host: str = ctrl_cfg['api_host']
         self.api_port: int = ctrl_cfg['api_port']
         self.flow_idle_timeout: int = ctrl_cfg['flow_idle_timeout_s']
@@ -384,6 +394,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             poll_interval_s=self.monitor_interval_s,
             honesty_deviation_threshold=self.honesty_deviation_threshold,
             on_quarantine=self._on_trust_collapse,
+            on_recover=self._on_trust_recovered,
             bus=self.bus,
         )
 
@@ -613,9 +624,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
         ))
         reply.serialize()
 
+        # The reply has to leave by the port the request arrived on, and
+        # OpenFlow drops an output action naming the packet's own ingress port
+        # -- bouncing a packet back that way requires the reserved OFPP_IN_PORT.
+        # Using the literal port number here silently discards every ARP reply
+        # at the switch: clients never resolve the VIP, so no SYN is ever sent
+        # and the VIP punt rule sits at zero packets while the ARP punt rule
+        # climbs with retries.
         out = parser.OFPPacketOut(
             datapath=dp, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
-            actions=[parser.OFPActionOutput(in_port)], data=reply.data,
+            actions=[parser.OFPActionOutput(ofproto.OFPP_IN_PORT)], data=reply.data,
         )
         dp.send_msg(out)
 
@@ -634,6 +652,12 @@ class TrustBalancerApp(app_manager.OSKenApp):
         forward_actions = [
             parser.OFPActionSetField(eth_dst=s_mac),
             parser.OFPActionSetField(ipv4_dst=s_ip),
+            # The port has to be translated too, not just the address: the VIP
+            # is published on vip_port while the agents bind node_port. Without
+            # this the rewritten packet lands on a port nothing is listening on
+            # and the server's kernel answers with a RST, so the flow counters
+            # look healthy while no agent ever sees a request.
+            parser.OFPActionSetField(tcp_dst=self.node_port),
         ]
         # Graduated response: a node in the rate-limited band gets its inbound
         # (client -> server) flow metered. The reverse path is left unmetered --
@@ -650,14 +674,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # client's real ip/mac untouched, so the reply travels as ordinary
         # learned L2 traffic all the way to the client's own edge switch --
         # it only needs un-rewriting at that very last hop before delivery.
+        # Mirror of the forward rewrite: the reply leaves the agent from
+        # node_port, and has to reach the client looking like it came from the
+        # VIP's advertised port, or the client's socket won't recognise it.
         reverse_match = parser.OFPMatch(
             eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
             ipv4_src=s_ip, ipv4_dst=client_ip,
-            tcp_src=self.vip_port, tcp_dst=client_port,
+            tcp_src=self.node_port, tcp_dst=client_port,
         )
         reverse_actions = [
             parser.OFPActionSetField(eth_src=VIP_MAC),
             parser.OFPActionSetField(ipv4_src=self.vip_ip),
+            parser.OFPActionSetField(tcp_src=self.vip_port),
         ]
         self._install_goto_l2(
             dp, self.TABLE_VIP, self.PRIO_CONNECTION, reverse_match, reverse_actions,
@@ -684,14 +712,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
                     'actions': (
                         (f'meter {meter_id} ({self.rate_limit_kbps} kbps), '
                          if meter_id is not None else '')
-                        + f'set eth_dst={s_mac}, set ipv4_dst={s_ip} -> goto table {self.TABLE_L2}'
+                        + f'set eth_dst={s_mac}, set ipv4_dst={s_ip}, '
+                          f'set tcp_dst={self.node_port} -> goto table {self.TABLE_L2}'
                     ),
                 },
                 {
                     'dir': 'reverse',
-                    'match': f'ipv4_src={s_ip},tcp_src={self.vip_port},'
+                    'match': f'ipv4_src={s_ip},tcp_src={self.node_port},'
                              f'ipv4_dst={client_ip},tcp_dst={client_port}',
-                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip} -> goto table {self.TABLE_L2}',
+                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip}, '
+                               f'set tcp_src={self.vip_port} -> goto table {self.TABLE_L2}',
                 },
             ],
         )
@@ -883,9 +913,45 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # Matching the MAC as source *and* destination covers every ethertype,
         # including the node's ARP replies -- an IP-only match would not.
         node_mac = srv_mac(srv_index(node_id))
+        node_ip = srv_ip(srv_index(node_id))
         for dp in list(self._datapaths.values()):
             parser = dp.ofproto_parser
             ofproto = dp.ofproto
+
+            # Carve the controller's own health check out of the drop rules
+            # first, at a higher priority. Without this the /status poll is
+            # dropped along with everything else, Ā stays pinned at 1.0 on
+            # '/status unreachable', and the node can never leave quarantine --
+            # so a single spurious trip becomes permanent. Scoped to the
+            # controller's data-plane address and the agent port only: no
+            # client traffic matches these.
+            for hc_match in (
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                    ipv4_src=CX_IP, ipv4_dst=node_ip, tcp_dst=self.node_port,
+                ),
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                    ipv4_src=node_ip, ipv4_dst=CX_IP, tcp_src=self.node_port,
+                ),
+                # ARP between the two as well, or the poll survives only as long
+                # as cx's neighbour entry does: the request is broadcast and gets
+                # through, but the node's reply carries eth_src=node_mac and
+                # would hit the drop rule.
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_ARP,
+                    arp_spa=CX_IP, arp_tpa=node_ip,
+                ),
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_ARP,
+                    arp_spa=node_ip, arp_tpa=CX_IP,
+                ),
+            ):
+                self._install_goto_l2(
+                    dp, self.TABLE_VIP, self.PRIO_HEALTH_CHECK, hc_match, [],
+                    cookie=cookie,
+                )
+
             for match in (
                 parser.OFPMatch(eth_src=node_mac),
                 parser.OFPMatch(eth_dst=node_mac),
@@ -918,6 +984,43 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # (3) Proactively re-steer this node's active clients. Done after the
         # drops so the dead node is already excluded from re-selection.
         self._redispatch_after_quarantine(node_id, collapse_start)
+
+    def _on_trust_recovered(self, node_id: str) -> None:
+        """Called by FlowMonitor the instant a node's trust and Ā bring it back
+        out of quarantine. Removes the drop rules installed on collapse.
+
+        Needed because is_quarantined() is derived live while the drop rules are
+        physical: without this the logical state clears but the switch keeps
+        black-holing the node, and the two disagree permanently. Deleting by
+        cookie clears the health-check carve-outs in the same sweep -- they only
+        exist to keep a quarantined node observable, and the node is now
+        eligible for ordinary traffic again.
+        """
+        t = self.state.trust_calc.get_score(node_id)
+        a = self.state.get_anomaly(node_id)
+        logger.info(
+            "RECOVERED: %s trust=%.4f anomaly=%.4f -- removing drop rules",
+            node_id, t, a,
+        )
+        cookie = self._cookie_for(node_id)
+        dpids = []
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            ofproto = dp.ofproto
+            dp.send_msg(parser.OFPFlowMod(
+                datapath=dp, cookie=cookie, cookie_mask=0xFFFFFFFFFFFFFFFF,
+                table_id=self.TABLE_VIP, command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY,
+                match=parser.OFPMatch(),
+            ))
+            dpids.append(dp.id)
+
+        self.bus.publish(
+            'recovered', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
+            isolation_threshold=self.state.isolation_threshold,
+            anomaly_gate=self.state.anomaly_gate,
+        )
+        self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
 
     def _redispatch_after_quarantine(self, node_id: str, collapse_start: float) -> None:
         """Re-point every client the quarantined node was serving at the

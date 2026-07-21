@@ -12,7 +12,7 @@ import pytest
 import yaml
 from os_ken.ofproto import ofproto_v1_3, ofproto_v1_3_parser
 
-from simulation.addressing import srv_mac
+from simulation.addressing import CX_IP, srv_ip, srv_mac
 
 
 @pytest.fixture()
@@ -56,16 +56,54 @@ def test_quarantine_deletes_vip_rules_then_installs_drop_rules(app):
     # Two drop rules: srv3's MAC as source and as destination, above every
     # other TABLE_VIP priority, empty instruction set (== OpenFlow drop),
     # tagged with the node's cookie so they are identifiable/removable.
-    assert len(adds) == 2
+    drops = [m for m in adds if m.priority == app.PRIO_QUARANTINE_DROP]
+    assert len(drops) == 2
     fields = {}
-    for m in adds:
-        assert m.priority == app.PRIO_QUARANTINE_DROP
+    for m in drops:
         assert m.priority > app.PRIO_ARP_PUNT
         assert m.table_id == app.TABLE_VIP
         assert m.instructions == []
         assert m.cookie == app._cookie_for('srv3')
         fields.update(dict(m.match.items()))
     assert fields == {'eth_src': srv_mac(3), 'eth_dst': srv_mac(3)}
+
+    # ...but the controller's own health check is carved out above them, or Ā
+    # stays pinned on '/status unreachable' and quarantine becomes a one-way
+    # door. Two TCP directions plus the two ARP directions that keep the poll
+    # working once cx's neighbour entry ages out.
+    health = [m for m in adds if m.priority == app.PRIO_HEALTH_CHECK]
+    assert len(health) == 4
+    assert app.PRIO_HEALTH_CHECK > app.PRIO_QUARANTINE_DROP
+    for m in health:
+        assert m.table_id == app.TABLE_VIP
+        assert m.instructions != [], 'carve-out must forward, not drop'
+    tcp_hc = [dict(m.match.items()) for m in health if 'ip_proto' in dict(m.match.items())]
+    assert {m['ipv4_src'] for m in tcp_hc} == {CX_IP, srv_ip(3)}
+    assert all(
+        m.get('tcp_dst') == app.node_port or m.get('tcp_src') == app.node_port
+        for m in tcp_hc
+    )
+
+
+def test_recovery_removes_the_drop_rules(app):
+    """is_quarantined() is derived live, but the drop rules are physical: if
+    nothing deletes them on recovery the node stays black-holed forever."""
+    dp = _fake_datapath()
+    app._datapaths = {dp.id: dp}
+
+    app._on_trust_collapse('srv3')
+    dp.send_msg.reset_mock()
+
+    app._on_trust_recovered('srv3')
+
+    mods = [c.args[0] for c in dp.send_msg.call_args_list]
+    deletes = [m for m in mods if m.command == ofproto_v1_3.OFPFC_DELETE]
+    assert len(deletes) == 1
+    assert deletes[0].cookie == app._cookie_for('srv3')
+    assert deletes[0].cookie_mask == 0xFFFFFFFFFFFFFFFF
+    assert deletes[0].table_id == app.TABLE_VIP
+    # Nothing new installed -- recovery only removes.
+    assert [m for m in mods if m.command == ofproto_v1_3.OFPFC_ADD] == []
 
 
 def test_drop_rules_reach_every_switch(app):
@@ -77,8 +115,13 @@ def test_drop_rules_reach_every_switch(app):
     for dp in dps:
         mods = [c.args[0] for c in dp.send_msg.call_args_list]
         adds = [m for m in mods if m.command == ofproto_v1_3.OFPFC_ADD]
-        # No active dispatches -> re-dispatch adds nothing; only the 2 drops.
-        assert len(adds) == 2, f'dpid {dp.id} missing drop rules'
+        drops = [m for m in adds if m.priority == app.PRIO_QUARANTINE_DROP]
+        # No active dispatches -> re-dispatch adds nothing; only the 2 drops
+        # plus the 4 health-check carve-outs that keep the node observable.
+        assert len(drops) == 2, f'dpid {dp.id} missing drop rules'
+        assert len([m for m in adds if m.priority == app.PRIO_HEALTH_CHECK]) == 4, (
+            f'dpid {dp.id} missing health-check carve-out'
+        )
 
 
 def test_quarantine_redispatches_active_clients_to_next_best(app):

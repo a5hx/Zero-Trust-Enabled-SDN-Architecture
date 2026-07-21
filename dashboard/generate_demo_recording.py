@@ -127,6 +127,9 @@ class Sim:
 
         self.state = TrustState(
             node_ids=self.node_ids,
+            # observed_load integrates occupancy over time; feed it the same
+            # simulated clock everything else here runs on, not wall time.
+            time_source=lambda: self.clock.t,
             trust_calculator=TrustCalculator(
                 alpha=0.35, beta=0.25, gamma=0.25, delta=0.15,
                 lambda_decay=0.85, initial_score=0.5,
