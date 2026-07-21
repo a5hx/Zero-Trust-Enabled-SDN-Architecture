@@ -63,6 +63,12 @@ class ReplayApp:
         with self._lock:
             return list(self._flows)
 
+    def optimizer_status(self) -> Dict[str, Any]:
+        """Replay has no live optimizer to poll: report disabled and let the
+        recorded 'optimizer' events populate the panel as they stream, which is
+        exactly the "watch the bandit learn" story we want on replay."""
+        return {'enabled': False, 'active_weights': self._topology['weights'], 'arms': []}
+
     @staticmethod
     def _recover_topology(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Rebuild the graph from the recording itself.

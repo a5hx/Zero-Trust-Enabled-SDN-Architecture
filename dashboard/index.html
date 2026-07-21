@@ -155,6 +155,39 @@
   .ev .k { flex: none; width: 92px; }
   .ev .d { color: var(--muted); }
 
+  .ev.optimizer { background: rgba(188,140,255,.10); }
+  .ev.optimizer .k { color: var(--vip); }
+  .ev.route_denied .k { color: var(--bad); }
+
+  /* ---------- drop rules ---------- */
+  tr.drop td { background: rgba(248,81,73,.10); }
+  tr.drop td.a { color: var(--bad); font-weight: 600; }
+
+  /* ---------- optimizer panel ---------- */
+  .optw {
+    display: flex; height: 16px; border-radius: 4px; overflow: hidden;
+    margin: 7px 0 10px; border: 1px solid var(--border);
+  }
+  .optw > span {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: #0d1117; font-weight: 700; min-width: 0;
+    transition: width .35s ease;
+  }
+  .optRow {
+    display: grid; grid-template-columns: 118px 1fr 74px; align-items: center;
+    gap: 8px; padding: 5px 0; border-top: 1px solid #21262d;
+  }
+  .optRow.active { background: rgba(88,166,255,.08); }
+  .optArm { font-size: 10px; color: var(--muted); }
+  .optArm b { color: var(--text); font-weight: 600; }
+  .optArm .act { color: var(--accent); font-weight: 600; }
+  .rbar { height: 7px; border-radius: 4px; background: #21262d; overflow: hidden; }
+  .rbar > i { display: block; height: 100%; background: var(--accent);
+              border-radius: 4px; transition: width .3s ease; }
+  .optMeta { display: flex; justify-content: space-between; gap: 10px;
+             font-size: 10px; color: var(--muted); margin-top: 9px;
+             border-top: 1px solid var(--border); padding-top: 7px; }
+
   .empty { color: var(--muted); font-size: 12px; padding: 14px; text-align: center; }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 10px; color: var(--muted); padding: 8px 14px 0; }
   .legend b { font-weight: 500; color: var(--text); }
@@ -169,6 +202,7 @@
   <div class="spacer"></div>
   <span class="pill" id="formula" title="EdgeScore(n) = w1·T(n) + w2·(1−cpu) + w3·(1−lat)">EdgeScore = —</span>
   <span class="pill" id="throughput" title="Total measured link throughput across all switch ports (OFPPortStats, real counters)">links —</span>
+  <span class="pill" id="dropped" title="Total packets dropped by quarantine drop rules (priority 400, action=drop)">dropped —</span>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></span>
 </header>
 
@@ -202,6 +236,13 @@
       <div class="body" id="trust"><div class="empty">waiting for controller…</div></div>
     </div>
 
+    <div class="panel" id="optPanel" style="display:none">
+      <h2>AI Optimizer
+        <span class="note">— UCB1 bandit tuning the EdgeScore weights from live reward</span>
+      </h2>
+      <div class="body" id="optimizer"></div>
+    </div>
+
     <div class="panel">
       <h2>Events</h2>
       <div id="log"></div>
@@ -229,6 +270,9 @@ const S = {
   spawnAcc: new Map(),// path key -> fractional dot accumulator
   paths: new Map(),   // path key -> {pts, pps, node, client, dir}
   portLoad: {},       // dpid -> summed total_bps from `port_stats`
+  optimizer: null,    // {weights:[w1,w2,w3], arms:[...], lastReward, outcomes}
+  weights: null,      // live EdgeScore weights {w1_trust,w2_cpu,w3_latency}
+  dropped: {},        // node -> cumulative dropped packets (from drop rules)
 };
 
 function renderThroughput() {
@@ -237,6 +281,74 @@ function renderThroughput() {
   if (!el) return;
   const mbps = bps / 1e6;
   el.textContent = mbps >= 0.01 ? `links ${mbps.toFixed(2)} Mb/s` : 'links —';
+}
+
+function renderDropped() {
+  const total = Object.values(S.dropped).reduce((a, b) => a + b, 0);
+  const el = document.getElementById('dropped');
+  if (!el) return;
+  el.textContent = total > 0 ? `dropped ${total.toLocaleString()} pkts` : 'dropped —';
+  el.style.color = total > 0 ? 'var(--bad)' : '';
+}
+
+// The EdgeScore weights the router is using right now. Starts from the topology
+// snapshot and is overwritten live by 'optimizer' events when the bandit is on.
+function currentWeights() {
+  return S.weights || (S.topo && S.topo.weights) || { w1_trust: .5, w2_cpu: .3, w3_latency: .2 };
+}
+
+function updateFormula() {
+  const w = currentWeights();
+  const el = document.getElementById('formula');
+  if (!el) return;
+  el.textContent =
+    `EdgeScore = ${(+w.w1_trust).toFixed(2)}·T + ${(+w.w2_cpu).toFixed(2)}·(1−cpu)` +
+    ` + ${(+w.w3_latency).toFixed(2)}·(1−lat)`;
+}
+
+// AI optimizer panel: the live weights as a stacked bar, plus one row per bandit
+// arm showing its pull count and mean reward. Driven both by the initial
+// /api/optimizer fetch (live) and by every 'optimizer' SSE event (live + replay).
+function renderOptimizer() {
+  const o = S.optimizer;
+  const box = document.getElementById('optimizer');
+  const panel = document.getElementById('optPanel');
+  if (!o || !o.weights || !box) return;
+  panel.style.display = '';
+
+  const w = o.weights;   // [w1, w2, w3]
+  const segs = [['trust', w[0], 'var(--good)'], ['cpu', w[1], 'var(--accent)'],
+                ['lat', w[2], 'var(--vip)']];
+  const bar = segs.map(([k, v, c]) =>
+    `<span style="width:${(v * 100).toFixed(0)}%;background:${c}">${v >= 0.12 ? k : ''}</span>`
+  ).join('');
+
+  const arms = o.arms || [];
+  const best = arms.length ? Math.max(...arms.map(a => a.mean_reward)) : null;
+  const rows = arms.map(a => {
+    const frac = Math.max(0, Math.min(1, a.mean_reward));   // reward can be < 0
+    const isBest = best != null && a.mean_reward === best && a.count > 0;
+    return `
+      <div class="optRow ${a.active ? 'active' : ''}">
+        <span class="optArm">[${a.weights.map(x => x.toFixed(2)).join(', ')}]${
+          a.active ? ' <span class="act">◀</span>' : ''}</span>
+        <span class="rbar"><i style="width:${(frac * 100).toFixed(0)}%"></i></span>
+        <span class="optArm" style="text-align:right">${a.count}× · <b>${
+          a.mean_reward.toFixed(2)}</b>${isBest ? ' ★' : ''}</span>
+      </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="optArm">active weights — <b>${w[0].toFixed(2)}</b>·T
+      + <b>${w[1].toFixed(2)}</b>·(1−cpu) + <b>${w[2].toFixed(2)}</b>·(1−lat)</div>
+    <div class="optw">${bar}</div>
+    ${rows || '<div class="empty">waiting for first reward window…</div>'}
+    <div class="optMeta">
+      <span>last reward <b style="color:var(--text)">${
+        o.lastReward != null ? o.lastReward.toFixed(3) : '—'}</b>${
+        o.outcomes != null ? ` (${o.outcomes} outcomes)` : ''}</span>
+      <span>UCB1 · ${arms.length} arms · ★ best · ◀ active</span>
+    </div>`;
 }
 
 const VIP_RE = /ipv4_src=([\d.]+).*tcp_src=(\d+)/;
@@ -577,7 +689,7 @@ function renderTrust() {
   if (!ids.length) return;
 
   const th = S.topo ? S.topo.thresholds : { isolation: 0.3, anomaly_gate: 0.5 };
-  const w = S.topo ? S.topo.weights : { w1_trust: .5, w2_cpu: .3, w3_latency: .2 };
+  const w = currentWeights();
 
   box.innerHTML = ids.map(id => {
     const s = S.status[id];
@@ -645,10 +757,21 @@ function renderRules() {
   const box = document.getElementById('rules');
   if (!S.flows.length) return;
 
+  // Surface packets dropped by the quarantine drop rules (priority 400,
+  // action=drop) as a header total. Keyed by node so it doesn't double-count.
+  const drops = {};
+  for (const f of S.flows) {
+    if ((f.actions || '').includes('drop')) drops[f.node || ('s' + f.dpid)] = f.packets || 0;
+  }
+  S.dropped = drops;
+  renderDropped();
+
   const rows = S.flows.map(f => {
     const key = `${f.dpid}|${f.table}|${f.priority}|${f.match}`;
+    const isDrop = (f.actions || '').includes('drop');
     const cls = [
       f.is_vip ? 'vip' : '',
+      isDrop ? 'drop' : '',
       S.recentInstall.has(key) ? 'flash' : '',
       S.recentDelete.has(key) ? 'dying' : '',
     ].filter(Boolean).join(' ');
@@ -697,6 +820,10 @@ function log(ev) {
     case 'anomaly': desc = `<b>${ev.node}</b> — ${ev.reasons.join('; ')}`; break;
     case 'report': desc = `${ev.device} → ${ev.node}: ${ev.status} (${ev.latency_ms} ms), trust ${ev.trust}`; break;
     case 'switch_up': desc = `switch dpid=${ev.dpid} connected`; break;
+    case 'optimizer':
+      desc = `weights → [${(ev.next_weights || []).map(x => x.toFixed(2)).join(', ')}] · ` +
+             `reward ${ev.reward != null ? ev.reward.toFixed(3) : '?'} (${ev.outcomes} outcomes)`;
+      break;
     default: return;
   }
 
@@ -759,6 +886,21 @@ function handle(ev) {
       S.flows = S.flows.filter(f => f.node !== ev.node);
       renderRules();
       break;
+
+    case 'optimizer':
+      S.optimizer = S.optimizer || {};
+      S.optimizer.weights = ev.next_weights;
+      if (ev.arms) S.optimizer.arms = ev.arms;
+      S.optimizer.lastReward = ev.reward;
+      S.optimizer.outcomes = ev.outcomes;
+      S.weights = {
+        w1_trust: ev.next_weights[0], w2_cpu: ev.next_weights[1],
+        w3_latency: ev.next_weights[2],
+      };
+      updateFormula();
+      renderOptimizer();
+      renderTrust();   // EdgeScore column recomputes with the new weights
+      break;
   }
   log(ev);
 }
@@ -783,9 +925,8 @@ async function boot() {
   drawTopology();
 
   document.getElementById('vip').textContent = `VIP ${S.topo.vip}`;
-  const w = S.topo.weights;
-  document.getElementById('formula').textContent =
-    `EdgeScore = ${w.w1_trust}·T + ${w.w2_cpu}·(1−cpu) + ${w.w3_latency}·(1−lat)`;
+  S.weights = S.topo.weights;
+  updateFormula();
 
   try {
     const f = await fetch('/api/flows');
@@ -793,6 +934,22 @@ async function boot() {
     rebuildPaths(S.flows);
     renderRules();
   } catch (e) { /* first poll may not have happened yet */ }
+
+  // Seed the optimizer panel from the live controller. Replay has no such route,
+  // so this quietly no-ops there and the 'optimizer' SSE events drive the panel.
+  try {
+    const oj = await (await fetch('/api/optimizer')).json();
+    if (oj && oj.enabled) {
+      const a = oj.active_weights;
+      S.optimizer = {
+        weights: [a.w1_trust, a.w2_cpu, a.w3_latency],
+        arms: oj.arms || [], lastReward: null, outcomes: null,
+      };
+      S.weights = a;
+      updateFormula();
+      renderOptimizer();
+    }
+  } catch (e) { /* replay serves no /api/optimizer */ }
 
   const es = new EventSource('/api/events');
   es.onopen = () => setConn(S.replay ? 'replay' : 'live', S.replay ? 'replay' : 'live');

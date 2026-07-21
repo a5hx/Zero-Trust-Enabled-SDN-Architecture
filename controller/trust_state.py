@@ -461,6 +461,11 @@ class TrustState:
                 # 'optimizer' event stream, so no separate training log is needed.
                 'conditions': self._conditions_snapshot_locked(),
             }
+            # Per-arm pull counts / mean rewards, so a dashboard driven only by
+            # this event stream (e.g. the sudo-free replay) can render the full
+            # bandit state without also polling /api/optimizer.
+            if hasattr(self.optimizer, 'stats'):
+                summary['arms'] = self.optimizer.stats()
             self._reward_window = RewardWindow()
             self._window_started_at = time.time()
             return summary
