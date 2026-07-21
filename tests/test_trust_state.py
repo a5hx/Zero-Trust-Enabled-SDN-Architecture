@@ -189,6 +189,10 @@ def test_optimizer_window_rollover_swaps_to_a_valid_arm():
     assert summary['outcomes'] == 3
     # The active weights are now one of the configured arms.
     assert state.edge_weights in arms
+    # Conditions snapshot (the RF's future feature vector) rides the summary.
+    assert set(summary['conditions']) == {
+        'mean_trust', 'mean_load', 'mean_latency_ms', 'num_quarantined',
+    }
 
 
 def test_optimizer_never_reenables_a_quarantined_node():

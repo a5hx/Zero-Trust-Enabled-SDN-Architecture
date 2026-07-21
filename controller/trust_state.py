@@ -455,10 +455,30 @@ class TrustState:
                 'outcomes': self._reward_window.total_outcomes,
                 'prev_weights': [prev.w1_trust, prev.w2_cpu, prev.w3_latency],
                 'next_weights': [nxt.w1_trust, nxt.w2_cpu, nxt.w3_latency],
+                # Aggregate network conditions at window close. These are the
+                # features the offline Random Forest will train on: (conditions ->
+                # which arm/weights performed well). They ride the recorded
+                # 'optimizer' event stream, so no separate training log is needed.
+                'conditions': self._conditions_snapshot_locked(),
             }
             self._reward_window = RewardWindow()
             self._window_started_at = time.time()
             return summary
+
+    def _conditions_snapshot_locked(self) -> Dict[str, float]:
+        """Aggregate network-condition features for the optimizer log / RF.
+        Caller must hold self._lock."""
+        n = len(self.node_ids) or 1
+        trusts = [self.trust_calc.get_score(nid) for nid in self.node_ids]
+        loads = [self.observed_load(nid) for nid in self.node_ids]
+        latencies = [self._latency_ms.get(nid, 50.0) for nid in self.node_ids]
+        quarantined = sum(1 for nid in self.node_ids if self.is_quarantined(nid))
+        return {
+            'mean_trust': round(sum(trusts) / n, 4),
+            'mean_load': round(sum(loads) / n, 4),
+            'mean_latency_ms': round(sum(latencies) / n, 2),
+            'num_quarantined': quarantined,
+        }
 
     @property
     def routing_decisions(self) -> List[Dict[str, Any]]:
