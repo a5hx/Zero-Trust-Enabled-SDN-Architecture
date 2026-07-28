@@ -90,6 +90,27 @@ only *visibly* converges when the environment actually punishes bad choices —
 i.e. under the attack / congestion scenario. That is a real property of bandits,
 not a defect; demo it under stress.
 
+**The `load_imbalance` term is a property of the selection strategy, not the
+weights.** This is the key interaction with the starvation fix
+(`docs/LOAD_BALANCING_STARVATION.md`). The optimizer tunes only w1/w2/w3; it does
+*not* choose between `argmax` and `p2c`. And load imbalance is set almost entirely
+by that selection rule:
+
+| selection | time-avg load imbalance (N=4, sim) | μ·imbalance penalty |
+|-----------|-----------------------------------:|--------------------:|
+| `argmax`  | 0.500 | 0.100 |
+| `p2c`     | 0.032 | 0.006 |
+
+Under `argmax` the imbalance is high and ~constant across *every* weight arm — the
+two live runs cycled the arms the entire time and load stayed pinned to two nodes
+— so the μ term was a fixed offset that gave the bandit no gradient. Under `p2c`
+the imbalance collapses toward zero for every arm, so the term (correctly) goes
+quiet and the bandit effectively optimizes `success_rate − λ·latency`. Either way
+the μ term does **not** let the weight-optimizer control load spread; only the
+selection strategy does. With `p2c` as the default it is now largely a safety term
+for anyone who pins `selection: argmax`. Reproduce the table with
+`evaluation/starvation_sweep.py` (`simulate(..., track_load=True).load_imbalance`).
+
 ### Where it lives
 
 | Concern | Location |

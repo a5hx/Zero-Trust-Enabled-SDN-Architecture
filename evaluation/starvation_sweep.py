@@ -44,12 +44,25 @@ TRUST_EMA = 0.85         # trust.lambda_decay -- EMA rate on task success
 INITIAL_TRUST = 0.5      # trust.initial_score
 
 
+def _stdev(values: Sequence[float]) -> float:
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+
+
 @dataclass
 class SweepResult:
     n: int
     strategy: str
     epsilon: float
     served: List[int]
+    # Mean over the run of the per-poll stdev of observed load (inflight/concurrency)
+    # across nodes -- exactly the quantity compute_reward's imbalance term measures.
+    # None unless simulate(..., track_load=True). This is a property of the
+    # SELECTION strategy, not the weights: see docs/AI_OPTIMIZER.md.
+    load_imbalance: Optional[float] = None
 
     @property
     def total(self) -> int:
@@ -86,8 +99,14 @@ def simulate(
     load_factor: float = LOAD_FACTOR,
     sim_s: float = SIM_S,
     seed: int = 1,
+    track_load: bool = False,
 ) -> SweepResult:
-    """Run one controller-in-the-loop simulation and return its routing spread."""
+    """Run one controller-in-the-loop simulation and return its routing spread.
+
+    track_load: also accumulate the per-poll stdev of observed load across nodes
+    (the imbalance quantity the optimizer's reward penalises), returned as
+    SweepResult.load_imbalance.
+    """
     rng = random.Random(seed)
     sel_rng = random.Random(seed + 99)          # own stream, mirrors TrustState
     capacity = n * CONCURRENCY / SERVICE_MEAN_S  # tasks/s the farm can serve
@@ -130,7 +149,21 @@ def simulate(
             heapq.heappush(evq, (now + rng.expovariate(1 / SERVICE_MEAN_S), 'dep', i))
             heapq.heappush(evq, (now + rng.expovariate(lam), 'arr', -1))
 
-    return SweepResult(n=n, strategy=strategy, epsilon=epsilon, served=served)
+    load_imbalance = None
+    if track_load:
+        # Time-averaged per-node occupancy (Little's Law: mean inflight = arrival
+        # rate x service time), clamped to [0,1] exactly as TrustState.observed_load
+        # is. Its stdev across nodes is what compute_reward's imbalance term sees --
+        # and it is set by the SELECTION strategy, essentially independent of the
+        # EdgeScore weights the optimizer tunes. See docs/AI_OPTIMIZER.md.
+        occupancy = [
+            min(1.0, (s / sim_s) * SERVICE_MEAN_S / CONCURRENCY) for s in served
+        ]
+        load_imbalance = _stdev(occupancy)
+    return SweepResult(
+        n=n, strategy=strategy, epsilon=epsilon, served=served,
+        load_imbalance=load_imbalance,
+    )
 
 
 # Strategy label -> (strategy, epsilon) for select_edge_node.
