@@ -62,6 +62,60 @@ def test_sybil_liar_deviation_triggers_anomaly_and_quarantine():
     assert quarantined == ['srv1']  # edge-triggered exactly once
 
 
+def test_latency_tell_catches_sybil_under_p2c_with_no_load():
+    """The load-independent Sybil tell. srv2 claims to be idle but answers its
+    /status poll far slower than the fast peer (CPU burn). It has received NO
+    task traffic (p2c never concentrated load on it), so observed_load is 0 and
+    the CPU-honesty deviation check CANNOT fire -- yet it is still caught."""
+    state = TrustState(node_ids=['srv1', 'srv2'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    for nid in ('srv1', 'srv2'):
+        state.set_concurrency(nid, 4)
+    fm, quarantined = _make_monitor(state, {
+        'srv1': StatusProbe({'cpu_load': 0.1, 'latency_ms': 20, 'concurrency': 4}, 20.0),
+        # claims idle (0.1) but its reply is 7.5x slower than the fast peer
+        'srv2': StatusProbe({'cpu_load': 0.1, 'latency_ms': 20, 'concurrency': 4}, 150.0),
+    })
+    fm._poll_once()
+
+    # Honesty deviation did NOT fire (no load): |0.1 - 0.0| = 0.1 < 0.40.
+    assert state.observed_load('srv2') == 0.0
+    # The latency tell did: srv2 quarantined, the honest fast peer untouched.
+    assert quarantined == ['srv2']
+    assert state.get_anomaly('srv2') > 0.5
+    assert state.get_anomaly('srv1') == 0.0
+
+
+def test_latency_tell_ignores_fast_idle_nodes():
+    """Honest idle nodes all answer quickly -- no fleet outlier, nothing flagged."""
+    state = TrustState(node_ids=['srv1', 'srv2'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    fm, quarantined = _make_monitor(state, {
+        'srv1': StatusProbe({'cpu_load': 0.05, 'latency_ms': 15, 'concurrency': 4}, 18.0),
+        'srv2': StatusProbe({'cpu_load': 0.10, 'latency_ms': 15, 'concurrency': 4}, 22.0),
+    })
+    fm._poll_once()
+    assert quarantined == []
+    assert state.get_anomaly('srv1') == 0.0 and state.get_anomaly('srv2') == 0.0
+
+
+def test_latency_tell_ignores_slow_node_that_admits_it_is_busy():
+    """A genuinely busy, honest node is slow to answer -- but it CLAIMS high CPU,
+    so the slowness is consistent, not a lie. The latency tell must not fire (and
+    with its load matching its claim, neither does the honesty check)."""
+    state = TrustState(node_ids=['srv1', 'srv2'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    for nid in ('srv1', 'srv2'):
+        state.set_concurrency(nid, 4)
+    # srv2 really is busy: 3 inflight of 4 -> observed ~0.75, and it claims 0.7.
+    for port in range(7000, 7003):
+        state.register_dispatch('10.0.0.9', port, 'srv2')
+    fm, quarantined = _make_monitor(state, {
+        'srv1': StatusProbe({'cpu_load': 0.1, 'latency_ms': 20, 'concurrency': 4}, 20.0),
+        'srv2': StatusProbe({'cpu_load': 0.7, 'latency_ms': 20, 'concurrency': 4}, 150.0),
+    })
+    fm._poll_once()
+    assert quarantined == []                 # admits its load -> not a liar
+    assert state.get_anomaly('srv2') == 0.0
+
+
 def test_packet_drop_tell_uses_timeout_rate_not_cpu_honesty():
     """A drop attacker can self-report CPU honestly -- the deviation check
     alone must NOT catch it. recent_timeout_rate is the separate signal."""

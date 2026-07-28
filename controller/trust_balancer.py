@@ -420,6 +420,12 @@ class TrustBalancerApp(app_manager.OSKenApp):
             on_quarantine=self._on_trust_collapse,
             on_recover=self._on_trust_recovered,
             bus=self.bus,
+            # Load-independent Sybil tell (claims idle but slow to answer). Needed
+            # because p2c routing keeps the liar's load too low for the CPU-honesty
+            # check to fire -- see controller/flow_monitor.py.
+            latency_liar_ratio=ctrl_cfg.get('latency_liar_ratio', 2.5),
+            latency_liar_floor_ms=ctrl_cfg.get('latency_liar_floor_ms', 30.0),
+            idle_claim_threshold=ctrl_cfg.get('idle_claim_threshold', 0.25),
         )
 
         # Set in start() when the dashboard is enabled -- polls OFPFlowStats so

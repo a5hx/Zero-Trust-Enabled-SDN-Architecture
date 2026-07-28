@@ -255,8 +255,15 @@ can narrate it:
    — it keeps completing tasks so its trust never drops far enough on its own.
    That's the core Zero-Trust finding
    (`tests/test_trust_state.py::test_f04_non_degrading_liar_needs_anomaly_gate`):
-   trust alone is not enough; the independent load-honesty check is what makes it
-   real.
+   trust alone is not enough; an independent anomaly signal is what makes it real.
+   Under **p2c** the trigger is the **latency tell** — `srv3` claims idle
+   (`cpu 0.1`) but answers `/status` far slower than its peers because it's
+   burning CPU. (This matters: p2c stops the Sybil attracting concentrated load,
+   which is what the *older* CPU-honesty deviation check needed to fire — so a
+   load-independent tell was added to catch it anyway. See
+   `docs/LOAD_BALANCING_STARVATION.md` §7.) Watch Terminal A for
+   `latency tell: claims idle … but rtt …x fleet baseline`, and the Events panel
+   for the same reason on the `anomaly` line.
 2. **Healthy load is shared, not starved.** All four servers carry traffic (§5b),
    because routing is power-of-two-choices, not winner-take-all. Zero traffic to a
    server now means exactly one thing — it was **quarantined** (`srv3`) — never

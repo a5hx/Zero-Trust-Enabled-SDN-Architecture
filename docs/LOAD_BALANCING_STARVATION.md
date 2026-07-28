@@ -142,3 +142,32 @@ edge_score:
 behaviour exactly. See `tests/test_edge_selector.py` for the P2C + ε coverage and
 `evaluation/starvation_sweep.py` (`python3 -m evaluation.starvation_sweep`) for
 the before/after fan-out.
+
+## 7. Side effect: p2c can hide a load-attracting Sybil, and how we close it
+
+Spreading load has a security cost worth stating plainly. The demo's Sybil
+(`srv3`) lies `cpu_load = 0.1` while burning real CPU. It used to be caught by the
+**CPU-honesty deviation** check, `|claimed − observed_load| > 0.40`. But that gap
+only opens once the liar has *accumulated observed load* — and under `argmax` the
+lie itself concentrated traffic onto it, which is what pushed its observed load
+past the threshold. Under `p2c` the liar only ever gets its fair share, so its
+observed load stays low, the deviation never reaches 0.40, and **it is never
+flagged**. The load-balancing fix removed the very concentration that exposed it.
+
+The fix is a **load-independent tell** in `controller/flow_monitor.py`: a node
+claiming to be idle should also be *responsive*. One burning CPU to serve slowly
+answers its `/status` poll far slower than the fastest peer no matter how little
+task traffic it gets. Server links are uniform (`simulation/topology.py`, 2 ms
+each), so a large RTT gap is CPU contention, not network distance — and the RTT is
+the controller's own measurement, so the node can't spoof it. The rule flags:
+
+> `claimed_cpu ≤ idle_claim_threshold` **and** `rtt > latency_liar_ratio ×
+> fleet_baseline` **and** `rtt − fleet_baseline ≥ latency_liar_floor_ms`
+
+(defaults 0.25 / 2.5× / 30 ms, in the `controller:` config block). A fast idle
+node and a slow node that *admits* high CPU are both left alone; only "claims idle
+yet slow" trips. Coverage in `tests/test_flow_monitor.py`
+(`test_latency_tell_catches_sybil_under_p2c_with_no_load` and the two negative
+cases). This is a good result to walk an advisor through: the load-balancing fix
+introduced a detection blind spot, and the detector was made independent of load
+to close it.

@@ -2,7 +2,7 @@
 
 Polls every edge agent's GET /status concurrently (never serially -- a serial
 loop with a per-node timeout can burn most of a 1s budget if even one node is
-dark), feeds the results into the shared TrustState, and derives the two
+dark), feeds the results into the shared TrustState, and derives three
 independent quarantine signals:
 
     1. CPU-honesty deviation: |claimed_cpu - observed_load| > threshold.
@@ -12,8 +12,15 @@ independent quarantine signals:
     2. Packet-drop tell: TrustState.recent_timeout_rate -- a drop attacker can
        self-report CPU honestly, so it needs its own signal entirely separate
        from (1).
+    3. Latency tell: a node claiming to be idle should also be responsive. One
+       burning CPU to serve slowly answers its /status poll far slower than the
+       fastest peer no matter how little task traffic it gets. This is the
+       *load-independent* Sybil signal: (1) only fires once the liar has
+       accumulated observed load, which power-of-two-choices routing prevents by
+       never concentrating traffic on it (docs/LOAD_BALANCING_STARVATION.md), so
+       without this a Sybil under p2c could serve slowly forever undetected.
 
-Either cause calls TrustState.set_anomaly_raw(1.0); a node with neither
+Any cause calls TrustState.set_anomaly_raw(1.0); a node with neither
 problem this cycle gets set_anomaly_raw(0.0), so Ā decays back down under the
 same EMA lambda used everywhere else once misbehaviour stops.
 
@@ -78,6 +85,9 @@ class FlowMonitor:
         on_quarantine: Callable[[str], None],
         bus: Optional[Any] = None,
         on_recover: Optional[Callable[[str], None]] = None,
+        latency_liar_ratio: float = 2.5,
+        latency_liar_floor_ms: float = 30.0,
+        idle_claim_threshold: float = 0.25,
     ) -> None:
         self.state = state
         self.node_ids = list(node_ids)
@@ -85,6 +95,16 @@ class FlowMonitor:
         self.poll_interval_s = poll_interval_s
         self.honesty_deviation_threshold = honesty_deviation_threshold
         self.on_quarantine = on_quarantine
+        # Load-independent Sybil tell: a node claiming to be (near) idle should
+        # answer its /status poll about as fast as the fastest peer. One burning
+        # CPU to serve slowly is far slower to reply regardless of how little task
+        # traffic it is sent -- which is exactly the case p2c routing creates (it
+        # never concentrates load on the liar, so the CPU-honesty deviation check
+        # can't fire). Flag claims-idle AND rtt > ratio x fleet-baseline AND the
+        # absolute gap >= floor (so low-baseline jitter can't trip it).
+        self.latency_liar_ratio = latency_liar_ratio
+        self.latency_liar_floor_ms = latency_liar_floor_ms
+        self.idle_claim_threshold = idle_claim_threshold
         # Optional so existing callers (run_demo.py, the unit tests) keep
         # working unchanged -- they never quarantine anything, so they have
         # nothing to undo.
@@ -122,6 +142,14 @@ class FlowMonitor:
             self.node_ids,
             self._executor.map(self._fetch_status, self.node_ids),
         ))
+
+        # Fleet baseline for the latency tell: the fastest responder this cycle is
+        # the honest-and-idle reference. Server links are uniform (topology.py), so
+        # a large RTT gap is CPU contention, not network distance. Uses only the
+        # controller's own measured RTTs -- a node cannot spoof how long its reply
+        # actually took.
+        measured_rtts = [p.rtt_ms for p in results.values() if p.rtt_ms is not None]
+        latency_baseline = min(measured_rtts) if measured_rtts else None
 
         for node_id in self.node_ids:
             probe = results[node_id]
@@ -173,6 +201,29 @@ class FlowMonitor:
                     reasons.append(
                         f'CPU honesty: |claimed {claimed_avg:.2f} - observed '
                         f'{observed:.2f}| = {deviation:.2f} > {self.honesty_deviation_threshold:.2f}'
+                    )
+
+                # Load-independent Sybil tell (see __init__): claims idle but is
+                # far slower to answer than the fastest peer. Compares only the
+                # controller-measured RTT, so it holds no matter how little task
+                # traffic the liar receives -- the case p2c creates and the
+                # CPU-honesty check above then misses.
+                measured_rtt = probe.rtt_ms
+                if (has_claim and measured_rtt is not None and latency_baseline is not None
+                        and claimed_avg <= self.idle_claim_threshold
+                        and measured_rtt > latency_baseline * self.latency_liar_ratio
+                        and (measured_rtt - latency_baseline) >= self.latency_liar_floor_ms):
+                    ratio = measured_rtt / latency_baseline
+                    logger.warning(
+                        "%s: latency tell -- claims idle (cpu %.2f) but rtt %.0fms "
+                        "is %.1fx the fleet baseline %.0fms",
+                        node_id, claimed_avg, measured_rtt, ratio, latency_baseline,
+                    )
+                    anomaly_raw = 1.0
+                    reasons.append(
+                        f'latency tell: claims idle (cpu {claimed_avg:.2f}) but rtt '
+                        f'{measured_rtt:.0f}ms is {ratio:.1f}x fleet baseline '
+                        f'{latency_baseline:.0f}ms'
                     )
             else:
                 # Agent unreachable this cycle -- treat as suspicious rather
