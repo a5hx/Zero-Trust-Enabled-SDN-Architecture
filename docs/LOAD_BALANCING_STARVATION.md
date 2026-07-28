@@ -43,9 +43,18 @@ Routing is `select_edge_node()` in `controller/edge_selector.py`, which is
 tie-break only fires on **exact** ties (≤ 1e-9); real telemetry jitter separates
 scores at the 4th decimal, so a node a hair behind **never wins**.
 
-Two discrete-event simulations over the *real* selector
-(`scratchpad/fanout_sweep.py`, `scratchpad/lockin_sweep.py`; identical healthy
-servers, configured weights 0.50/0.30/0.20, 1 s poll):
+Reproduce any of this with `python3 -m evaluation.starvation_sweep` (a
+controller-in-the-loop simulation over the *real* selector; identical healthy
+servers, configured weights 0.50/0.30/0.20, 1 s poll — no sudo/Mininet needed):
+
+```
+ strategy |    N |  used | starved | busiest |  Gini
+   argmax |   32 |  2/32 |      30 |     50% |  0.94
+      p2c |   32 | 32/32 |       0 |      3% |  0.04
+  p2c+eps |   32 | 32/32 |       0 |      3% |  0.04
+```
+
+The two regimes that isolate the cause:
 
 **A. Load-only differentiation — argmax spreads fine, even at N = 64.** With
 honest, fresh-enough load feedback the argmax degenerates to join-shortest-queue
@@ -131,4 +140,5 @@ edge_score:
 
 `selection: argmax` with `epsilon: 0.0` preserves the original winner-take-all
 behaviour exactly. See `tests/test_edge_selector.py` for the P2C + ε coverage and
-`scratchpad/lockin_sweep.py` for the before/after fan-out.
+`evaluation/starvation_sweep.py` (`python3 -m evaluation.starvation_sweep`) for
+the before/after fan-out.

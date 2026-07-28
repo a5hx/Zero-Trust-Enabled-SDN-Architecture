@@ -142,6 +142,42 @@ Logs land in `logs/srvN_agent.log` / `logs/iotN_client.log` per host, plus
 whatever Terminal A prints (routing decisions, quarantine events, honesty
 deviations).
 
+### 3b-routing. Choosing the load-balancing strategy (starvation fix)
+
+By default the demo now spreads traffic with **power-of-two-choices + ε-exploration**
+instead of the original winner-take-all `argmax`, which starved healthy servers
+(only ~2 of 4 ever got traffic, regardless of how many servers existed). The full
+analysis, data, and IEEE references are in `docs/LOAD_BALANCING_STARVATION.md`.
+Three knobs, in the `edge_score:` block of the config:
+
+```yaml
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+  selection: p2c   # p2c (default, starvation-resistant) | argmax (old behaviour)
+  d_choices: 2     # p2c sample size
+  epsilon: 0.05    # ε-exploration; 0.0 disables it
+```
+
+Security is unchanged either way: quarantine excludes malicious nodes **before**
+selection, so the sybil `srv3` still receives zero traffic under every setting.
+
+**See the before/after without Mininet** (drives the real selector, no sudo):
+```bash
+python3 -m evaluation.starvation_sweep          # table: argmax vs p2c vs p2c+ε across N
+python3 -m evaluation.starvation_sweep --csv out.csv
+```
+
+**See it live:** run the 3b demo, then from Terminal C watch every server appear
+in the routing log rather than just two:
+```
+mininet> iot1 curl -s http://10.0.99.254:8081/api/state | python3 -m json.tool
+```
+Set `selection: argmax` + `epsilon: 0.0` and re-run to reproduce the starvation
+(two servers pinned at zero `inflight`/route count); switch back to `p2c` to see
+the load spread across all four.
+
 ### 3b-extra. Verifying the Sprint 2 containment upgrades
 
 The quarantine path now does more than delete `srv3`'s VIP rules. Once you
