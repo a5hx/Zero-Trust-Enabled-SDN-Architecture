@@ -147,6 +147,37 @@ def test_latency_tell_ignores_slow_node_that_admits_it_is_busy():
     assert state.get_anomaly('srv3') == 0.0
 
 
+def test_both_attacks_caught_by_their_own_independent_tell():
+    """The params_attacks_demo.yaml scenario, at the detection level. srv3 is a
+    Sybil (claims idle, slow /status) and srv4 is a drop attacker (normal /status,
+    but its tasks time out). Each is caught by a DIFFERENT signal, and neither
+    trips the other's: the Sybil by the latency tell, the dropper by the
+    timeout-rate tell. The two healthy nodes stay clear."""
+    from contracts.trust_update import TrustUpdate
+    state = _four_nodes()
+    # srv4 (drop): its recent task outcomes are timeouts -- the only tell it trips.
+    for st in ['timeout', 'timeout', 'timeout', 'timeout']:
+        state.record_task_outcome(TrustUpdate(
+            device_id='iot1', edge_node_id='srv4', task_status=st,
+            cpu_usage=0.1, reported_cpu=0.1, latency_ms=2000,
+        ))
+    fast = lambda cpu=0.1: StatusProbe({'cpu_load': cpu, 'concurrency': 4}, 20.0)
+    statuses = {
+        'srv1': fast(), 'srv2': fast(),
+        # Sybil: claims idle, /status is sustained-slow -> latency tell.
+        'srv3': StatusProbe({'cpu_load': 0.1, 'concurrency': 4}, 150.0),
+        # Dropper: /status answers normally and honestly -> only the timeout tell.
+        'srv4': fast(),
+    }
+    fm, quarantined = _make_monitor(state, statuses)
+    for _ in range(3):        # latency tell needs a few sustained polls
+        fm._poll_once()
+
+    assert set(quarantined) == {'srv3', 'srv4'}
+    assert state.get_anomaly('srv3') > 0.5 and state.get_anomaly('srv4') > 0.5
+    assert state.get_anomaly('srv1') == 0.0 and state.get_anomaly('srv2') == 0.0
+
+
 def test_packet_drop_tell_uses_timeout_rate_not_cpu_honesty():
     """A drop attacker can self-report CPU honestly -- the deviation check
     alone must NOT catch it. recent_timeout_rate is the separate signal."""

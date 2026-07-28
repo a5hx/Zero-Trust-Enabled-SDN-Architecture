@@ -232,6 +232,37 @@ before/after of **Figure 11** in `docs/study/trust-routing-study.html`.
 
 ---
 
+## 5c. Optional: show the drop attack too (second, independent detector)
+
+The base demo has one attacker (`srv3`, Sybil). To show **both** detection paths in
+one run, launch the opt-in scenario instead — same everything, plus a **packet-drop**
+attacker (`srv4`):
+
+```bash
+# Terminal A (controller) and Terminal B (topology), both with this config:
+ZTSDN_CONFIG=config/params_attacks_demo.yaml python3 -m controller.osken_manager controller.trust_balancer
+sudo python3 -m simulation.topology --config config/params_attacks_demo.yaml --interactive
+```
+
+Two attackers, caught by two **different** signals — a good point to make explicitly:
+
+| node | attack | how it's caught | what you'll see in Terminal A |
+|------|--------|-----------------|-------------------------------|
+| `srv3` | Sybil — claims idle, burns CPU | **latency tell** (claims idle but slow `/status`) | `latency tell: claims idle … x fleet median … (sustained)` |
+| `srv4` | drop — accepts task, never replies | **timeout-rate tell** (clients time out) | `recent timeout rate … > 0.40 — packet-drop tell` |
+
+`srv4` answers its `/status` poll perfectly normally and reports honest CPU — so the
+Sybil checks never fire on it; only its clients' **timeouts** give it away. Watch the
+dashboard: `srv3` and `srv4` both go red, `srv1`/`srv2` carry all the load, and the
+**Load balancing** panel's `starved` stays 0 (two quarantined ≠ starved). Detection
+takes a few seconds longer than the Sybil — the client task timeout is 2 s, so `srv4`
+needs a handful of timed-out tasks before `recent_timeout_rate` crosses the line.
+
+> This is the whole Zero-Trust argument in one screen: two independent misbehaviours,
+> two independent detectors, and healthy load spread the entire time.
+
+---
+
 ## 6. The narrative arc — what to watch, on every surface at once
 
 The demo tells one story. Here's the same story across all four surfaces so you

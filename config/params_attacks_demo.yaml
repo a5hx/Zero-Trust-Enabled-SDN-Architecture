@@ -1,0 +1,121 @@
+# config/params_attacks_demo.yaml
+# Opt-in "both attacks" scenario: identical to params_trust_demo.yaml but with a
+# SECOND malicious edge server so the live demo shows both independent detection
+# paths at once:
+#
+#   srv3  sybil -- lies cpu_load=0.1 while burning CPU. Under p2c it can't attract
+#                  concentrated load, so the CPU-honesty deviation check can't fire;
+#                  it is caught by the LATENCY tell (claims idle but answers /status
+#                  far slower than the fleet median). See docs/LOAD_BALANCING_STARVATION.md.
+#   srv4  drop  -- accepts the task then never replies; the client times out. Caught
+#                  by the TIMEOUT-RATE tell (recent_timeout_rate > threshold), which
+#                  is independent of the CPU-honesty check.
+#
+# Leaves two healthy servers (srv1, srv2) for p2c to spread load across. Use exactly
+# like the base demo:
+#   python3 -m simulation.topology --config config/params_attacks_demo.yaml --interactive
+# (the controller reads its config from ZTSDN_CONFIG or --config; see SETUP.md).
+trust:
+  alpha: 0.35
+  beta: 0.25
+  gamma: 0.25
+  delta: 0.15
+  lambda_decay: 0.85
+  initial_score: 0.5
+
+  # A node is excluded from routing when EITHER condition holds:
+  isolation_threshold: 0.3   # trust score T falls below this, OR
+  anomaly_gate: 0.5          # smoothed anomaly Ā reaches this (quarantine gate).
+
+  # Graduated response middle band: a node above the quarantine rails but below
+  # full trust is still served, but rate-limited (see controller.rate_limit).
+  rate_limit_trust: 0.5      # trust below this (but >= isolation) -> rate-limited
+  anomaly_warn: 0.25         # anomaly at/above this (but < gate) -> rate-limited
+
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+  # p2c + ε, same as the base demo (docs/LOAD_BALANCING_STARVATION.md).
+  selection: p2c
+  d_choices: 2
+  epsilon: 0.05
+
+optimizer:
+  enabled: true
+  algorithm: ucb1
+  window_s: 10.0
+  exploration_c: 1.41
+  reward:
+    latency_penalty: 0.2
+    imbalance_penalty: 0.2
+  arms:
+    - [0.50, 0.30, 0.20]   # balanced (baseline)
+    - [0.70, 0.20, 0.10]   # trust-heavy
+    - [0.34, 0.50, 0.16]   # load-heavy
+    - [0.34, 0.16, 0.50]   # latency-heavy
+    - [0.45, 0.45, 0.10]   # trust + load
+
+simulation:
+  num_edge_nodes: 4
+  num_iot_devices: 12
+  num_malicious: 2
+  duration_s: 120
+
+  # Which EDGE SERVERS misbehave, and how.
+  #   sybil — under-reports CPU while burning it; caught by the latency tell under p2c.
+  #   drop  — accepts the task, then silently never replies; caught by the timeout tell.
+  # (start_s is advisory only — node_agent.py misbehaves from launch; see topology.py.)
+  malicious_edge_nodes:
+    - node: srv3
+      attack: sybil
+      start_s: 20
+    - node: srv4
+      attack: drop
+      start_s: 20
+
+security:
+  auth_scheme: present80
+  shared_key_hex: "00112233445566778899"
+  malicious_iot_devices:
+    - iot12
+
+blockchain:
+  max_updates_per_block: 10
+  block_commit_timeout_s: 5.0
+
+controller:
+  vip: 10.0.99.1
+  vip_port: 9000
+  api_host: 0.0.0.0
+  api_port: 8081
+
+  flow_idle_timeout_s: 10
+  flow_hard_timeout_s: 30
+  monitor_interval_s: 1.0
+
+  # Load-independent Sybil tell (see controller/flow_monitor.py and
+  # docs/LOAD_BALANCING_STARVATION.md §7).
+  latency_liar_ratio: 3.0
+  latency_liar_floor_ms: 40.0
+  idle_claim_threshold: 0.25
+  latency_liar_persist: 3
+
+  rate_limit:
+    enabled: true
+    rate_kbps: 2000
+    burst_kb: 200
+
+  dashboard:
+    enabled: true
+    record_path: data/events.jsonl
+
+  # Sybil CPU-honesty rule AND the drop-attacker timeout-rate tell both compare
+  # against this threshold (|claimed - observed| and recent_timeout_rate).
+  honesty_deviation_threshold: 0.40
+
+agents:
+  node_port: 8000
+  report_interval_s: 1.0
+  task_timeout_s: 2.0
+  task_work_ms: 40
