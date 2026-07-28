@@ -1189,6 +1189,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'isolation': self.state.isolation_threshold,
                 'anomaly_gate': self.state.anomaly_gate,
             },
+            # How the winner is chosen among eligible nodes, so the dashboard can
+            # show whether routing is winner-take-all (argmax) or the
+            # starvation-resistant power-of-two-choices (+ ε). See
+            # docs/LOAD_BALANCING_STARVATION.md.
+            'selection': {
+                'strategy': self.state.selection_strategy,
+                'd_choices': self.state.d_choices,
+                'epsilon': self.state.epsilon,
+            },
         }
 
     def optimizer_status(self) -> Dict[str, Any]:

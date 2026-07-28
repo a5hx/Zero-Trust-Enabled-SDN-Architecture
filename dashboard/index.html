@@ -125,6 +125,20 @@
   .cmp { display: flex; gap: 6px; align-items: center; font-size: 10px; color: var(--muted); }
   .lie { color: var(--bad); font-weight: 600; }
 
+  /* ---------- load balancing ---------- */
+  .lbStats {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    margin-bottom: 11px; padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  }
+  .lbStat { display: flex; flex-direction: column; gap: 1px; }
+  .lbNum { font-size: 17px; font-weight: 700; line-height: 1.1; }
+  .lbNum.good { color: var(--good); }
+  .lbNum.bad { color: var(--bad); }
+  .lbLbl { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+  .lbRow { display: grid; grid-template-columns: 46px 1fr 96px; align-items: center; gap: 8px; margin: 4px 0; }
+  .lbName { font-size: 12px; font-weight: 600; }
+  .lbVal { font-size: 10px; text-align: right; color: var(--muted); white-space: nowrap; }
+
   /* ---------- rules ---------- */
   #rules { max-height: 300px; overflow: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -201,6 +215,7 @@
   <span class="sub" id="vip">—</span>
   <div class="spacer"></div>
   <span class="pill" id="formula" title="EdgeScore(n) = w1·T(n) + w2·(1−cpu) + w3·(1−lat)">EdgeScore = —</span>
+  <span class="pill" id="selection" title="How the winner is chosen among eligible nodes. p2c = power-of-two-choices (starvation-resistant); argmax = winner-take-all. Quarantine still runs first either way.">routing —</span>
   <span class="pill" id="throughput" title="Total measured link throughput across all switch ports (OFPPortStats, real counters)">links —</span>
   <span class="pill" id="dropped" title="Total packets dropped by quarantine drop rules (priority 400, action=drop)">dropped —</span>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></span>
@@ -244,6 +259,13 @@
     </div>
 
     <div class="panel">
+      <h2>Load balancing
+        <span class="note">— per-server routing share &amp; fairness, tallied live from routing decisions</span>
+      </h2>
+      <div class="body" id="balance"><div class="empty">waiting for the first routing decision…</div></div>
+    </div>
+
+    <div class="panel">
       <h2>Events</h2>
       <div id="log"></div>
     </div>
@@ -273,6 +295,8 @@ const S = {
   optimizer: null,    // {weights:[w1,w2,w3], arms:[...], lastReward, outcomes}
   weights: null,      // live EdgeScore weights {w1_trust,w2_cpu,w3_latency}
   dropped: {},        // node -> cumulative dropped packets (from drop rules)
+  routeCounts: {},    // srvN -> cumulative routing decisions won (from 'route' events)
+  routeTotal: 0,      // total routing decisions seen
 };
 
 function renderThroughput() {
@@ -289,6 +313,85 @@ function renderDropped() {
   if (!el) return;
   el.textContent = total > 0 ? `dropped ${total.toLocaleString()} pkts` : 'dropped —';
   el.style.color = total > 0 ? 'var(--bad)' : '';
+}
+
+// Routing strategy pill: p2c (starvation-resistant) vs argmax (winner-take-all).
+function renderSelection() {
+  const el = document.getElementById('selection');
+  const sel = S.topo && S.topo.selection;
+  if (!el || !sel) return;
+  if (sel.strategy === 'p2c') {
+    const eps = sel.epsilon > 0 ? ` · ε=${(+sel.epsilon).toFixed(2)}` : '';
+    el.textContent = `routing p2c · d=${sel.d_choices}${eps}`;
+    el.style.color = 'var(--good)';
+  } else {
+    el.textContent = `routing ${sel.strategy}`;
+    el.style.color = 'var(--warn)';   // argmax = the winner-take-all mode that starves
+  }
+}
+
+// Gini coefficient of an array of counts, in [0,1]: 0 = perfectly even split,
+// 1 = one server takes everything. The one-number fairness summary.
+function gini(xs) {
+  const n = xs.length, sum = xs.reduce((a, b) => a + b, 0);
+  if (!n || sum === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  let cum = 0;
+  for (let i = 0; i < n; i++) cum += (i + 1) * s[i];
+  return (2 * cum - (n + 1) * sum) / (n * sum);
+}
+
+// Load-balancing panel: per-server routing share plus live fairness metrics
+// (active/starved/busiest/Gini), tallied from the 'route' event stream. This is
+// the direct, live answer to "do all healthy servers get traffic?" — see
+// docs/LOAD_BALANCING_STARVATION.md.
+function renderBalance() {
+  const box = document.getElementById('balance');
+  if (!box || !S.topo) return;
+  const servers = S.topo.nodes.filter(n => n.kind === 'server').map(n => n.id).sort();
+  if (!servers.length) return;
+
+  const counts = servers.map(id => S.routeCounts[id] || 0);
+  const total = S.routeTotal || 0;
+  if (total === 0) return;
+  const max = Math.max(...counts, 1);
+  // A server with zero routes is "starved" only if it is NOT quarantined — a
+  // quarantined node getting no traffic is correct, not starvation.
+  const starved = servers.filter(id =>
+    (S.routeCounts[id] || 0) === 0 && !S.quarantined.has(id));
+  const active = servers.filter(id => (S.routeCounts[id] || 0) > 0).length;
+  const busiest = Math.max(...counts) / total;
+  const g = gini(counts);
+
+  const stat = (label, val, cls = '') =>
+    `<div class="lbStat"><span class="lbNum ${cls}">${val}</span><span class="lbLbl">${label}</span></div>`;
+
+  const bars = servers.map((id, i) => {
+    const c = counts[i], pct = total ? (c / total * 100) : 0;
+    const q = S.quarantined.has(id);
+    const starvedHere = c === 0 && !q;
+    const col = q ? 'var(--bad)' : (starvedHere ? 'var(--warn)' : 'var(--accent)');
+    // State is carried by colour: red name = quarantined (correct), amber name =
+    // starved healthy node (the bug this panel exists to rule out), plain = serving.
+    const nameCol = q ? 'var(--bad)' : (starvedHere ? 'var(--warn)' : '');
+    const note = q ? ' quar' : (starvedHere ? ' starved' : '');
+    return `
+      <div class="lbRow">
+        <span class="lbName" style="color:${nameCol}">${id}</span>
+        <span class="bar"><i style="width:${(c / max * 100).toFixed(0)}%;background:${col}"></i></span>
+        <span class="lbVal">${c.toLocaleString()} · ${pct.toFixed(1)}%${note}</span>
+      </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="lbStats">
+      ${stat('decisions', total.toLocaleString())}
+      ${stat('serving', `${active}/${servers.length}`)}
+      ${stat('starved', starved.length, starved.length ? 'bad' : 'good')}
+      ${stat('busiest', `${(busiest * 100).toFixed(0)}%`)}
+      ${stat('Gini', g.toFixed(2), g <= 0.2 ? 'good' : (g >= 0.5 ? 'bad' : ''))}
+    </div>
+    ${bars}`;
 }
 
 // The EdgeScore weights the router is using right now. Starts from the topology
@@ -852,13 +955,17 @@ function handle(ev) {
         if (s.quarantined) S.quarantined.add(id); else S.quarantined.delete(id);
       }
       renderTrust();
+      renderBalance();   // quarantine state feeds the starved/served labels
       paintNodes();
       return;   // too frequent to log
 
     case 'route': {
       const iot = 'iot' + parseInt(ev.client_ip.split('.')[3], 10);
       S.lastRoute[ev.chosen] = { client: iot, score: ev.edge_score };
+      S.routeCounts[ev.chosen] = (S.routeCounts[ev.chosen] || 0) + 1;
+      S.routeTotal++;
       routePulse(iot, ev.chosen, ev.edge_score);
+      renderBalance();
       break;
     }
 
@@ -882,6 +989,7 @@ function handle(ev) {
       S.quarantined.add(ev.node);
       paintNodes();
       rebuildPaths(S.flows);
+      renderBalance();
       break;
 
     case 'flow_delete':
@@ -931,6 +1039,7 @@ async function boot() {
   document.getElementById('vip').textContent = `VIP ${S.topo.vip}`;
   S.weights = S.topo.weights;
   updateFormula();
+  renderSelection();
 
   try {
     const f = await fetch('/api/flows');

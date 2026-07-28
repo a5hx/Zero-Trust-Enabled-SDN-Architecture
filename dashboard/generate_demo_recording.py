@@ -135,6 +135,15 @@ class Sim:
                 lambda_decay=0.85, initial_score=0.5,
             ),
             edge_weights=EdgeWeights(w1_trust=0.50, w2_cpu=0.30, w3_latency=0.20),
+            # Match config/params_trust_demo.yaml: power-of-two-choices + ε so the
+            # replayed fallback demo shows the same load spreading (and the same
+            # Load-balancing panel) as the live run, not the old argmax starvation.
+            # Seeded off the module `random` (main() calls random.seed) so the
+            # recording stays reproducible. See docs/LOAD_BALANCING_STARVATION.md.
+            selection_strategy='p2c',
+            d_choices=2,
+            epsilon=0.05,
+            selection_rng=random,
             optimizer=UCB1WeightOptimizer(OPTIMIZER_ARMS, exploration_c=1.41),
             optimizer_window_s=0.0,   # one window per poll under the virtual clock
             isolation_threshold=0.3,
@@ -303,6 +312,7 @@ class Sim:
             'nodes': nodes, 'links': links, 'vip': f'{VIP}:{VIP_PORT}',
             'weights': {'w1_trust': 0.50, 'w2_cpu': 0.30, 'w3_latency': 0.20},
             'thresholds': {'isolation': 0.3, 'anomaly_gate': 0.5},
+            'selection': {'strategy': 'p2c', 'd_choices': 2, 'epsilon': 0.05},
         }
 
     def run(self) -> List[Dict[str, Any]]:
