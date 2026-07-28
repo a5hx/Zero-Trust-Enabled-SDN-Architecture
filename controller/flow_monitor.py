@@ -39,9 +39,10 @@ Mininet hosts have no DNS resolution for each other's names.
 import http.client
 import json
 import logging
+import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from os_ken.lib import hub
 
@@ -85,9 +86,10 @@ class FlowMonitor:
         on_quarantine: Callable[[str], None],
         bus: Optional[Any] = None,
         on_recover: Optional[Callable[[str], None]] = None,
-        latency_liar_ratio: float = 2.5,
-        latency_liar_floor_ms: float = 30.0,
+        latency_liar_ratio: float = 3.0,
+        latency_liar_floor_ms: float = 40.0,
         idle_claim_threshold: float = 0.25,
+        latency_liar_persist: int = 3,
     ) -> None:
         self.state = state
         self.node_ids = list(node_ids)
@@ -96,15 +98,25 @@ class FlowMonitor:
         self.honesty_deviation_threshold = honesty_deviation_threshold
         self.on_quarantine = on_quarantine
         # Load-independent Sybil tell: a node claiming to be (near) idle should
-        # answer its /status poll about as fast as the fastest peer. One burning
-        # CPU to serve slowly is far slower to reply regardless of how little task
-        # traffic it is sent -- which is exactly the case p2c routing creates (it
-        # never concentrates load on the liar, so the CPU-honesty deviation check
-        # can't fire). Flag claims-idle AND rtt > ratio x fleet-baseline AND the
-        # absolute gap >= floor (so low-baseline jitter can't trip it).
+        # answer its /status poll about as fast as the rest of the fleet. One
+        # burning CPU to serve slowly is far slower to reply regardless of how
+        # little task traffic it is sent -- the case p2c routing creates (it never
+        # concentrates load on the liar, so the CPU-honesty deviation check can't
+        # fire). Two deliberate robustness choices, because a live /status RTT is
+        # noisy (GIL, scheduling, the controller host itself under load):
+        #   * baseline = MEDIAN of the fleet's RTTs, not the min. The min makes one
+        #     lucky-fast poll brand every other node an outlier; the median needs a
+        #     majority to be honest (the standard assumption) and self-normalises
+        #     when the whole host slows down uniformly (median rises with it).
+        #   * PERSISTENCE: the "claims idle but slow" condition must hold for
+        #     latency_liar_persist consecutive polls before it flags. A CPU-burner
+        #     is slow every poll; transient jitter is not, so a single blip resets
+        #     the strike counter. ~persist seconds at a 1s poll, inside the <3s NFR.
         self.latency_liar_ratio = latency_liar_ratio
         self.latency_liar_floor_ms = latency_liar_floor_ms
         self.idle_claim_threshold = idle_claim_threshold
+        self.latency_liar_persist = latency_liar_persist
+        self._latency_strikes: Dict[str, int] = {nid: 0 for nid in self.node_ids}
         # Optional so existing callers (run_demo.py, the unit tests) keep
         # working unchanged -- they never quarantine anything, so they have
         # nothing to undo.
@@ -143,13 +155,13 @@ class FlowMonitor:
             self._executor.map(self._fetch_status, self.node_ids),
         ))
 
-        # Fleet baseline for the latency tell: the fastest responder this cycle is
-        # the honest-and-idle reference. Server links are uniform (topology.py), so
-        # a large RTT gap is CPU contention, not network distance. Uses only the
-        # controller's own measured RTTs -- a node cannot spoof how long its reply
-        # actually took.
+        # Fleet baseline for the latency tell: the MEDIAN measured RTT this cycle
+        # (see __init__ for why median not min). Server links are uniform
+        # (topology.py), so a node far above the median is CPU-slow, not far away.
+        # Uses only the controller's own measured RTTs -- a node cannot spoof how
+        # long its reply actually took.
         measured_rtts = [p.rtt_ms for p in results.values() if p.rtt_ms is not None]
-        latency_baseline = min(measured_rtts) if measured_rtts else None
+        latency_baseline = statistics.median(measured_rtts) if measured_rtts else None
 
         for node_id in self.node_ids:
             probe = results[node_id]
@@ -204,26 +216,44 @@ class FlowMonitor:
                     )
 
                 # Load-independent Sybil tell (see __init__): claims idle but is
-                # far slower to answer than the fastest peer. Compares only the
-                # controller-measured RTT, so it holds no matter how little task
-                # traffic the liar receives -- the case p2c creates and the
-                # CPU-honesty check above then misses.
+                # far slower to answer than the fleet median, and stays that way.
+                # Compares only the controller-measured RTT, so it holds no matter
+                # how little task traffic the liar receives -- the case p2c creates
+                # and the CPU-honesty check above then misses. Requires the
+                # condition to persist so noisy single polls can't quarantine a
+                # healthy node.
                 measured_rtt = probe.rtt_ms
-                if (has_claim and measured_rtt is not None and latency_baseline is not None
-                        and claimed_avg <= self.idle_claim_threshold
-                        and measured_rtt > latency_baseline * self.latency_liar_ratio
-                        and (measured_rtt - latency_baseline) >= self.latency_liar_floor_ms):
+                slow_and_idle = (
+                    has_claim and measured_rtt is not None and latency_baseline is not None
+                    and claimed_avg <= self.idle_claim_threshold
+                    and measured_rtt > latency_baseline * self.latency_liar_ratio
+                    and (measured_rtt - latency_baseline) >= self.latency_liar_floor_ms
+                )
+                # Leaky bucket, not a consecutive counter: a strike on a slow poll,
+                # a decrement on a fast one, capped just above the trip level. A
+                # CPU-burner is slow nearly every poll so it fills and stays full
+                # (one good poll can't clear it); transient jitter drains back to 0
+                # without ever filling. This keeps the quarantine steady instead of
+                # flapping when a healthy node blips and momentarily lifts the median.
+                strikes = self._latency_strikes.get(node_id, 0)
+                if slow_and_idle:
+                    strikes = min(self.latency_liar_persist + 1, strikes + 1)
+                else:
+                    strikes = max(0, strikes - 1)
+                self._latency_strikes[node_id] = strikes
+                if strikes >= self.latency_liar_persist:
                     ratio = measured_rtt / latency_baseline
                     logger.warning(
-                        "%s: latency tell -- claims idle (cpu %.2f) but rtt %.0fms "
-                        "is %.1fx the fleet baseline %.0fms",
+                        "%s: latency tell -- claims idle (cpu %.2f) but rtt %.0fms is "
+                        "%.1fx the fleet median %.0fms (%d/%d strikes)",
                         node_id, claimed_avg, measured_rtt, ratio, latency_baseline,
+                        strikes, self.latency_liar_persist,
                     )
                     anomaly_raw = 1.0
                     reasons.append(
                         f'latency tell: claims idle (cpu {claimed_avg:.2f}) but rtt '
-                        f'{measured_rtt:.0f}ms is {ratio:.1f}x fleet baseline '
-                        f'{latency_baseline:.0f}ms'
+                        f'{measured_rtt:.0f}ms is {ratio:.1f}x fleet median '
+                        f'{latency_baseline:.0f}ms (sustained)'
                     )
             else:
                 # Agent unreachable this cycle -- treat as suspicious rather

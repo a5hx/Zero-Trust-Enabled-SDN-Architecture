@@ -62,58 +62,89 @@ def test_sybil_liar_deviation_triggers_anomaly_and_quarantine():
     assert quarantined == ['srv1']  # edge-triggered exactly once
 
 
-def test_latency_tell_catches_sybil_under_p2c_with_no_load():
-    """The load-independent Sybil tell. srv2 claims to be idle but answers its
-    /status poll far slower than the fast peer (CPU burn). It has received NO
-    task traffic (p2c never concentrated load on it), so observed_load is 0 and
-    the CPU-honesty deviation check CANNOT fire -- yet it is still caught."""
-    state = TrustState(node_ids=['srv1', 'srv2'], anomaly_gate=0.5, anomaly_lambda=0.85)
-    for nid in ('srv1', 'srv2'):
+def _four_nodes(anomaly_gate=0.5):
+    state = TrustState(node_ids=['srv1', 'srv2', 'srv3', 'srv4'],
+                       anomaly_gate=anomaly_gate, anomaly_lambda=0.85)
+    for nid in state.node_ids:
         state.set_concurrency(nid, 4)
-    fm, quarantined = _make_monitor(state, {
-        'srv1': StatusProbe({'cpu_load': 0.1, 'latency_ms': 20, 'concurrency': 4}, 20.0),
-        # claims idle (0.1) but its reply is 7.5x slower than the fast peer
-        'srv2': StatusProbe({'cpu_load': 0.1, 'latency_ms': 20, 'concurrency': 4}, 150.0),
-    })
-    fm._poll_once()
+    return state
 
-    # Honesty deviation did NOT fire (no load): |0.1 - 0.0| = 0.1 < 0.40.
-    assert state.observed_load('srv2') == 0.0
-    # The latency tell did: srv2 quarantined, the honest fast peer untouched.
-    assert quarantined == ['srv2']
-    assert state.get_anomaly('srv2') > 0.5
-    assert state.get_anomaly('srv1') == 0.0
+
+def test_latency_tell_catches_sybil_under_p2c_with_no_load():
+    """The load-independent Sybil tell. srv3 claims to be idle but answers its
+    /status poll far slower than the healthy majority (CPU burn), and stays that
+    way. It has received NO task traffic (p2c never concentrated load on it), so
+    observed_load is 0 and the CPU-honesty deviation check CANNOT fire -- yet
+    after `persist` sustained polls it is caught."""
+    state = _four_nodes()
+    fast = lambda: StatusProbe({'cpu_load': 0.1, 'concurrency': 4}, 20.0)
+    statuses = {
+        'srv1': fast(), 'srv2': fast(), 'srv4': fast(),
+        # claims idle (0.1) but ~7x the fleet median, every poll
+        'srv3': StatusProbe({'cpu_load': 0.1, 'concurrency': 4}, 150.0),
+    }
+    fm, quarantined = _make_monitor(state, statuses)
+
+    # Not caught on the first poll -- persistence guards against a single blip.
+    fm._poll_once()
+    assert quarantined == []
+    # Sustained slowness crosses the strike threshold and quarantines it.
+    fm._poll_once()
+    fm._poll_once()
+    assert state.observed_load('srv3') == 0.0     # honesty check never had a chance
+    assert quarantined == ['srv3']                # only the liar, only once
+    assert state.get_anomaly('srv3') > 0.5
+    assert all(state.get_anomaly(n) == 0.0 for n in ('srv1', 'srv2', 'srv4'))
 
 
 def test_latency_tell_ignores_fast_idle_nodes():
     """Honest idle nodes all answer quickly -- no fleet outlier, nothing flagged."""
-    state = TrustState(node_ids=['srv1', 'srv2'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    state = _four_nodes()
     fm, quarantined = _make_monitor(state, {
-        'srv1': StatusProbe({'cpu_load': 0.05, 'latency_ms': 15, 'concurrency': 4}, 18.0),
-        'srv2': StatusProbe({'cpu_load': 0.10, 'latency_ms': 15, 'concurrency': 4}, 22.0),
+        'srv1': StatusProbe({'cpu_load': 0.05, 'concurrency': 4}, 18.0),
+        'srv2': StatusProbe({'cpu_load': 0.10, 'concurrency': 4}, 22.0),
+        'srv3': StatusProbe({'cpu_load': 0.08, 'concurrency': 4}, 25.0),
+        'srv4': StatusProbe({'cpu_load': 0.10, 'concurrency': 4}, 20.0),
     })
-    fm._poll_once()
+    for _ in range(5):
+        fm._poll_once()
     assert quarantined == []
-    assert state.get_anomaly('srv1') == 0.0 and state.get_anomaly('srv2') == 0.0
+    assert all(state.get_anomaly(n) == 0.0 for n in state.node_ids)
+
+
+def test_latency_tell_ignores_transient_jitter():
+    """A healthy node that blips slow for one poll, then recovers, must NOT be
+    quarantined -- the strike counter resets, so it never reaches persist."""
+    state = _four_nodes()
+    fast = lambda: StatusProbe({'cpu_load': 0.1, 'concurrency': 4}, 20.0)
+    slow = StatusProbe({'cpu_load': 0.1, 'concurrency': 4}, 200.0)
+    statuses = {'srv1': fast(), 'srv2': fast(), 'srv3': fast(), 'srv4': fast()}
+    fm, quarantined = _make_monitor(state, statuses)
+
+    for i in range(6):
+        statuses['srv2'] = slow if i % 2 == 0 else fast()   # slow every other poll
+        fm._poll_once()
+    assert quarantined == []                 # never 3 in a row -> never flagged
+    assert state.get_anomaly('srv2') == 0.0
 
 
 def test_latency_tell_ignores_slow_node_that_admits_it_is_busy():
     """A genuinely busy, honest node is slow to answer -- but it CLAIMS high CPU,
     so the slowness is consistent, not a lie. The latency tell must not fire (and
     with its load matching its claim, neither does the honesty check)."""
-    state = TrustState(node_ids=['srv1', 'srv2'], anomaly_gate=0.5, anomaly_lambda=0.85)
-    for nid in ('srv1', 'srv2'):
-        state.set_concurrency(nid, 4)
-    # srv2 really is busy: 3 inflight of 4 -> observed ~0.75, and it claims 0.7.
+    state = _four_nodes()
+    # srv3 really is busy: 3 inflight of 4 -> observed ~0.75, and it claims 0.7.
     for port in range(7000, 7003):
-        state.register_dispatch('10.0.0.9', port, 'srv2')
+        state.register_dispatch('10.0.0.9', port, 'srv3')
+    fast = lambda: StatusProbe({'cpu_load': 0.1, 'concurrency': 4}, 20.0)
     fm, quarantined = _make_monitor(state, {
-        'srv1': StatusProbe({'cpu_load': 0.1, 'latency_ms': 20, 'concurrency': 4}, 20.0),
-        'srv2': StatusProbe({'cpu_load': 0.7, 'latency_ms': 20, 'concurrency': 4}, 150.0),
+        'srv1': fast(), 'srv2': fast(), 'srv4': fast(),
+        'srv3': StatusProbe({'cpu_load': 0.7, 'concurrency': 4}, 150.0),
     })
-    fm._poll_once()
+    for _ in range(5):
+        fm._poll_once()
     assert quarantined == []                 # admits its load -> not a liar
-    assert state.get_anomaly('srv2') == 0.0
+    assert state.get_anomaly('srv3') == 0.0
 
 
 def test_packet_drop_tell_uses_timeout_rate_not_cpu_honesty():

@@ -156,18 +156,35 @@ flagged**. The load-balancing fix removed the very concentration that exposed it
 
 The fix is a **load-independent tell** in `controller/flow_monitor.py`: a node
 claiming to be idle should also be *responsive*. One burning CPU to serve slowly
-answers its `/status` poll far slower than the fastest peer no matter how little
-task traffic it gets. Server links are uniform (`simulation/topology.py`, 2 ms
-each), so a large RTT gap is CPU contention, not network distance — and the RTT is
-the controller's own measurement, so the node can't spoof it. The rule flags:
+answers its `/status` poll far slower than the rest of the fleet no matter how
+little task traffic it gets. Server links are uniform (`simulation/topology.py`,
+2 ms each), so a sustained large RTT gap is CPU contention, not network distance —
+and the RTT is the controller's own measurement, so the node can't spoof it. The
+rule flags:
 
 > `claimed_cpu ≤ idle_claim_threshold` **and** `rtt > latency_liar_ratio ×
-> fleet_baseline` **and** `rtt − fleet_baseline ≥ latency_liar_floor_ms`
+> fleet_median` **and** `rtt − fleet_median ≥ latency_liar_floor_ms`, **sustained**
+> for `latency_liar_persist` polls
 
-(defaults 0.25 / 2.5× / 30 ms, in the `controller:` config block). A fast idle
-node and a slow node that *admits* high CPU are both left alone; only "claims idle
-yet slow" trips. Coverage in `tests/test_flow_monitor.py`
-(`test_latency_tell_catches_sybil_under_p2c_with_no_load` and the two negative
-cases). This is a good result to walk an advisor through: the load-balancing fix
-introduced a detection blind spot, and the detector was made independent of load
-to close it.
+(defaults 0.25 / 3.0× / 40 ms / 3, in the `controller:` config block). Two
+robustness choices matter, because a live `/status` RTT is noisy (GIL, scheduling,
+the controller host itself under load) and a naive version quarantined *healthy*
+nodes:
+
+- **Baseline is the fleet MEDIAN, not the min.** The min brands every node an
+  outlier the moment one node has a lucky-fast poll; the median needs a majority
+  to be honest (the standard assumption) and self-normalises when the whole host
+  slows down uniformly (the median rises with it, so ratios stay put).
+- **Persistence via a leaky bucket.** A strike on a slow poll, a decrement on a
+  fast one, capped just above the trip level. A CPU-burner is slow nearly every
+  poll so the bucket fills and stays full (one good poll can't clear it); jitter
+  drains back to zero without ever filling — so the quarantine is steady, not
+  flapping.
+
+A fast idle node, a slow node that *admits* high CPU, and a healthy node that
+merely blips slow are all left alone; only "claims idle yet *sustained* slow"
+trips. Coverage in `tests/test_flow_monitor.py`
+(`test_latency_tell_catches_sybil_under_p2c_with_no_load`, plus jitter and
+admits-busy negatives). This is a good result to walk an advisor through: the
+load-balancing fix introduced a detection blind spot, and the detector was made
+independent of load — and robust to real RTT noise — to close it.

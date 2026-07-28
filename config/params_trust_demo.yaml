@@ -129,16 +129,20 @@ controller:
   monitor_interval_s: 1.0
 
   # Load-independent Sybil tell: a node claiming to be idle should answer its
-  # /status poll about as fast as the fastest peer. One burning CPU to serve
+  # /status poll about as fast as the rest of the fleet. One burning CPU to serve
   # slowly is far slower to reply no matter how little traffic it gets -- the case
   # p2c routing creates, where the CPU-honesty deviation check can't fire because
   # the liar never accumulates load. Flags claims-idle (cpu <= idle_claim_threshold)
-  # AND rtt > latency_liar_ratio x fleet-baseline AND the absolute gap >=
-  # latency_liar_floor_ms. Server links are uniform, so a large RTT gap is CPU,
-  # not network. See controller/flow_monitor.py and docs/LOAD_BALANCING_STARVATION.md.
-  latency_liar_ratio: 2.5
-  latency_liar_floor_ms: 30.0
+  # AND rtt > latency_liar_ratio x fleet MEDIAN AND the absolute gap >=
+  # latency_liar_floor_ms, sustained for latency_liar_persist consecutive polls
+  # (so noisy single polls can't quarantine a healthy node). Median (not min) and
+  # persistence keep it robust to live RTT jitter. Server links are uniform, so a
+  # sustained large RTT gap is CPU, not network. See controller/flow_monitor.py
+  # and docs/LOAD_BALANCING_STARVATION.md.
+  latency_liar_ratio: 3.0
+  latency_liar_floor_ms: 40.0
   idle_claim_threshold: 0.25
+  latency_liar_persist: 3
 
   # Graduated response: flows to a mid-band (suspect) edge server are metered
   # to this rate via an OpenFlow meter. The controller probes each switch for
