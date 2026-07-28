@@ -169,10 +169,10 @@ python3 -m evaluation.starvation_sweep          # table: argmax vs p2c vs p2c+ε
 python3 -m evaluation.starvation_sweep --csv out.csv
 ```
 
-**See it live:** run the 3b demo, then from Terminal C watch every server appear
-in the routing log rather than just two:
+**See it live:** run the 3b demo, then from the Mininet CLI watch every healthy
+server carry load (non-zero `inflight`) rather than just two:
 ```
-mininet> iot1 curl -s http://10.0.99.254:8081/api/state | python3 -m json.tool
+mininet> iot1 curl -s http://10.0.99.254:8081/node/status | python3 -m json.tool
 ```
 Set `selection: argmax` + `epsilon: 0.0` and re-run to reproduce the starvation
 (two servers pinned at zero `inflight`/route count); switch back to `p2c` to see

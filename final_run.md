@@ -4,11 +4,14 @@ A single, ordered walkthrough that brings up **everything built so far** at once
 and drives it live: the trust-aware SDN controller, the Mininet network with real
 IoT traffic, Wireshark on both the OpenFlow control channel and the data plane,
 and the **live** browser dashboard (not the pre-recorded replay) showing routing,
-trust, packet drops, and the AI weight optimizer learning in real time.
+trust, packet drops, and the AI weight optimizer learning in real time. Routing
+now spreads load across **all** healthy servers via power-of-two-choices, not just
+the top two — the starvation fix (§5b).
 
 > This is the demo-day runbook. For install/environment details and per-feature
 > deep dives see **`SETUP.md`**; for the optimizer design see
-> **`docs/AI_OPTIMIZER.md`**; for the flow-rule scheme see **`docs/FLOW_RULES.md`**.
+> **`docs/AI_OPTIMIZER.md`**; for the flow-rule scheme see **`docs/FLOW_RULES.md`**;
+> for the load-balancing starvation fix see **`docs/LOAD_BALANCING_STARVATION.md`**.
 >
 > **Platform note:** this box ships only Python 3.14, so the controller uses
 > **os-ken** (a maintained Ryu fork), and `sudo` needs an interactive password —
@@ -42,13 +45,15 @@ python3 -c "import os_ken; print(os_ken.__version__)"   # 4.1.1
 python3 -m pytest tests/ -q                             # expect: all passing
 
 # Confirm the demo config has the features on (they are, by default):
-grep -E "enabled|auth_scheme|rate_limit" config/params_trust_demo.yaml
+grep -E "enabled|auth_scheme|rate_limit|selection|epsilon" config/params_trust_demo.yaml
 ```
 
 `config/params_trust_demo.yaml` is the demo scenario: **4 edge servers, 12 IoT
 devices, 1 malicious edge server (`srv3`, Sybil/CPU-lie), 1 malicious IoT
 (`iot12`, wrong key), 120 s**. It has the dashboard, PRESENT-80 auth, meters, and
-the AI optimizer all enabled.
+the AI optimizer all enabled, and routes with **`selection: p2c`** (+ `epsilon:
+0.05`) so healthy load is shared across all four servers instead of starving two
+(§5b, `docs/LOAD_BALANCING_STARVATION.md`).
 
 **One-time display permission for Wireshark** (Mininet runs as root, so GUI apps
 launched from inside it draw as root and need this — run as your **normal** user):
@@ -185,6 +190,48 @@ pull count + mean reward — the same numbers the dashboard's Optimizer panel dr
 
 ---
 
+## 5b. Show the load-balancing fix (all healthy servers share load)
+
+The router used to be winner-take-all `argmax`: it sent everything to the single
+best node, so once trust entrenched two servers the other two got **zero** traffic
+— a healthy server starved, not a security decision. The demo config now routes
+with **power-of-two-choices** (`selection: p2c`), so healthy load is shared across
+all of `srv1`, `srv2`, `srv4` (and `srv3` until it's caught). Full analysis and
+IEEE references: `docs/LOAD_BALANCING_STARVATION.md`.
+
+**On the dashboard:** the routing pulses fan out to *all* healthy servers, not two.
+
+**From the Mininet CLI** — every healthy node shows non-zero `inflight` (current
+load); with `argmax` two of them would sit pinned at `0`:
+```
+mininet> iot1 curl -s http://10.0.99.254:8081/node/status | python3 -m json.tool
+```
+
+**Hard per-server counts** — the controller records every decision to
+`data/events.jsonl` (dashboard is on). Tally the share so far (run it in the repo
+root, in Terminal A or a spare shell):
+```bash
+python3 -m evaluation.tally_route_share data/events.jsonl
+```
+Under `p2c` all four servers appear with a comparable share; the `starved` line is
+empty. Keep this number for the before/after point below.
+
+**The before/after (optional, off the live clock).** Reproduce the contrast with
+no Mininet — this drives the *real* selector:
+```bash
+python3 -m evaluation.starvation_sweep          # argmax: 2 used / N-2 starved; p2c: all used
+```
+Or, for a true live before/after, run the whole demo once with `selection: argmax`
+in the config and once with `p2c`, saving `data/events.jsonl` between runs and
+tallying each (see `SETUP.md` §3b-routing). Those two tallies are exactly the
+before/after of **Figure 11** in `docs/study/trust-routing-study.html`.
+
+> Security is unchanged by this: quarantine excludes a malicious node **before**
+> selection, so `srv3` still gets zero traffic once caught — p2c only changes which
+> *healthy* node wins.
+
+---
+
 ## 6. The narrative arc — what to watch, on every surface at once
 
 The demo tells one story. Here's the same story across all four surfaces so you
@@ -192,7 +239,7 @@ can narrate it:
 
 | ~Time | What happens | Dashboard (`:8081`) | Wireshark | Terminal A / CLI |
 |-------|--------------|---------------------|-----------|------------------|
-| 0–10 s | Switches connect, traffic starts, routing by EdgeScore | Blue dots flow IoT→switch→server; labelled pulses `→ srv2 (0.81)`; trust bars fill | `HELLO`, `FEATURES`, first `FLOW_MOD`s | `Routed ... -> srvN` |
+| 0–10 s | Switches connect, traffic starts, routing by EdgeScore | Blue dots flow IoT→switch→server, fanning out across **all four** servers (p2c, §5b); labelled pulses `→ srv2 (0.81)`; trust bars fill | `HELLO`, `FEATURES`, first `FLOW_MOD`s | `Routed ... -> srvN` (all healthy srvN, not just two) |
 | 0–120 s | **AI optimizer** tunes weights every 10 s | **AI Optimizer panel**: active-weights bar shifts, arm rows accrue pulls/reward (`◀` active, `★` best); header `EdgeScore =` formula updates live | `MULTIPART` stat polls | `OPTIMIZER: window closed reward=...` |
 | ~5 s | `iot12` (wrong key) tries to join | (no traffic ever appears from iot12) | 403 on its `/register` | `grep "AUTH DENIED" logs/iot12_client.log` |
 | ~20 s | `srv3` starts **lying** about CPU | Trust panel: srv3's **claimed CPU** bar separates from **observed load**; `CPU LIE` tag | data-plane traffic still flowing to srv3 | honesty-deviation logs |
@@ -201,12 +248,19 @@ can narrate it:
 | ~catch+ε | srv3's clients re-steered | traffic re-appears on a healthy server | new `FLOW_MOD` rewrite rules | `Re-dispatched N client(s) ... < 3000ms` |
 | after | srv3 stays isolated | `iot1 ping -c 3 srv3` → 100% loss; drop-rule `n_packets` keeps rising | drops, no replies | `dpctl ... | grep priority=400` (counter climbing) |
 
-**The one point to make explicitly:** `srv3` is caught by the **anomaly gate
-(Ā ≥ 0.5), not the trust threshold** — it keeps completing tasks so its trust
-never falls far enough on its own. That's the core design finding
-(`tests/test_trust_state.py::test_f04_non_degrading_liar_needs_anomaly_gate`), and
-you can see it happen live. Trust alone is not enough; the independent
-load-honesty check is what makes Zero Trust real here.
+**Two points to make explicitly:**
+
+1. **The malicious node is caught by the anomaly gate, not the trust threshold.**
+   `srv3` is tripped by **Ā ≥ 0.5**, not by trust falling below the isolation line
+   — it keeps completing tasks so its trust never drops far enough on its own.
+   That's the core Zero-Trust finding
+   (`tests/test_trust_state.py::test_f04_non_degrading_liar_needs_anomaly_gate`):
+   trust alone is not enough; the independent load-honesty check is what makes it
+   real.
+2. **Healthy load is shared, not starved.** All four servers carry traffic (§5b),
+   because routing is power-of-two-choices, not winner-take-all. Zero traffic to a
+   server now means exactly one thing — it was **quarantined** (`srv3`) — never
+   that a healthy node was starved by the scorer.
 
 ---
 
