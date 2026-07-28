@@ -178,6 +178,21 @@ Set `selection: argmax` + `epsilon: 0.0` and re-run to reproduce the starvation
 (two servers pinned at zero `inflight`/route count); switch back to `p2c` to see
 the load spread across all four.
 
+**Turn a live run into a before/after figure.** With the dashboard enabled the
+controller records every decision to `data/events.jsonl`. Run the demo once under
+each setting, saving the log between runs, then tally each:
+```bash
+# after the argmax run:
+cp data/events.jsonl run_argmax.jsonl
+# after the p2c run:
+cp data/events.jsonl run_p2c.jsonl
+python3 -m evaluation.tally_route_share run_argmax.jsonl --json
+python3 -m evaluation.tally_route_share run_p2c.jsonl   --json
+```
+Paste the two JSON dicts into the `figdatafix` block of
+`docs/study/trust-routing-study.html` to replace Figure 11's simulated numbers
+with live-run ones.
+
 ### 3b-extra. Verifying the Sprint 2 containment upgrades
 
 The quarantine path now does more than delete `srv3`'s VIP rules. Once you
