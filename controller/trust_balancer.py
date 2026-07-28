@@ -33,7 +33,9 @@ from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
 from os_ken.ofproto import inet, ofproto_v1_3
 
 from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
-from controller.edge_selector import BAND_RATE_LIMITED, EdgeWeights
+from controller.edge_selector import (
+    BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_SELECTION_STRATEGY, EdgeWeights,
+)
 from trust_engine.ai_optimizer import build_optimizer
 from controller.event_bus import EventBus, NullBus
 from controller.trust_state import TrustState
@@ -316,6 +318,12 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # StaticWeightOptimizer wrapping the fixed edge_score weights (unchanged
         # routing). The fixed weights double as the bandit's fallback.
         edge_weights = EdgeWeights.from_config(cfg['edge_score'])
+        # Selection strategy lives in the same edge_score block: 'argmax' keeps the
+        # original winner-take-all routing, 'p2c' switches to power-of-two-choices
+        # to stop healthy nodes being starved (docs/LOAD_BALANCING_STARVATION.md).
+        edge_cfg = cfg['edge_score']
+        selection_strategy = edge_cfg.get('selection', DEFAULT_SELECTION_STRATEGY)
+        d_choices = int(edge_cfg.get('d_choices', DEFAULT_D_CHOICES))
         optimizer_cfg = cfg.get('optimizer')
         reward_cfg = (optimizer_cfg or {}).get('reward', {})
 
@@ -334,6 +342,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
             rate_limit_trust=trust_cfg.get('rate_limit_trust', DEFAULT_RATE_LIMIT_TRUST),
             anomaly_warn=trust_cfg.get('anomaly_warn', DEFAULT_ANOMALY_WARN),
             anomaly_lambda=trust_cfg['lambda_decay'],
+            selection_strategy=selection_strategy,
+            d_choices=d_choices,
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
         )

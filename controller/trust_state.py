@@ -19,6 +19,7 @@ including for switches that have nothing to do with the slow call — and blow t
 """
 
 import logging
+import random
 import threading
 import time
 from collections import deque
@@ -32,6 +33,7 @@ from contracts.thresholds import (
 )
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import (
+    DEFAULT_D_CHOICES, DEFAULT_SELECTION_STRATEGY,
     EdgeWeights, NodeState, select_edge_node, trust_band,
 )
 from security.authenticator import Authenticator, NullAuthenticator
@@ -75,6 +77,9 @@ class TrustState:
         anomaly_lambda: float = 0.85,
         max_updates_per_block: int = 10,
         block_commit_timeout_s: float = 5.0,
+        selection_strategy: str = DEFAULT_SELECTION_STRATEGY,
+        d_choices: int = DEFAULT_D_CHOICES,
+        selection_rng: Optional[random.Random] = None,
         time_source: Optional[Callable[[], float]] = None,
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
@@ -104,6 +109,15 @@ class TrustState:
         self._reward_imbalance_penalty = reward_imbalance_penalty
         self._reward_window = RewardWindow()
         self._window_started_at = time.time()
+
+        # How the winner is chosen among eligible nodes: 'argmax' (winner-take-all,
+        # original behaviour) or 'p2c' (power-of-two-choices, starvation-resistant).
+        # See controller/edge_selector.py and docs/LOAD_BALANCING_STARVATION.md.
+        self.selection_strategy = selection_strategy
+        self.d_choices = d_choices
+        # Own RNG so routing is reproducible when seeded and never perturbs any
+        # other consumer of the global random stream.
+        self._selection_rng = selection_rng or random.Random()
 
         self.isolation_threshold = isolation_threshold
         self.anomaly_gate = anomaly_gate
@@ -565,7 +579,9 @@ class TrustState:
             ]
             weights = self.optimizer.active_weights()
             chosen, score, ranked = select_edge_node(
-                states, weights, self.isolation_threshold, self.anomaly_gate
+                states, weights, self.isolation_threshold, self.anomaly_gate,
+                strategy=self.selection_strategy, d_choices=self.d_choices,
+                rng=self._selection_rng,
             )
             if self._optimizer_enabled and chosen is not None:
                 # Feed the chosen node's normalized latency into the reward window,

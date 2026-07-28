@@ -37,6 +37,16 @@ edge_score:
   w1_trust: 0.50
   w2_cpu: 0.30
   w3_latency: 0.20
+  # How the winner is chosen among eligible (non-quarantined) nodes:
+  #   argmax -- winner-take-all n* = argmax EdgeScore(n). Starves healthy nodes:
+  #             the heaviest term (trust) entrenches ~2 nodes and the rest never
+  #             get traffic regardless of how many servers exist.
+  #   p2c    -- power-of-two-choices: sample d_choices eligible nodes at random,
+  #             route to the best of the sample. Quarantine still excludes
+  #             malicious nodes first, so security is unchanged. Fixes starvation.
+  # See docs/LOAD_BALANCING_STARVATION.md.
+  selection: p2c
+  d_choices: 2
 
 # AI weight optimizer (online UCB1 bandit). It tunes ONLY the edge_score weights
 # above -- never the trust/anomaly gates -- by trying the arms below and keeping

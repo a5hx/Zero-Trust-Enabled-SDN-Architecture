@@ -1,0 +1,121 @@
+# EdgeScore starvation: why only ~2 servers ever get traffic
+
+> Raised by the advisor (2026-07-28): *"Two servers don't get routed — isn't
+> that a load-balancing flaw? And if the number of servers grows, how many will
+> EdgeScore route to?"* This document answers both, distinguishes the two very
+> different "zero-traffic" cases, gives the reproduction, and records the fix.
+
+## 1. The behaviour is real and already in the data
+
+The two live Mininet runs behind `docs/study/trust-routing-study.html` show it
+directly (the `share` / `share_total` blocks):
+
+| run | routes | srv1 | srv2 | srv3 | srv4 |
+|-----|-------:|-----:|-----:|-----:|-----:|
+| **A** (498 s)  | 3,742  | 1,812 | **0**    | **0** | 1,930 |
+| **B** (2,832 s)| 24,596 | 11,584 | 1,161 | **0** | 11,851 |
+
+In run A, **2 of 4 servers carried 100 % of the traffic**. In run B, srv2's
+first packet did not arrive until t = 2,238 s (19,320 decisions of starvation)
+and srv3 never received a single one.
+
+## 2. "Zero traffic" is two different things — do not conflate them
+
+| server | traffic | verdict |
+|--------|---------|---------|
+| **srv3** (the sybil attacker, 154 ms mean latency) | 0 | **Correct.** Zero-trust isolation working — this is the security feature, not a bug. |
+| **srv2** (healthy, honest, *best* latency at 33.5 ms) | 0 | **The real flaw.** This is *starvation*: a fully healthy node that is never selected. |
+
+The study's own wording: *"A node that ranks last is being correctly avoided; a
+node that ranks second and never wins is being starved."* srv2 reached 2nd place
+in 585 decisions and 1st place in **none**.
+
+A related correction: **starved healthy servers do not "drop" packets — they
+receive none.** No node is ever selected → no VIP rewrite rule is installed → the
+server simply never appears in the data plane. The only server that gets actual
+OpenFlow *drop* rules is the quarantined sybil (`TrustBalancerApp._on_trust_collapse`,
+priority-400 entries).
+
+## 3. Mechanism
+
+Routing is `select_edge_node()` in `controller/edge_selector.py`, which is
+**`argmax` — winner-take-all**: exactly one node per decision. The round-robin
+tie-break only fires on **exact** ties (≤ 1e-9); real telemetry jitter separates
+scores at the 4th decimal, so a node a hair behind **never wins**.
+
+Two discrete-event simulations over the *real* selector
+(`scratchpad/fanout_sweep.py`, `scratchpad/lockin_sweep.py`; identical healthy
+servers, configured weights 0.50/0.30/0.20, 1 s poll):
+
+**A. Load-only differentiation — argmax spreads fine, even at N = 64.** With
+honest, fresh-enough load feedback the argmax degenerates to join-shortest-queue
+(busiest server ≈ 2 % share at N = 64). *So "argmax over load" is not the
+problem.*
+
+**B. Trust coupled to selection (trust weight 0.50 dominates; only completed
+tasks move trust) — lock-in:**
+
+```
+N servers | ever used | starved (0 traffic) | busiest share
+        2 |    2 / 2  |        0 / 2        |   50%
+        4 |    2 / 4  |        2 / 4        |   50%
+        8 |    2 / 8  |        6 / 8        |   50%
+       16 |    2 / 16 |       14 / 16       |   50%
+       32 |    2 / 32 |       30 / 32       |   50%
+       64 |    3 / 64 |       61 / 64       |   39%
+```
+
+This reproduces the "2 of 4" and answers the scaling question.
+
+## 4. Answer: how many servers does EdgeScore route to as N grows?
+
+**≈ 2, essentially constant, independent of N.** Growing the farm does not widen
+the fan-out — it manufactures idle capacity; the number of starved servers grows
+*linearly* with N (30 dead servers at N = 32).
+
+The cause is a **positive-feedback lock-in ("the rich get richer")**: whichever
+~2 nodes win the initial tie-break lottery complete tasks → their trust EMA
+climbs toward 1.0 → the heaviest EdgeScore term (trust, 0.50) entrenches them → a
+fresh node whose trust is frozen at 0.5 can never overtake a node at ~0.9. The
+load signal (`claimed_cpu`, polled every 1.0 s while tasks finish in ~0.2 s) is
+too stale to counteract it, so argmax stops behaving like a load balancer.
+
+## 5. This is a textbook failure mode (IEEE literature)
+
+1. M. Mitzenmacher, **"The Power of Two Choices in Randomized Load Balancing,"**
+   *IEEE Trans. Parallel Distrib. Syst.*, vol. 12, no. 10, pp. 1094–1104, 2001.
+   DOI [10.1109/71.963420](https://dl.acm.org/doi/10.1109/71.963420) — deterministic
+   "pick-the-best" is fragile; even *2 random choices* balances exponentially better.
+2. M. Mitzenmacher, **"How Useful Is Old Information?,"** *IEEE Trans. Parallel
+   Distrib. Syst.*, vol. 11, no. 1, pp. 6–20, 2000.
+   DOI [10.1109/71.824633](https://ieeexplore.ieee.org/document/824633/) — coins
+   **"herd behaviour"** with stale load info (our 1 s poll).
+3. M. Dahlin, **"Interpreting Stale Load Information,"** *IEEE Trans. Parallel
+   Distrib. Syst.*, vol. 11, no. 10, pp. 1033–1047, 2000.
+   DOI [10.1109/71.888643](https://dl.acm.org/doi/10.1109/71.888643) — stale
+   least-loaded performs *worse than random*.
+
+## 6. The fix
+
+Replace the hard `argmax` with **power-of-two-choices (P2C)** among the *eligible*
+(non-quarantined) nodes: sample `d` (default 2) candidates uniformly at random and
+route to the higher-scoring of them. Quarantine still excludes malicious nodes
+*before* the sample, so security is unchanged — srv3 stays at zero. But because
+most random pairs among a large idle set are starved-vs-starved, a starved healthy
+node is selected often enough to complete tasks, build trust, and rejoin the
+active set, which dissolves the lock-in.
+
+Configured via the `edge_score:` block:
+
+```yaml
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+  selection: p2c   # argmax (old behaviour) | p2c (starvation-resistant)
+  d_choices: 2
+```
+
+`selection: argmax` preserves the original winner-take-all behaviour exactly.
+See `tests/test_edge_selector.py` for the P2C coverage and
+`scratchpad/lockin_sweep.py` for the before/after fan-out.
