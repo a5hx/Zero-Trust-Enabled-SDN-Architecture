@@ -34,7 +34,8 @@ from os_ken.ofproto import inet, ofproto_v1_3
 
 from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
 from controller.edge_selector import (
-    BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_SELECTION_STRATEGY, EdgeWeights,
+    BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_EPSILON,
+    DEFAULT_SELECTION_STRATEGY, EdgeWeights,
 )
 from trust_engine.ai_optimizer import build_optimizer
 from controller.event_bus import EventBus, NullBus
@@ -324,6 +325,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         edge_cfg = cfg['edge_score']
         selection_strategy = edge_cfg.get('selection', DEFAULT_SELECTION_STRATEGY)
         d_choices = int(edge_cfg.get('d_choices', DEFAULT_D_CHOICES))
+        # ε-exploration guarantees no eligible node is permanently starved even
+        # under frozen scores (the one gap p2c leaves). 0.0 = off.
+        selection_epsilon = float(edge_cfg.get('epsilon', DEFAULT_EPSILON))
         optimizer_cfg = cfg.get('optimizer')
         reward_cfg = (optimizer_cfg or {}).get('reward', {})
 
@@ -344,6 +348,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             anomaly_lambda=trust_cfg['lambda_decay'],
             selection_strategy=selection_strategy,
             d_choices=d_choices,
+            epsilon=selection_epsilon,
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
         )

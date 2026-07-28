@@ -47,6 +47,11 @@ edge_score:
   # See docs/LOAD_BALANCING_STARVATION.md.
   selection: p2c
   d_choices: 2
+  # ε-exploration layered on top: with this probability a decision ignores the
+  # score and routes to a uniformly random eligible node. Guarantees no healthy
+  # node is ever permanently starved (closes the one gap p2c leaves -- the
+  # strict-worst node under frozen scores). 0.0 disables it.
+  epsilon: 0.05
 
 # AI weight optimizer (online UCB1 bandit). It tunes ONLY the edge_score weights
 # above -- never the trust/anomaly gates -- by trying the arms below and keeping

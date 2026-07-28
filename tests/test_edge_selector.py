@@ -7,6 +7,7 @@ import random
 import pytest
 
 from controller.edge_selector import (
+    STRATEGY_ARGMAX,
     STRATEGY_P2C,
     EdgeWeights,
     NodeState,
@@ -189,3 +190,68 @@ def test_p2c_single_eligible_node_is_returned():
         states, weights, strategy=STRATEGY_P2C, rng=random.Random(3),
     )
     assert chosen == 'srv2'
+
+
+# --------------------------------------------------------------------------- #
+# ε-exploration (the hard no-starvation guarantee that p2c alone can't give)   #
+# --------------------------------------------------------------------------- #
+def test_epsilon_reaches_the_strict_worst_node_that_p2c_alone_starves():
+    """The frozen-score gap: 'lag' is strictly worst, so neither argmax nor p2c
+    d=2 ever picks it. A positive epsilon does -- it is selected uniformly at
+    random with probability epsilon/|eligible|, so it can never be starved."""
+    weights = EdgeWeights()
+    states = [
+        NodeState(node_id='srv1', trust=0.95, cpu_load=0.1, latency_ms=10),
+        NodeState(node_id='srv2', trust=0.95, cpu_load=0.1, latency_ms=10),
+        NodeState(node_id='lag', trust=0.55, cpu_load=0.9, latency_ms=90),   # strict worst
+    ]
+    rng = random.Random(0)
+    # p2c alone never reaches it.
+    p2c_only = [
+        select_edge_node(states, weights, strategy=STRATEGY_P2C, rng=rng)[0]
+        for _ in range(600)
+    ]
+    assert 'lag' not in p2c_only
+
+    # p2c + epsilon does.
+    rng = random.Random(0)
+    with_eps = [
+        select_edge_node(
+            states, weights, strategy=STRATEGY_P2C, epsilon=0.1, rng=rng,
+        )[0]
+        for _ in range(600)
+    ]
+    assert with_eps.count('lag') > 0
+
+
+def test_epsilon_zero_is_identical_to_no_exploration():
+    """The default epsilon=0.0 must not perturb routing at all: same seed, same
+    decisions as passing no epsilon."""
+    weights = EdgeWeights()
+    states = [
+        NodeState(node_id='srv1', trust=0.8, cpu_load=0.2, latency_ms=20),
+        NodeState(node_id='srv2', trust=0.6, cpu_load=0.4, latency_ms=40),
+        NodeState(node_id='srv3', trust=0.7, cpu_load=0.3, latency_ms=30),
+    ]
+    a = [select_edge_node(states, weights, strategy=STRATEGY_P2C,
+                          rng=random.Random(7))[0] for _ in range(1)]
+    b = [select_edge_node(states, weights, strategy=STRATEGY_P2C, epsilon=0.0,
+                          rng=random.Random(7))[0] for _ in range(1)]
+    assert a == b
+
+
+def test_epsilon_still_excludes_quarantined_nodes():
+    """Security invariant holds under exploration too: the random pick is over
+    eligible nodes only, so a quarantined node is never explored into."""
+    weights = EdgeWeights()
+    states = [
+        NodeState(node_id='bad', trust=0.05, cpu_load=0.0, latency_ms=1),    # quarantined
+        NodeState(node_id='srv2', trust=0.7, cpu_load=0.5, latency_ms=50),
+        NodeState(node_id='srv3', trust=0.7, cpu_load=0.5, latency_ms=50),
+    ]
+    rng = random.Random(1)
+    for _ in range(500):
+        chosen, _, _ = select_edge_node(
+            states, weights, strategy=STRATEGY_ARGMAX, epsilon=0.5, rng=rng,
+        )
+        assert chosen in {'srv2', 'srv3'}

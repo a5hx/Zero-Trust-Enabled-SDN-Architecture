@@ -46,6 +46,10 @@ STRATEGY_ARGMAX = 'argmax'
 STRATEGY_P2C = 'p2c'
 DEFAULT_SELECTION_STRATEGY = STRATEGY_ARGMAX
 DEFAULT_D_CHOICES = 2
+# ε-exploration fraction. 0.0 disables it (routing depends only on the base
+# strategy). A small positive value guarantees no eligible node is permanently
+# starved even under frozen scores -- see select_edge_node's docstring.
+DEFAULT_EPSILON = 0.0
 
 
 @dataclass(frozen=True)
@@ -166,12 +170,13 @@ def select_edge_node(
     tie_epsilon: float = 1e-9,
     strategy: str = DEFAULT_SELECTION_STRATEGY,
     d_choices: int = DEFAULT_D_CHOICES,
+    epsilon: float = DEFAULT_EPSILON,
     rng: Optional[random.Random] = None,
 ) -> Tuple[Optional[str], float, List[Tuple[str, float]]]:
     """Pick the winning node among non-quarantined candidates.
 
-    Quarantine is always applied first, so `strategy` only ever decides *which*
-    eligible node wins, never whether a malicious node can be chosen.
+    Quarantine is always applied first, so `strategy`/`epsilon` only ever decide
+    *which* eligible node wins, never whether a malicious node can be chosen.
 
     strategy='argmax' (default): n* = argmax EdgeScore(n). Exact ties (e.g. every
         node at t=0 holding initial_score) are broken round-robin so the first
@@ -183,6 +188,15 @@ def select_edge_node(
         sample. Breaks the starvation lock-in while still excluding quarantined
         nodes. `rng` is injectable for reproducible runs/tests; it defaults to
         the module `random`.
+
+    epsilon > 0: ε-exploration on top of whichever base strategy is chosen. With
+        probability epsilon the decision ignores the score and routes to a
+        uniformly random eligible node. This closes the one gap p2c leaves — the
+        strict-worst node under frozen scores is never the better of any sampled
+        pair, so it can still be starved by p2c alone; ε-exploration guarantees
+        every eligible node is selected with probability >= epsilon/|eligible|
+        per decision, so no eligible node can be permanently starved. Off (0.0)
+        by default, so it never perturbs a run that doesn't ask for it.
 
     Returns:
         (chosen_node_id, its_score, all_scores) where all_scores is
@@ -208,8 +222,15 @@ def select_edge_node(
     scored = [(s.node_id, edge_score(s, weights, max_latency)) for s in eligible]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
+    r = rng or random
+
+    # ε-exploration: route to a uniformly random eligible node with probability
+    # epsilon, independent of the base strategy. Guarantees no eligible node is
+    # permanently starved (see the epsilon note in the docstring).
+    if epsilon > 0.0 and r.random() < epsilon:
+        return (*r.choice(scored), scored)
+
     if strategy == STRATEGY_P2C:
-        r = rng or random
         d = max(1, min(d_choices, len(scored)))
         sample = r.sample(scored, d)
         best_id, best_score = max(sample, key=lambda pair: pair[1])

@@ -33,7 +33,7 @@ from contracts.thresholds import (
 )
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import (
-    DEFAULT_D_CHOICES, DEFAULT_SELECTION_STRATEGY,
+    DEFAULT_D_CHOICES, DEFAULT_EPSILON, DEFAULT_SELECTION_STRATEGY,
     EdgeWeights, NodeState, select_edge_node, trust_band,
 )
 from security.authenticator import Authenticator, NullAuthenticator
@@ -79,6 +79,7 @@ class TrustState:
         block_commit_timeout_s: float = 5.0,
         selection_strategy: str = DEFAULT_SELECTION_STRATEGY,
         d_choices: int = DEFAULT_D_CHOICES,
+        epsilon: float = DEFAULT_EPSILON,
         selection_rng: Optional[random.Random] = None,
         time_source: Optional[Callable[[], float]] = None,
     ) -> None:
@@ -115,6 +116,8 @@ class TrustState:
         # See controller/edge_selector.py and docs/LOAD_BALANCING_STARVATION.md.
         self.selection_strategy = selection_strategy
         self.d_choices = d_choices
+        # ε-exploration fraction layered on top of the base strategy (0.0 = off).
+        self.epsilon = epsilon
         # Own RNG so routing is reproducible when seeded and never perturbs any
         # other consumer of the global random stream.
         self._selection_rng = selection_rng or random.Random()
@@ -581,7 +584,7 @@ class TrustState:
             chosen, score, ranked = select_edge_node(
                 states, weights, self.isolation_threshold, self.anomaly_gate,
                 strategy=self.selection_strategy, d_choices=self.d_choices,
-                rng=self._selection_rng,
+                epsilon=self.epsilon, rng=self._selection_rng,
             )
             if self._optimizer_enabled and chosen is not None:
                 # Feed the chosen node's normalized latency into the reward window,

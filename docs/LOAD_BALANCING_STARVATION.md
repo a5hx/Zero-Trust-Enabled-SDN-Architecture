@@ -105,7 +105,19 @@ most random pairs among a large idle set are starved-vs-starved, a starved healt
 node is selected often enough to complete tasks, build trust, and rejoin the
 active set, which dissolves the lock-in.
 
-Configured via the `edge_score:` block:
+P2C leaves **one** gap: while scores are frozen, the *single strict-worst* node
+is never the better of any sampled pair, so P2C d=2 can still starve it. In the
+live system this does not bite — load feedback constantly reshuffles who is worst,
+so the dynamic sweep hits 0 starved at every N — but for a hard guarantee we layer
+**ε-exploration** on top: with probability ε a decision ignores the score and
+routes to a uniformly random *eligible* node. That makes every eligible node's
+selection probability **≥ ε/|eligible|** per decision, so nothing can be
+permanently starved even under frozen scores. Verified: a frozen 8-node field
+with a strict-worst node goes from 7/8 used (`ε=0`) to 8/8 (`ε=0.05`), the worst
+node receiving 0.66 % ≈ ε/8. Exploration still samples eligible nodes only, so
+quarantined/malicious nodes are never explored into.
+
+Both are configured via the `edge_score:` block:
 
 ```yaml
 edge_score:
@@ -114,8 +126,9 @@ edge_score:
   w3_latency: 0.20
   selection: p2c   # argmax (old behaviour) | p2c (starvation-resistant)
   d_choices: 2
+  epsilon: 0.05    # ε-exploration; 0.0 disables it (hard no-starvation guarantee)
 ```
 
-`selection: argmax` preserves the original winner-take-all behaviour exactly.
-See `tests/test_edge_selector.py` for the P2C coverage and
+`selection: argmax` with `epsilon: 0.0` preserves the original winner-take-all
+behaviour exactly. See `tests/test_edge_selector.py` for the P2C + ε coverage and
 `scratchpad/lockin_sweep.py` for the before/after fan-out.
