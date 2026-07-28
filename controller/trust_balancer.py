@@ -13,6 +13,7 @@ Two classes live here:
 import csv
 import logging
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -35,7 +36,8 @@ from os_ken.ofproto import inet, ofproto_v1_3
 from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
 from controller.edge_selector import (
     BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_EPSILON,
-    DEFAULT_SELECTION_STRATEGY, EdgeWeights,
+    DEFAULT_SELECTION_STRATEGY, EdgeWeights, NodeState,
+    select_edge_node as _select_edge_node,
 )
 from trust_engine.ai_optimizer import build_optimizer
 from controller.event_bus import EventBus, NullBus
@@ -62,12 +64,21 @@ class TrustBalancerStandalone:
         edge_score_weights: Dict[str, float],
         num_edge_nodes: int = 8,
         max_updates_per_block: int = 10,
+        selection_rng: Optional[random.Random] = None,
     ) -> None:
         self.trust_calc = trust_calculator
         self.ledger = ledger
-        self.w1 = edge_score_weights.get('w1_trust', 0.50)
-        self.w2 = edge_score_weights.get('w2_cpu', 0.30)
-        self.w3 = edge_score_weights.get('w3_latency', 0.20)
+        self.weights = EdgeWeights.from_config(edge_score_weights)
+        self.w1 = self.weights.w1_trust
+        self.w2 = self.weights.w2_cpu
+        self.w3 = self.weights.w3_latency
+        # Selection strategy, read from the same edge_score block. Defaults keep
+        # the original winner-take-all argmax so run_demo.py is unchanged unless
+        # its config opts in (docs/LOAD_BALANCING_STARVATION.md).
+        self.selection_strategy = edge_score_weights.get('selection', DEFAULT_SELECTION_STRATEGY)
+        self.d_choices = int(edge_score_weights.get('d_choices', DEFAULT_D_CHOICES))
+        self.epsilon = float(edge_score_weights.get('epsilon', DEFAULT_EPSILON))
+        self._selection_rng = selection_rng or random.Random()
         self.num_edge_nodes = num_edge_nodes
         self.max_updates_per_block = max_updates_per_block
 
@@ -104,33 +115,31 @@ class TrustBalancerStandalone:
             latencies: {node_id: latency_ms}.
 
         Returns:
-            The node_id with the highest EdgeScore.
+            The node_id selected. This delegates to the shared
+            controller.edge_selector.select_edge_node so the standalone balancer
+            gets the same selection strategies (argmax / power-of-two-choices +
+            ε-exploration) as the live controller. There is still no quarantine
+            gate here -- run_demo.py has no anomaly signal -- so every node is
+            eligible; the strategy only decides which eligible node wins.
         """
-        best_node: str = f'srv1'
-        best_score: float = -1.0
-
-        # Normalise latencies to [0, 1]
-        max_lat = max(latencies.values()) if latencies else 1.0
-        max_lat = max(max_lat, 1.0)  # Avoid division by zero
-
-        for i in range(1, self.num_edge_nodes + 1):
-            nid = f'srv{i}'
-            t_score = self.trust_calc.get_score(nid)
-            cpu = cpu_loads.get(nid, 0.5)
-            lat = latencies.get(nid, 50.0)
-            lat_norm = lat / max_lat
-
-            edge_score = (
-                self.w1 * t_score
-                + self.w2 * (1.0 - cpu)
-                + self.w3 * (1.0 - lat_norm)
+        states = [
+            NodeState(
+                node_id=f'srv{i}',
+                trust=self.trust_calc.get_score(f'srv{i}'),
+                cpu_load=cpu_loads.get(f'srv{i}', 0.5),
+                latency_ms=latencies.get(f'srv{i}', 50.0),
             )
-
-            if edge_score > best_score:
-                best_score = edge_score
-                best_node = nid
-
-        return best_node
+            for i in range(1, self.num_edge_nodes + 1)
+        ]
+        # No quarantine in the standalone path: push the gates out of range so
+        # every node stays eligible, matching this class's original behaviour.
+        chosen, _, _ = _select_edge_node(
+            states, self.weights,
+            isolation_threshold=-1.0, anomaly_gate=float('inf'),
+            strategy=self.selection_strategy, d_choices=self.d_choices,
+            epsilon=self.epsilon, rng=self._selection_rng,
+        )
+        return chosen if chosen is not None else 'srv1'
 
     def update_trust(
         self,
