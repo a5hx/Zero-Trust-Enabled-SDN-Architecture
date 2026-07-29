@@ -262,7 +262,7 @@ switch**, as OpenFlow rules.
 |------|------|-------|
 | **The product** | A trust-aware load balancer for any OpenFlow 1.3 network | `controller/`, `security/`, `blockchain/`, `trust_engine/`, `dashboard/` |
 | **The test harness** | A fake network + fake servers + fake clients to exercise the product | `simulation/` (Mininet topology, node agents, IoT clients), `config/` |
-| **The evaluation** | Measures whether the product actually works better than baselines | `evaluation/` (partly planned), `run_demo.py` |
+| **The evaluation** | Measures whether the product actually works better than baselines | `evaluation/`, `run_demo.py` |
 
 Nothing in the controller depends on Mininet — it has been shown talking real
 OpenFlow to a plain OVS switch.
@@ -485,7 +485,7 @@ Zero-Trust-Enabled-SDN-Architecture/
 ├── security/          device authentication (PRESENT-80)
 ├── contracts/         shared data shapes + thresholds (no logic)
 ├── simulation/        THE HARNESS — Mininet network, fake servers, fake clients
-├── evaluation/        metrics, plots, (planned) baselines + statistics
+├── evaluation/        metrics, plots, baselines + significance statistics
 ├── dashboard/         the live browser view + replay tool
 ├── config/            YAML configs (full-scale, demo, trust-demo)
 ├── tests/             the pytest suite (105 tests, no sudo/Mininet needed)
@@ -570,7 +570,8 @@ Zero-Trust-Enabled-SDN-Architecture/
 |------|--------------|
 | `metrics.py` | Collects run metrics. |
 | `plots.py` | Generates figures. |
-| `baseline.py`, `stats.py` | **Planned (empty).** Baseline algorithms + Wilcoxon significance tests. |
+| `baseline.py` | 4 baselines + the system under test, driven through the real selector/trust/tells over seeded runs. |
+| `stats.py` | Paired Wilcoxon signed-rank, Holm–Bonferroni correction, rank-biserial effect sizes. |
 
 ### 6.9 `tests/` (105 tests, run with `python3 -m pytest tests/`)
 
@@ -788,7 +789,7 @@ falls back to plain allow/quarantine.
 | **Graduated response** (rate-limit meters) | ✅ Done (Sprint 2 W2) |
 | **Flow-rule specification** (`docs/FLOW_RULES.md`) | ✅ Done (Sprint 2 W2) |
 | RAFT consensus (`blockchain/raft.py`) | 🟡 Core built + 26 tests in isolation; TCP transport and the `RaftBackend` swap still outstanding |
-| Evaluation harness (baselines + Wilcoxon stats) | 🔲 Planned (Week 5–6) |
+| Evaluation harness (baselines + Wilcoxon stats) | ✅ Done — 600-run experiment, 14/16 comparisons favour the system (p<0.05) |
 | AI weight optimizer (Random Forest + UCB1) | 🔲 Planned (Week 7) |
 | Full-scale integration (8/40/3) | 🔲 Planned (Week 8) |
 

@@ -42,8 +42,9 @@ OpenFlow rules, not simulated.
   transport pending)*.
 - **AI weight optimizer** — Random Forest (offline) + UCB1 bandit (online)
   *(planned)*.
-- **Evaluation harness** — 4 baselines, seeded runs, Wilcoxon significance
-  tests *(planned)*.
+- **Evaluation harness** — 4 baselines, 30 seeded runs/scenario, paired Wilcoxon
+  signed-rank with Holm–Bonferroni correction (`evaluation/baseline.py`,
+  `evaluation/stats.py`).
 
 ### os-ken, not Ryu
 
@@ -68,7 +69,7 @@ controller/        trust_balancer.py, flow_monitor.py, edge_selector.py,
 blockchain/        merkle.py, block.py, ledger.py, commit_backend.py, raft.py (isolated core)
 security/          authenticator.py (HMAC seam), present_cipher.py (planned)
 simulation/        topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
-evaluation/        metrics.py, plots.py, baseline.py (planned), stats.py (planned)
+evaluation/        metrics.py, plots.py, baseline.py, stats.py, starvation_sweep.py
 dashboard/         index.html, replay.py, generate_demo_recording.py
 tests/             pytest suite (no sudo/Mininet required)
 uml_diagrams/      class, sequence, DFD, ER, activity
@@ -128,7 +129,7 @@ python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:808
 | Live dashboard (topology, packets, rules, trust) | ✅ Done |
 | PRESENT-80 authentication | 🔄 Planned (Sprint 2) |
 | RAFT consensus | 🟡 Core built + tested in isolation (not wired in) |
-| Evaluation harness (baselines + Wilcoxon) | 🔄 Planned (Sprint 2) |
+| Evaluation harness (baselines + Wilcoxon) | ✅ Done — 14/16 comparisons favour the system (p<0.05) |
 | AI weight optimizer | 🔄 Planned (Sprint 2) |
 | Full-scale integration (8 edge / 40 IoT / 3 malicious) | 🔄 Planned (Sprint 2) |
 
