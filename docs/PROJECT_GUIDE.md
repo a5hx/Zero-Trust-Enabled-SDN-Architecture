@@ -210,7 +210,8 @@ switch**, as OpenFlow rules.
   cryptographic hash, so altering any past record breaks the chain and is
   detectable. A **Merkle tree** lets you prove one record is in a block without
   revealing the whole block.
-- **RAFT** (planned, Part 11): a **consensus** algorithm that keeps several
+- **RAFT** (Part 11; consensus core built, not yet wired in): a **consensus**
+  algorithm that keeps several
   copies of the ledger in agreement even if one copy's machine crashes. It gives
   *availability + tamper-evidence*, not protection against a lying majority
   (that's a different, harder property called Byzantine tolerance — stated
@@ -424,6 +425,11 @@ tampering is detectable (`Ledger.is_valid_chain()`).
 - `blockchain/commit_backend.py` — a seam (`CommitBackend`) so the storage can
   later be swapped from local (`LocalLedgerBackend`) to RAFT-replicated without
   touching callers.
+- `blockchain/raft.py` — the consensus core behind that future swap: leader
+  election, log replication, and the commit rule, transport-agnostic and driven
+  by a virtual clock. Tested against an in-memory network with injectable loss,
+  delay, and partitions. **Not connected to the ledger yet** — the controller
+  still runs `LocalLedgerBackend`.
 - In product terms this is a **tamper-evident audit log** of every routing/trust
   decision.
 
@@ -522,7 +528,7 @@ Zero-Trust-Enabled-SDN-Architecture/
 | `block.py` | `build_block()` — assembles a block and computes its hash. |
 | `ledger.py` | The chain: `append`, `is_valid_chain`, `latest_trust_score`. |
 | `commit_backend.py` | The `CommitBackend` seam + `LocalLedgerBackend`. |
-| `raft.py` | **Planned (empty).** RAFT replication. |
+| `raft.py` | RAFT core: leader election, log replication, commit rule, plus an in-memory test transport. **Isolated — not wired to the ledger yet.** |
 
 ### 6.4 `security/`
 
@@ -781,7 +787,7 @@ falls back to plain allow/quarantine.
 | **Link-load telemetry** (port stats) | ✅ Done (Sprint 2 W2) |
 | **Graduated response** (rate-limit meters) | ✅ Done (Sprint 2 W2) |
 | **Flow-rule specification** (`docs/FLOW_RULES.md`) | ✅ Done (Sprint 2 W2) |
-| RAFT consensus (`blockchain/raft.py`) | 🔲 Planned (Week 3–4) |
+| RAFT consensus (`blockchain/raft.py`) | 🟡 Core built + 26 tests in isolation; TCP transport and the `RaftBackend` swap still outstanding |
 | Evaluation harness (baselines + Wilcoxon stats) | 🔲 Planned (Week 5–6) |
 | AI weight optimizer (Random Forest + UCB1) | 🔲 Planned (Week 7) |
 | Full-scale integration (8/40/3) | 🔲 Planned (Week 8) |
@@ -844,7 +850,7 @@ The honest roadmap, legacy-vs-novelty analysis, and cut-list are in
 | **Sybil attack** | A server lying about its load (e.g. "I'm idle") to attract traffic. |
 | **Drop attack** | A server that accepts a task then silently never answers. |
 | **Merkle tree / root** | A hash structure that summarises many records into one hash and lets you prove membership. |
-| **RAFT** | A consensus algorithm keeping several ledger copies in agreement despite crashes (planned). |
+| **RAFT** | A consensus algorithm keeping several ledger copies in agreement despite crashes. Core built in isolation; not yet replicating the live ledger. |
 | **PRESENT-80** | A lightweight block cipher (64-bit block, 80-bit key) used for IoT device authentication. |
 | **Northbound API** | The controller's REST API "above" it, for operators/dashboards (as opposed to the "southbound" OpenFlow toward switches). |
 | **NFR** | Non-Functional Requirement — a performance target (e.g. isolate a bad node in < 3 s, routing decision < 200 ms). |

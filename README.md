@@ -37,7 +37,9 @@ OpenFlow rules, not simulated.
   (`blockchain/`).
 - **PRESENT-80 cipher** — lightweight IoT device authentication *(planned;
   seam at `security/authenticator.py`)*.
-- **RAFT consensus** — 3-replica ledger replication *(planned)*.
+- **RAFT consensus** — leader election + log replication, built and unit-tested
+  in isolation (`blockchain/raft.py`) *(not yet wired to the ledger; TCP
+  transport pending)*.
 - **AI weight optimizer** — Random Forest (offline) + UCB1 bandit (online)
   *(planned)*.
 - **Evaluation harness** — 4 baselines, seeded runs, Wilcoxon significance
@@ -63,7 +65,7 @@ trust_engine/      trust_calculator.py, ai_optimizer.py (planned)
 controller/        trust_balancer.py, flow_monitor.py, edge_selector.py,
                    northbound_api.py, event_bus.py, flow_stats.py,
                    osken_manager.py (hand-written app launcher)
-blockchain/        merkle.py, block.py, ledger.py, commit_backend.py, raft.py (planned)
+blockchain/        merkle.py, block.py, ledger.py, commit_backend.py, raft.py (isolated core)
 security/          authenticator.py (HMAC seam), present_cipher.py (planned)
 simulation/        topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
 evaluation/        metrics.py, plots.py, baseline.py (planned), stats.py (planned)
@@ -125,7 +127,7 @@ python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:808
 | Trust-aware controller (EdgeScore routing, quarantine drop rules, REST API) | ✅ Done |
 | Live dashboard (topology, packets, rules, trust) | ✅ Done |
 | PRESENT-80 authentication | 🔄 Planned (Sprint 2) |
-| RAFT consensus | 🔄 Planned (Sprint 2) |
+| RAFT consensus | 🟡 Core built + tested in isolation (not wired in) |
 | Evaluation harness (baselines + Wilcoxon) | 🔄 Planned (Sprint 2) |
 | AI weight optimizer | 🔄 Planned (Sprint 2) |
 | Full-scale integration (8 edge / 40 IoT / 3 malicious) | 🔄 Planned (Sprint 2) |
