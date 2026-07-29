@@ -88,9 +88,16 @@ class TestComparison:
     """S-08 to S-11: one paired comparison."""
 
     def test_s08_agrees_with_scipy(self) -> None:
-        """S-08: The wrapper reports scipy's p-value, not its own arithmetic."""
+        """S-08: The wrapper reports scipy's p-value, not its own arithmetic.
+
+        Differences are deliberately distinct so the exact null applies -- see
+        S-11c for why tied magnitudes take the approximate route instead.
+        """
         system = [0.10, 0.12, 0.09, 0.11, 0.13, 0.08, 0.10, 0.12]
-        baseline = [0.20, 0.22, 0.19, 0.25, 0.21, 0.18, 0.24, 0.23]
+        deltas = [0.05, 0.07, 0.11, 0.13, 0.17, 0.19, 0.23, 0.29]
+        baseline = [round(s + d, 4) for s, d in zip(system, deltas)]
+        assert len({round(b - s, 6) for s, b in zip(system, baseline)}) == 8
+
         c = S.compare_pair(system, baseline, 'drop', 'slo_violation_rate',
                            'zt_sdn', 'round_robin')
         assert c.p_raw == pytest.approx(
@@ -121,6 +128,54 @@ class TestComparison:
         assert not c.is_significant()
         assert c.effect_size == 0.0
         assert c.ties == 5
+
+    def test_s11b_direction_follows_the_test_not_the_medians(self) -> None:
+        """S-11b: Tied medians must not be reported as a loss.
+
+        A zero-inflated metric (the system usually drives failures to exactly 0)
+        gives both sides a median of 0.0 while the system still wins every pair
+        that is not a tie. Taking the direction from the median difference would
+        call that significant result a win for the baseline.
+        """
+        system = [0.0] * 20
+        baseline = [0.0] * 12 + [0.03, 0.04, 0.05, 0.02, 0.06, 0.01, 0.07, 0.02]
+        c = S.compare_pair(system, baseline, 'sybil', 'failure_rate',
+                           'zt_sdn', 'random')
+        assert c.system_median == c.baseline_median == 0.0
+        assert c.median_difference == 0.0
+        assert c.wins == 8 and c.losses == 0
+        assert c.effect_size > 0
+        assert c.system_better, "tied medians reported as a loss for the system"
+        assert c.is_significant()
+
+    def test_s11c_null_distribution_choice(self) -> None:
+        """S-11c: Exact where it is valid, approximate where it is not.
+
+        With distinct, non-zero differences and few enough pairs, the p-value
+        must match scipy's exact test. When the absolute differences tie, the
+        exact null's distinct-rank assumption fails and it turns
+        anticonservative, so the tie-corrected normal approximation is used
+        instead -- deliberately differing from scipy's `auto`, which would still
+        take the exact route.
+        """
+        system = [0.10, 0.21, 0.32, 0.43, 0.54, 0.65, 0.76, 0.87]
+        deltas = [0.05, 0.07, 0.11, 0.13, 0.17, 0.19, 0.23, 0.29]
+        baseline = [round(s + d, 4) for s, d in zip(system, deltas)]
+        c = S.compare_pair(system, baseline, 'drop', 'failure_rate', 'zt', 'b')
+        diffs = [round(b - s, 6) for s, b in zip(system, baseline)]
+        assert len({abs(d) for d in diffs}) == len(diffs), "fixture must be tie-free"
+        assert c.p_raw == pytest.approx(float(wilcoxon(diffs, method='exact').pvalue))
+
+        # Repeated magnitudes, so the ranks tie. Built against a zero baseline so
+        # the differences are exactly these values: computing them as `v + 0.1`
+        # leaves floating-point noise that makes nominally equal gaps distinct.
+        tied_diffs = [0.1, 0.1, 0.2, 0.2, 0.3, 0.4]
+        tied_system = [0.0] * 6
+        t = S.compare_pair(tied_system, tied_diffs, 'drop', 'failure_rate', 'zt', 'b')
+        assert len({abs(d) for d in tied_diffs}) < len(tied_diffs), "fixture must tie"
+        assert t.p_raw == pytest.approx(
+            float(wilcoxon(tied_diffs, method='approx').pvalue)
+        )
 
     def test_s11_rejects_unpaired_or_empty_input(self) -> None:
         with pytest.raises(ValueError):

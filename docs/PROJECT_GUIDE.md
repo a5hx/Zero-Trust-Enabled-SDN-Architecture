@@ -489,7 +489,8 @@ Zero-Trust-Enabled-SDN-Architecture/
 ├── dashboard/         the live browser view + replay tool
 ├── config/            YAML configs (full-scale, demo, trust-demo)
 ├── tests/             the pytest suite (105 tests, no sudo/Mininet needed)
-├── docs/              FLOW_RULES.md, this guide
+├── docs/              FLOW_RULES.md, EVALUATION.md, AI_OPTIMIZER.md,
+│                       LOAD_BALANCING_STARVATION.md, study/, this guide
 ├── uml_diagrams/      class/sequence/DFD/ER/activity diagrams
 ├── run_demo.py        standalone (no-Mininet) trust-engine simulation
 ├── README.md          project overview
@@ -789,7 +790,7 @@ falls back to plain allow/quarantine.
 | **Graduated response** (rate-limit meters) | ✅ Done (Sprint 2 W2) |
 | **Flow-rule specification** (`docs/FLOW_RULES.md`) | ✅ Done (Sprint 2 W2) |
 | RAFT consensus (`blockchain/raft.py`) | 🟡 Core built + 26 tests in isolation; TCP transport and the `RaftBackend` swap still outstanding |
-| Evaluation harness (baselines + Wilcoxon stats) | ✅ Done — 600-run experiment, 14/16 comparisons favour the system (p<0.05) |
+| Evaluation harness (baselines + Wilcoxon stats) | ✅ Done — 600-run experiment, 14/16 comparisons favour the system (`docs/EVALUATION.md`) |
 | AI weight optimizer (Random Forest + UCB1) | 🔲 Planned (Week 7) |
 | Full-scale integration (8/40/3) | 🔲 Planned (Week 8) |
 

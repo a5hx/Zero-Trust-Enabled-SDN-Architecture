@@ -129,7 +129,7 @@ python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:808
 | Live dashboard (topology, packets, rules, trust) | ✅ Done |
 | PRESENT-80 authentication | 🔄 Planned (Sprint 2) |
 | RAFT consensus | 🟡 Core built + tested in isolation (not wired in) |
-| Evaluation harness (baselines + Wilcoxon) | ✅ Done — 14/16 comparisons favour the system (p<0.05) |
+| Evaluation harness (baselines + Wilcoxon) | ✅ Done — 14/16 comparisons favour the system ([results](docs/EVALUATION.md)) |
 | AI weight optimizer | 🔄 Planned (Sprint 2) |
 | Full-scale integration (8 edge / 40 IoT / 3 malicious) | 🔄 Planned (Sprint 2) |
 

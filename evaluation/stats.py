@@ -94,6 +94,18 @@ class Comparison:
 
     @property
     def system_better(self) -> bool:
+        """Which side the *test* favours.
+
+        Read from the signed-rank direction (the effect size), not from the
+        difference of medians. Those disagree whenever the medians tie but the
+        pairs do not: a system that wins 10 pairs, loses 0, and ties 20 has a
+        median difference of exactly 0.0 while the test correctly reports a
+        significant improvement. Judging by medians alone labels that a loss.
+        Median difference is only the tie-break when the ranks are perfectly
+        balanced.
+        """
+        if self.effect_size != 0:
+            return self.effect_size > 0
         return self.median_difference > 0
 
     @property
@@ -196,22 +208,45 @@ def compare_pair(
     if not lower_better:
         diffs = [-d for d in diffs]
 
-    if all(d == 0 for d in diffs):
-        # scipy raises on an all-zero difference vector. Identical samples are
-        # not evidence of a difference, so report the null outright rather than
-        # letting the exception surface as a crash.
+    # Drop tied pairs before testing. This is Wilcoxon's own treatment of zeros
+    # and matches scipy's default zero_method='wilcox'; doing it here rather than
+    # leaving it to scipy makes the exact null distribution usable, since scipy
+    # refuses `method='exact'` whenever zeros are present in the input.
+    nonzero = [d for d in diffs if d != 0]
+
+    if not nonzero:
+        # Identical samples are not evidence of a difference. Report the null
+        # rather than letting scipy's exception on an all-zero vector surface as
+        # a crash on the one input whose answer is obvious.
         p_raw = 1.0
     else:
-        # Choose the null distribution explicitly rather than leaving it to
-        # scipy's 'auto', which picks the same thing but emits a UserWarning
-        # when it does. The exact distribution is only valid without zero
-        # differences, and is impractically slow beyond ~25 pairs; the normal
-        # approximation with continuity correction is standard above that.
-        has_zeros = any(d == 0 for d in diffs)
-        method = 'approx' if has_zeros or len(diffs) > 25 else 'exact'
-        p_raw = float(
-            wilcoxon(list(system_values), list(baseline_values), method=method).pvalue
-        )
+        # Choose the null distribution explicitly instead of relying on scipy's
+        # 'auto', which mostly picks the same thing but warns when it does.
+        # Exact requires all three of:
+        #   * few enough pairs that the recursive construction stays cheap --
+        #     scipy's own cutoff is 50, matched here;
+        #   * no ties among the absolute differences, since the exact null
+        #     assumes distinct ranks and ties break that assumption;
+        #   * no zero differences, which the drop above has already handled.
+        # The relevant sample size is the number of *untied* pairs, not the
+        # number of runs: 30 runs with 22 ties is an 8-sample test, far too small
+        # to approximate with a normal.
+        #
+        # This deviates from scipy's `method='auto'` in two places, both
+        # deliberately toward the more careful option:
+        #   * zeros present -- scipy degrades to the approximation; we drop the
+        #     tied pairs first (Wilcoxon's own definition), which keeps the exact
+        #     test valid and is the more accurate of the two.
+        #   * ties among |d| -- scipy still uses exact; we do not, because the
+        #     exact null assumes distinct ranks and is anticonservative when they
+        #     tie, whereas the normal approximation applies a tie correction to
+        #     the variance. Erring toward larger p-values is the right direction
+        #     for a significance claim.
+        # Otherwise the two agree exactly (scipy's cutoff is also 50).
+        magnitudes = [abs(d) for d in nonzero]
+        exact_ok = len(nonzero) <= 50 and len(set(magnitudes)) == len(magnitudes)
+        method = 'exact' if exact_ok else 'approx'
+        p_raw = float(wilcoxon(nonzero, method=method).pvalue)
 
     sys_med = statistics.median(system_values)
     base_med = statistics.median(baseline_values)
