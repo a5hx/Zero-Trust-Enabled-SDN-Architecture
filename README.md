@@ -35,16 +35,18 @@ OpenFlow rules, not simulated.
   counters, flow rules, and trust, over server-sent events (`dashboard/`).
 - **Blockchain ledger** — SHA-256 + Merkle-tree trust record store
   (`blockchain/`).
-- **PRESENT-80 cipher** — lightweight IoT device authentication *(planned;
-  seam at `security/authenticator.py`)*.
+- **PRESENT-80 cipher** — lightweight IoT device authentication, wired into
+  live device admission (`security/present_cipher.py`, `security/authenticator.py`).
 - **RAFT consensus** — leader election + log replication, built and unit-tested
   in isolation (`blockchain/raft.py`) *(not yet wired to the ledger; TCP
   transport pending)*.
-- **AI weight optimizer** — Random Forest (offline) + UCB1 bandit (online)
-  *(planned)*.
+- **AI weight optimizer** — UCB1 bandit (online), wired into the live monitor
+  loop and dashboard (`trust_engine/ai_optimizer.py`) *(offline Random Forest
+  planned)*.
 - **Evaluation harness** — 4 baselines, 30 seeded runs/scenario, paired Wilcoxon
-  signed-rank with Holm–Bonferroni correction (`evaluation/baseline.py`,
-  `evaluation/stats.py`).
+  signed-rank with Holm–Bonferroni correction — 14/16 comparisons favour the
+  system (`evaluation/baseline.py`, `evaluation/stats.py`,
+  [results](docs/EVALUATION.md)).
 
 ### os-ken, not Ryu
 
@@ -60,19 +62,21 @@ and no `ryu-manager` in this project.
 ## Repository structure
 
 ```
-config/            params.yaml (full scale), params_demo.yaml, params_trust_demo.yaml
-contracts/         data contracts (trust_update, block schema, thresholds)
-trust_engine/      trust_calculator.py, ai_optimizer.py (planned)
-controller/        trust_balancer.py, flow_monitor.py, edge_selector.py,
-                   northbound_api.py, event_bus.py, flow_stats.py,
-                   osken_manager.py (hand-written app launcher)
-blockchain/        merkle.py, block.py, ledger.py, commit_backend.py, raft.py (isolated core)
-security/          authenticator.py (HMAC seam), present_cipher.py (planned)
-simulation/        topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
-evaluation/        metrics.py, plots.py, baseline.py, stats.py, starvation_sweep.py
-dashboard/         index.html, replay.py, generate_demo_recording.py
-tests/             pytest suite (no sudo/Mininet required)
-uml_diagrams/      class, sequence, DFD, ER, activity
+config/                  params.yaml (full scale), params_demo.yaml, params_trust_demo.yaml
+contracts/               data contracts (trust_update, block schema, thresholds)
+trust_engine/            trust_calculator.py, ai_optimizer.py (UCB1 online; RF offline planned)
+controller/              trust_balancer.py, flow_monitor.py, edge_selector.py,
+                         northbound_api.py, event_bus.py, flow_stats.py,
+                         osken_manager.py (hand-written app launcher)
+blockchain/              merkle.py, block.py, ledger.py, commit_backend.py, raft.py (isolated core)
+security/                authenticator.py (HMAC seam), present_cipher.py
+simulation/              topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
+evaluation/              metrics.py, plots.py, baseline.py, stats.py, starvation_sweep.py
+dashboard/               index.html, replay.py, generate_demo_recording.py
+trust_convergence_demo/  standalone demo proving trust base values are computed
+wsl_gui/                 WSL packet-capture + dashboard integration utilities
+tests/                   pytest suite (no sudo/Mininet required)
+uml_diagrams/            class, sequence, DFD, ER, activity
 ```
 
 ---
@@ -114,6 +118,13 @@ Mininet) — see `SETUP.md` §3b.
 python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:8082
 ```
 
+**Trust convergence demonstration** (prove base values are computed, not referenced):
+
+```bash
+cd trust_convergence_demo
+python3 simulate_network.py   # See START_HERE.md for details
+```
+
 ---
 
 ## Status
@@ -127,10 +138,10 @@ python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:808
 | Mininet topology + live controller connectivity | ✅ Done |
 | Trust-aware controller (EdgeScore routing, quarantine drop rules, REST API) | ✅ Done |
 | Live dashboard (topology, packets, rules, trust) | ✅ Done |
-| PRESENT-80 authentication | 🔄 Planned (Sprint 2) |
-| RAFT consensus | 🟡 Core built + tested in isolation (not wired in) |
+| PRESENT-80 authentication | ✅ Done — wired into live device admission |
+| RAFT consensus | 🟡 Core built + tested in isolation (not wired in; TCP transport pending) |
 | Evaluation harness (baselines + Wilcoxon) | ✅ Done — 14/16 comparisons favour the system ([results](docs/EVALUATION.md)) |
-| AI weight optimizer | 🔄 Planned (Sprint 2) |
+| AI weight optimizer | 🟡 UCB1 (online) done and live; Random Forest (offline) pending |
 | Full-scale integration (8 edge / 40 IoT / 3 malicious) | 🔄 Planned (Sprint 2) |
 
 See [`DIRECTION.md`](DIRECTION.md) for the honest status assessment, the

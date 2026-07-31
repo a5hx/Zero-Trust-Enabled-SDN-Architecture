@@ -388,7 +388,8 @@ def main() -> None:
     if args.mode == 'standalone':
         run_standalone(cfg, args.duration, args.attack)
     else:
-        print("Mininet mode requires Linux with Mininet/Ryu installed.")
+        print("Mininet mode requires Linux with Mininet/Open vSwitch/os-ken installed.")
+        print("See SETUP.md for the live controller + Mininet demo (three terminals).")
         print("Use --mode standalone for the review demo.")
         sys.exit(1)
 
