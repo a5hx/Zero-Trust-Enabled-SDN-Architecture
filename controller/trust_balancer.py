@@ -13,6 +13,7 @@ Two classes live here:
 import csv
 import logging
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,14 +34,18 @@ from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
 from os_ken.ofproto import inet, ofproto_v1_3
 
 from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
-from controller.edge_selector import BAND_RATE_LIMITED, EdgeWeights
+from controller.edge_selector import (
+    BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_EPSILON,
+    DEFAULT_SELECTION_STRATEGY, EdgeWeights, NodeState,
+    select_edge_node as _select_edge_node,
+)
 from trust_engine.ai_optimizer import build_optimizer
 from controller.event_bus import EventBus, NullBus
 from controller.trust_state import TrustState
 from security.authenticator import (
     HmacAuthenticator, NullAuthenticator, Present80Authenticator,
 )
-from simulation.addressing import VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
+from simulation.addressing import CX_IP, VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +64,21 @@ class TrustBalancerStandalone:
         edge_score_weights: Dict[str, float],
         num_edge_nodes: int = 8,
         max_updates_per_block: int = 10,
+        selection_rng: Optional[random.Random] = None,
     ) -> None:
         self.trust_calc = trust_calculator
         self.ledger = ledger
-        self.w1 = edge_score_weights.get('w1_trust', 0.50)
-        self.w2 = edge_score_weights.get('w2_cpu', 0.30)
-        self.w3 = edge_score_weights.get('w3_latency', 0.20)
+        self.weights = EdgeWeights.from_config(edge_score_weights)
+        self.w1 = self.weights.w1_trust
+        self.w2 = self.weights.w2_cpu
+        self.w3 = self.weights.w3_latency
+        # Selection strategy, read from the same edge_score block. Defaults keep
+        # the original winner-take-all argmax so run_demo.py is unchanged unless
+        # its config opts in (docs/LOAD_BALANCING_STARVATION.md).
+        self.selection_strategy = edge_score_weights.get('selection', DEFAULT_SELECTION_STRATEGY)
+        self.d_choices = int(edge_score_weights.get('d_choices', DEFAULT_D_CHOICES))
+        self.epsilon = float(edge_score_weights.get('epsilon', DEFAULT_EPSILON))
+        self._selection_rng = selection_rng or random.Random()
         self.num_edge_nodes = num_edge_nodes
         self.max_updates_per_block = max_updates_per_block
 
@@ -101,33 +115,31 @@ class TrustBalancerStandalone:
             latencies: {node_id: latency_ms}.
 
         Returns:
-            The node_id with the highest EdgeScore.
+            The node_id selected. This delegates to the shared
+            controller.edge_selector.select_edge_node so the standalone balancer
+            gets the same selection strategies (argmax / power-of-two-choices +
+            ε-exploration) as the live controller. There is still no quarantine
+            gate here -- run_demo.py has no anomaly signal -- so every node is
+            eligible; the strategy only decides which eligible node wins.
         """
-        best_node: str = f'srv1'
-        best_score: float = -1.0
-
-        # Normalise latencies to [0, 1]
-        max_lat = max(latencies.values()) if latencies else 1.0
-        max_lat = max(max_lat, 1.0)  # Avoid division by zero
-
-        for i in range(1, self.num_edge_nodes + 1):
-            nid = f'srv{i}'
-            t_score = self.trust_calc.get_score(nid)
-            cpu = cpu_loads.get(nid, 0.5)
-            lat = latencies.get(nid, 50.0)
-            lat_norm = lat / max_lat
-
-            edge_score = (
-                self.w1 * t_score
-                + self.w2 * (1.0 - cpu)
-                + self.w3 * (1.0 - lat_norm)
+        states = [
+            NodeState(
+                node_id=f'srv{i}',
+                trust=self.trust_calc.get_score(f'srv{i}'),
+                cpu_load=cpu_loads.get(f'srv{i}', 0.5),
+                latency_ms=latencies.get(f'srv{i}', 50.0),
             )
-
-            if edge_score > best_score:
-                best_score = edge_score
-                best_node = nid
-
-        return best_node
+            for i in range(1, self.num_edge_nodes + 1)
+        ]
+        # No quarantine in the standalone path: push the gates out of range so
+        # every node stays eligible, matching this class's original behaviour.
+        chosen, _, _ = _select_edge_node(
+            states, self.weights,
+            isolation_threshold=-1.0, anomaly_gate=float('inf'),
+            strategy=self.selection_strategy, d_choices=self.d_choices,
+            epsilon=self.epsilon, rng=self._selection_rng,
+        )
+        return chosen if chosen is not None else 'srv1'
 
     def update_trust(
         self,
@@ -276,6 +288,12 @@ class TrustBalancerApp(app_manager.OSKenApp):
     TABLE_VIP = 0
     TABLE_L2 = 1
 
+    # Above the drop rules: quarantine must not black-hole the health check that
+    # would clear it. FlowMonitor's /status poll is the only thing that can drive
+    # Ā back down, so dropping it too makes quarantine a one-way door and
+    # contradicts flow_monitor's own contract ("Ā decays back down ... once
+    # misbehaviour stops"). Service traffic is still fully cut.
+    PRIO_HEALTH_CHECK = 450
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
     PRIO_CONNECTION = 300
@@ -310,6 +328,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # StaticWeightOptimizer wrapping the fixed edge_score weights (unchanged
         # routing). The fixed weights double as the bandit's fallback.
         edge_weights = EdgeWeights.from_config(cfg['edge_score'])
+        # Selection strategy lives in the same edge_score block: 'argmax' keeps the
+        # original winner-take-all routing, 'p2c' switches to power-of-two-choices
+        # to stop healthy nodes being starved (docs/LOAD_BALANCING_STARVATION.md).
+        edge_cfg = cfg['edge_score']
+        selection_strategy = edge_cfg.get('selection', DEFAULT_SELECTION_STRATEGY)
+        d_choices = int(edge_cfg.get('d_choices', DEFAULT_D_CHOICES))
+        # ε-exploration guarantees no eligible node is permanently starved even
+        # under frozen scores (the one gap p2c leaves). 0.0 = off.
+        selection_epsilon = float(edge_cfg.get('epsilon', DEFAULT_EPSILON))
         optimizer_cfg = cfg.get('optimizer')
         reward_cfg = (optimizer_cfg or {}).get('reward', {})
 
@@ -328,6 +355,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
             rate_limit_trust=trust_cfg.get('rate_limit_trust', DEFAULT_RATE_LIMIT_TRUST),
             anomaly_warn=trust_cfg.get('anomaly_warn', DEFAULT_ANOMALY_WARN),
             anomaly_lambda=trust_cfg['lambda_decay'],
+            selection_strategy=selection_strategy,
+            d_choices=d_choices,
+            epsilon=selection_epsilon,
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
         )
@@ -348,6 +378,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._meters_installed: set = set()
         self.vip_ip: str = ctrl_cfg['vip']
         self.vip_port: int = ctrl_cfg['vip_port']
+        # Clients dial the VIP on vip_port; the node agents listen on this one.
+        # The VIP rewrite has to translate between them, so the value is needed
+        # here as well as by FlowMonitor's /status polling below.
+        self.node_port: int = cfg.get('agents', {}).get('node_port', 8000)
         self.api_host: str = ctrl_cfg['api_host']
         self.api_port: int = ctrl_cfg['api_port']
         self.flow_idle_timeout: int = ctrl_cfg['flow_idle_timeout_s']
@@ -384,7 +418,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
             poll_interval_s=self.monitor_interval_s,
             honesty_deviation_threshold=self.honesty_deviation_threshold,
             on_quarantine=self._on_trust_collapse,
+            on_recover=self._on_trust_recovered,
             bus=self.bus,
+            # Load-independent Sybil tell (claims idle but slow to answer). Needed
+            # because p2c routing keeps the liar's load too low for the CPU-honesty
+            # check to fire -- see controller/flow_monitor.py.
+            latency_liar_ratio=ctrl_cfg.get('latency_liar_ratio', 3.0),
+            latency_liar_floor_ms=ctrl_cfg.get('latency_liar_floor_ms', 40.0),
+            idle_claim_threshold=ctrl_cfg.get('idle_claim_threshold', 0.25),
+            latency_liar_persist=ctrl_cfg.get('latency_liar_persist', 3),
         )
 
         # Set in start() when the dashboard is enabled -- polls OFPFlowStats so
@@ -613,9 +655,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
         ))
         reply.serialize()
 
+        # The reply has to leave by the port the request arrived on, and
+        # OpenFlow drops an output action naming the packet's own ingress port
+        # -- bouncing a packet back that way requires the reserved OFPP_IN_PORT.
+        # Using the literal port number here silently discards every ARP reply
+        # at the switch: clients never resolve the VIP, so no SYN is ever sent
+        # and the VIP punt rule sits at zero packets while the ARP punt rule
+        # climbs with retries.
         out = parser.OFPPacketOut(
             datapath=dp, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
-            actions=[parser.OFPActionOutput(in_port)], data=reply.data,
+            actions=[parser.OFPActionOutput(ofproto.OFPP_IN_PORT)], data=reply.data,
         )
         dp.send_msg(out)
 
@@ -634,6 +683,12 @@ class TrustBalancerApp(app_manager.OSKenApp):
         forward_actions = [
             parser.OFPActionSetField(eth_dst=s_mac),
             parser.OFPActionSetField(ipv4_dst=s_ip),
+            # The port has to be translated too, not just the address: the VIP
+            # is published on vip_port while the agents bind node_port. Without
+            # this the rewritten packet lands on a port nothing is listening on
+            # and the server's kernel answers with a RST, so the flow counters
+            # look healthy while no agent ever sees a request.
+            parser.OFPActionSetField(tcp_dst=self.node_port),
         ]
         # Graduated response: a node in the rate-limited band gets its inbound
         # (client -> server) flow metered. The reverse path is left unmetered --
@@ -650,14 +705,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # client's real ip/mac untouched, so the reply travels as ordinary
         # learned L2 traffic all the way to the client's own edge switch --
         # it only needs un-rewriting at that very last hop before delivery.
+        # Mirror of the forward rewrite: the reply leaves the agent from
+        # node_port, and has to reach the client looking like it came from the
+        # VIP's advertised port, or the client's socket won't recognise it.
         reverse_match = parser.OFPMatch(
             eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
             ipv4_src=s_ip, ipv4_dst=client_ip,
-            tcp_src=self.vip_port, tcp_dst=client_port,
+            tcp_src=self.node_port, tcp_dst=client_port,
         )
         reverse_actions = [
             parser.OFPActionSetField(eth_src=VIP_MAC),
             parser.OFPActionSetField(ipv4_src=self.vip_ip),
+            parser.OFPActionSetField(tcp_src=self.vip_port),
         ]
         self._install_goto_l2(
             dp, self.TABLE_VIP, self.PRIO_CONNECTION, reverse_match, reverse_actions,
@@ -684,14 +743,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
                     'actions': (
                         (f'meter {meter_id} ({self.rate_limit_kbps} kbps), '
                          if meter_id is not None else '')
-                        + f'set eth_dst={s_mac}, set ipv4_dst={s_ip} -> goto table {self.TABLE_L2}'
+                        + f'set eth_dst={s_mac}, set ipv4_dst={s_ip}, '
+                          f'set tcp_dst={self.node_port} -> goto table {self.TABLE_L2}'
                     ),
                 },
                 {
                     'dir': 'reverse',
-                    'match': f'ipv4_src={s_ip},tcp_src={self.vip_port},'
+                    'match': f'ipv4_src={s_ip},tcp_src={self.node_port},'
                              f'ipv4_dst={client_ip},tcp_dst={client_port}',
-                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip} -> goto table {self.TABLE_L2}',
+                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip}, '
+                               f'set tcp_src={self.vip_port} -> goto table {self.TABLE_L2}',
                 },
             ],
         )
@@ -883,9 +944,45 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # Matching the MAC as source *and* destination covers every ethertype,
         # including the node's ARP replies -- an IP-only match would not.
         node_mac = srv_mac(srv_index(node_id))
+        node_ip = srv_ip(srv_index(node_id))
         for dp in list(self._datapaths.values()):
             parser = dp.ofproto_parser
             ofproto = dp.ofproto
+
+            # Carve the controller's own health check out of the drop rules
+            # first, at a higher priority. Without this the /status poll is
+            # dropped along with everything else, Ā stays pinned at 1.0 on
+            # '/status unreachable', and the node can never leave quarantine --
+            # so a single spurious trip becomes permanent. Scoped to the
+            # controller's data-plane address and the agent port only: no
+            # client traffic matches these.
+            for hc_match in (
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                    ipv4_src=CX_IP, ipv4_dst=node_ip, tcp_dst=self.node_port,
+                ),
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                    ipv4_src=node_ip, ipv4_dst=CX_IP, tcp_src=self.node_port,
+                ),
+                # ARP between the two as well, or the poll survives only as long
+                # as cx's neighbour entry does: the request is broadcast and gets
+                # through, but the node's reply carries eth_src=node_mac and
+                # would hit the drop rule.
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_ARP,
+                    arp_spa=CX_IP, arp_tpa=node_ip,
+                ),
+                parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_ARP,
+                    arp_spa=node_ip, arp_tpa=CX_IP,
+                ),
+            ):
+                self._install_goto_l2(
+                    dp, self.TABLE_VIP, self.PRIO_HEALTH_CHECK, hc_match, [],
+                    cookie=cookie,
+                )
+
             for match in (
                 parser.OFPMatch(eth_src=node_mac),
                 parser.OFPMatch(eth_dst=node_mac),
@@ -918,6 +1015,43 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # (3) Proactively re-steer this node's active clients. Done after the
         # drops so the dead node is already excluded from re-selection.
         self._redispatch_after_quarantine(node_id, collapse_start)
+
+    def _on_trust_recovered(self, node_id: str) -> None:
+        """Called by FlowMonitor the instant a node's trust and Ā bring it back
+        out of quarantine. Removes the drop rules installed on collapse.
+
+        Needed because is_quarantined() is derived live while the drop rules are
+        physical: without this the logical state clears but the switch keeps
+        black-holing the node, and the two disagree permanently. Deleting by
+        cookie clears the health-check carve-outs in the same sweep -- they only
+        exist to keep a quarantined node observable, and the node is now
+        eligible for ordinary traffic again.
+        """
+        t = self.state.trust_calc.get_score(node_id)
+        a = self.state.get_anomaly(node_id)
+        logger.info(
+            "RECOVERED: %s trust=%.4f anomaly=%.4f -- removing drop rules",
+            node_id, t, a,
+        )
+        cookie = self._cookie_for(node_id)
+        dpids = []
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            ofproto = dp.ofproto
+            dp.send_msg(parser.OFPFlowMod(
+                datapath=dp, cookie=cookie, cookie_mask=0xFFFFFFFFFFFFFFFF,
+                table_id=self.TABLE_VIP, command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY,
+                match=parser.OFPMatch(),
+            ))
+            dpids.append(dp.id)
+
+        self.bus.publish(
+            'recovered', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
+            isolation_threshold=self.state.isolation_threshold,
+            anomaly_gate=self.state.anomaly_gate,
+        )
+        self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
 
     def _redispatch_after_quarantine(self, node_id: str, collapse_start: float) -> None:
         """Re-point every client the quarantined node was serving at the
@@ -1061,6 +1195,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'thresholds': {
                 'isolation': self.state.isolation_threshold,
                 'anomaly_gate': self.state.anomaly_gate,
+            },
+            # How the winner is chosen among eligible nodes, so the dashboard can
+            # show whether routing is winner-take-all (argmax) or the
+            # starvation-resistant power-of-two-choices (+ ε). See
+            # docs/LOAD_BALANCING_STARVATION.md.
+            'selection': {
+                'strategy': self.state.selection_strategy,
+                'd_choices': self.state.d_choices,
+                'epsilon': self.state.epsilon,
             },
         }
 

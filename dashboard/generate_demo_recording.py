@@ -41,8 +41,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import EdgeWeights
-from controller.flow_monitor import FlowMonitor
+from controller.flow_monitor import FlowMonitor, StatusProbe
 from controller.trust_state import TrustState
+from trust_engine.ai_optimizer import UCB1WeightOptimizer
 from trust_engine.trust_calculator import TrustCalculator
 
 # --- scenario constants (mirror config/params_trust_demo.yaml) -------------
@@ -62,6 +63,19 @@ VIP_PORT = 9000
 # node completes tasks promptly. srv3's honest baseline is used before it lies.
 HONEST_CPU = {'srv1': 0.15, 'srv2': 0.30, 'srv3': 0.20, 'srv4': 0.25}
 VIP_COOKIE = {f'srv{i}': 0x5100_0000_0000_0000 | i for i in range(1, NUM_EDGE + 1)}
+DROP_COOKIE = {f'srv{i}': 0x5A00_0000_0000_0000 | i for i in range(1, NUM_EDGE + 1)}
+SRV_MAC = {f'srv{i}': f'00:00:00:00:01:0{i}' for i in range(1, NUM_EDGE + 1)}
+
+# The AI weight optimizer (online UCB1 bandit) tuning the EdgeScore weights live,
+# mirroring config/params_trust_demo.yaml. window_s=0 in the sim so one window
+# closes per virtual-second poll (the sim uses a virtual Clock, not wall time).
+OPTIMIZER_ARMS = [
+    EdgeWeights(0.50, 0.30, 0.20),   # balanced (baseline)
+    EdgeWeights(0.70, 0.20, 0.10),   # trust-heavy
+    EdgeWeights(0.34, 0.50, 0.16),   # load-heavy
+    EdgeWeights(0.34, 0.16, 0.50),   # latency-heavy
+    EdgeWeights(0.45, 0.45, 0.10),   # trust + load
+]
 
 
 class RecordingBus:
@@ -98,8 +112,11 @@ class ScriptedMonitor(FlowMonitor):
         super().__init__(**kw)
         self.sim = sim
 
-    def _fetch_status(self, node_id: str) -> Optional[Dict[str, Any]]:
-        return self.sim.status_for(node_id)
+    def _fetch_status(self, node_id: str) -> StatusProbe:
+        # Wrap the scripted telemetry the way the real HTTP fetch does: the node's
+        # self-reported latency stands in for the controller-measured RTT here.
+        status = self.sim.status_for(node_id)
+        return StatusProbe(status, status['latency_ms'])
 
 
 class Sim:
@@ -110,11 +127,25 @@ class Sim:
 
         self.state = TrustState(
             node_ids=self.node_ids,
+            # observed_load integrates occupancy over time; feed it the same
+            # simulated clock everything else here runs on, not wall time.
+            time_source=lambda: self.clock.t,
             trust_calculator=TrustCalculator(
                 alpha=0.35, beta=0.25, gamma=0.25, delta=0.15,
                 lambda_decay=0.85, initial_score=0.5,
             ),
             edge_weights=EdgeWeights(w1_trust=0.50, w2_cpu=0.30, w3_latency=0.20),
+            # Match config/params_trust_demo.yaml: power-of-two-choices + ε so the
+            # replayed fallback demo shows the same load spreading (and the same
+            # Load-balancing panel) as the live run, not the old argmax starvation.
+            # Seeded off the module `random` (main() calls random.seed) so the
+            # recording stays reproducible. See docs/LOAD_BALANCING_STARVATION.md.
+            selection_strategy='p2c',
+            d_choices=2,
+            epsilon=0.05,
+            selection_rng=random,
+            optimizer=UCB1WeightOptimizer(OPTIMIZER_ARMS, exploration_c=1.41),
+            optimizer_window_s=0.0,   # one window per poll under the virtual clock
             isolation_threshold=0.3,
             anomaly_gate=0.5,
         )
@@ -129,6 +160,9 @@ class Sim:
         self._client_port = 40000
         # For flow_stats: cumulative packet counts per dpid, recent routes.
         self._pkts: Dict[int, int] = {}
+        # Cumulative packets DROPPED at each quarantined node's drop rule -- the
+        # clients that keep trying to reach it and are dropped in the data plane.
+        self._dropped: Dict[str, int] = {}
         self._recent_routes: List[Tuple[float, str, str]] = []  # (t, node, iot)
         self._quarantined: set = set()
         self._first_sybil_q_t: Optional[float] = None
@@ -245,6 +279,19 @@ class Sim:
                     'packets': self._pkts[dpid] * 8, 'bytes': self._pkts[dpid] * 512,
                     'pps': round(pps, 2), 'bps': round(pps * 4096, 2), 'is_vip': True,
                 })
+            if node in self._quarantined:
+                # A quarantined node's VIP rules are gone; the Week-1 drop rules
+                # take over, dropping the packets of clients that keep trying to
+                # reach it. Its dropped-packet counter climbs while it stays out.
+                self._dropped[node] = self._dropped.get(node, 0) + random.randint(3, 9)
+                rules.append({
+                    'dpid': dpid, 'table': 0, 'priority': 400, 'cookie': DROP_COOKIE[node],
+                    'node': node,
+                    'match': f'eth_src={SRV_MAC[node]}',
+                    'actions': 'drop',
+                    'packets': self._dropped[node], 'bytes': self._dropped[node] * 64,
+                    'pps': 0.0, 'bps': 0.0, 'is_vip': False,
+                })
             self.bus.publish('flow_stats', dpid=dpid, rules=rules)
 
     def _topology(self) -> Dict[str, Any]:
@@ -265,6 +312,7 @@ class Sim:
             'nodes': nodes, 'links': links, 'vip': f'{VIP}:{VIP_PORT}',
             'weights': {'w1_trust': 0.50, 'w2_cpu': 0.30, 'w3_latency': 0.20},
             'thresholds': {'isolation': 0.3, 'anomaly_gate': 0.5},
+            'selection': {'strategy': 'p2c', 'd_choices': 2, 'epsilon': 0.05},
         }
 
     def run(self) -> List[Dict[str, Any]]:

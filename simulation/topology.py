@@ -17,7 +17,7 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from simulation.addressing import iot_ip, iot_mac, srv_ip, srv_mac
+from simulation.addressing import CX_IP, iot_ip, iot_mac, srv_ip, srv_mac
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,7 @@ except ImportError:
 # 10.0.1.0/24 (server) subnets -- required for FlowMonitor's /status polling
 # and for iot_client's /report calls to the northbound API.
 CX_NAME = 'cx'
-CX_IP = '10.0.99.254'
-CX_PREFIX = 24
+CX_PREFIX = 24  # CX_IP comes from addressing.py -- the controller needs it too
 
 
 class ZeroTrustTopo(Topo):  # type: ignore[misc]
@@ -119,7 +118,13 @@ def _add_cx_node(net: Any, core_switch: Any) -> Any:
     to already exist, which only happens once Mininet has configured links.
     """
     cx = net.addHost(CX_NAME, cls=Node, ip=None, inNamespace=False)
-    net.addLink(cx, core_switch, cls=TCLink, bw=1000)
+    link = net.addLink(cx, core_switch, cls=TCLink, bw=1000)
+    # addLink() after net.start() builds the veth pair but does *not* add the
+    # switch end to the OVS bridge -- that only happens inside start(). Without
+    # this attach the link looks perfectly healthy from the host (cx-eth0 is up,
+    # peered to s0-eth5, routes resolve) while the datapath never sees the port,
+    # so every controller->agent poll and every device auth handshake times out.
+    core_switch.attach(link.intf2)
     cx_intf = cx.intfNames()[-1]
     cx.cmd(f'ip link set {cx_intf} up')
     cx.cmd(f'ip addr add {CX_IP}/{CX_PREFIX} dev {cx_intf}')

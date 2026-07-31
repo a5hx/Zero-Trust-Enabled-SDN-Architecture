@@ -142,6 +142,57 @@ Logs land in `logs/srvN_agent.log` / `logs/iotN_client.log` per host, plus
 whatever Terminal A prints (routing decisions, quarantine events, honesty
 deviations).
 
+### 3b-routing. Choosing the load-balancing strategy (starvation fix)
+
+By default the demo now spreads traffic with **power-of-two-choices + ε-exploration**
+instead of the original winner-take-all `argmax`, which starved healthy servers
+(only ~2 of 4 ever got traffic, regardless of how many servers existed). The full
+analysis, data, and IEEE references are in `docs/LOAD_BALANCING_STARVATION.md`.
+Three knobs, in the `edge_score:` block of the config:
+
+```yaml
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+  selection: p2c   # p2c (default, starvation-resistant) | argmax (old behaviour)
+  d_choices: 2     # p2c sample size
+  epsilon: 0.05    # ε-exploration; 0.0 disables it
+```
+
+Security is unchanged either way: quarantine excludes malicious nodes **before**
+selection, so the sybil `srv3` still receives zero traffic under every setting.
+
+**See the before/after without Mininet** (drives the real selector, no sudo):
+```bash
+python3 -m evaluation.starvation_sweep          # table: argmax vs p2c vs p2c+ε across N
+python3 -m evaluation.starvation_sweep --csv out.csv
+```
+
+**See it live:** run the 3b demo, then from the Mininet CLI watch every healthy
+server carry load (non-zero `inflight`) rather than just two:
+```
+mininet> iot1 curl -s http://10.0.99.254:8081/node/status | python3 -m json.tool
+```
+Set `selection: argmax` + `epsilon: 0.0` and re-run to reproduce the starvation
+(two servers pinned at zero `inflight`/route count); switch back to `p2c` to see
+the load spread across all four.
+
+**Turn a live run into a before/after figure.** With the dashboard enabled the
+controller records every decision to `data/events.jsonl`. Run the demo once under
+each setting, saving the log between runs, then tally each:
+```bash
+# after the argmax run:
+cp data/events.jsonl run_argmax.jsonl
+# after the p2c run:
+cp data/events.jsonl run_p2c.jsonl
+python3 -m evaluation.tally_route_share run_argmax.jsonl --json
+python3 -m evaluation.tally_route_share run_p2c.jsonl   --json
+```
+Paste the two JSON dicts into the `figdatafix` block of
+`docs/study/trust-routing-study.html` to replace Figure 11's simulated numbers
+with live-run ones.
+
 ### 3b-extra. Verifying the Sprint 2 containment upgrades
 
 The quarantine path now does more than delete `srv3`'s VIP rules. Once you
@@ -310,8 +361,19 @@ What to watch, in order:
    separates from its **observed load** bar in the Trust panel. This is the
    novelty claim, made visible: the controller counts load itself, so the lie
    cannot hide.
-4. `srv3` gets quarantined — struck out in red, its link goes dashed, its rules
-   vanish from the rules table, and traffic re-steers to the others.
+4. `srv3` gets quarantined — struck out in red, its link goes dashed, its VIP
+   rules vanish from the rules table, and traffic re-steers to the others. A
+   **priority-400 `drop` rule** appears for it (red row), and the **`dropped N
+   pkts`** pill in the header climbs — the packets of clients still trying to
+   reach the isolated node, killed in the data plane. That is "packet dropping"
+   made visible.
+5. **AI Optimizer panel** (bottom-right): the UCB1 bandit tuning the EdgeScore
+   weights live. The stacked bar is the weights in use *right now*; each arm row
+   shows its pull count (`4×`) and mean reward, with `◀` the active arm and `★`
+   the best-scoring one. Watch the header `EdgeScore = …` formula and the trust
+   panel's scores update the instant the bandit switches arms — the weights are
+   no longer hardcoded. See `docs/AI_OPTIMIZER.md`. Turn it off with
+   `optimizer.enabled: false` in the config.
 
 Note **which gate catches it**: `srv3` is usually isolated by the anomaly gate
 (Ā ≥ 0.5), not the trust threshold — its trust score alone never falls far
@@ -330,6 +392,17 @@ Events are re-emitted with their original timing, so the run paces exactly as it
 did live. Two uses: iterating on the UI without root, and **demo-day insurance** —
 keep a recording of a good run, and you can show the whole story even if the live
 network misbehaves in front of an examiner.
+
+**No recording yet, or want a fresh one without Mininet?** Regenerate it from the
+real components (seed-fixed, no root):
+```bash
+python3 -m dashboard.generate_demo_recording --out data/events.jsonl
+```
+This drives the real `TrustState`/`FlowMonitor`/UCB1 optimizer with scripted
+telemetry (the same standalone abstraction Phase B validated), so the replay
+shows the full arc — routing, the sybil catch, drop rules, **and the AI optimizer
+learning** — with every trust/EdgeScore/reward number computed by production code.
+This is the recommended, safest path for an advisor demo on this box.
 
 ### What the dots do and don't mean
 

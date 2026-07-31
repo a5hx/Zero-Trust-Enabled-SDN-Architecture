@@ -19,11 +19,12 @@ including for switches that have nothing to do with the slow call — and blow t
 """
 
 import logging
+import random
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from blockchain.commit_backend import CommitBackend, LocalLedgerBackend
 from contracts.thresholds import (
@@ -32,6 +33,7 @@ from contracts.thresholds import (
 )
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import (
+    DEFAULT_D_CHOICES, DEFAULT_EPSILON, DEFAULT_SELECTION_STRATEGY,
     EdgeWeights, NodeState, select_edge_node, trust_band,
 )
 from security.authenticator import Authenticator, NullAuthenticator
@@ -75,7 +77,17 @@ class TrustState:
         anomaly_lambda: float = 0.85,
         max_updates_per_block: int = 10,
         block_commit_timeout_s: float = 5.0,
+        selection_strategy: str = DEFAULT_SELECTION_STRATEGY,
+        d_choices: int = DEFAULT_D_CHOICES,
+        epsilon: float = DEFAULT_EPSILON,
+        selection_rng: Optional[random.Random] = None,
+        time_source: Optional[Callable[[], float]] = None,
     ) -> None:
+        # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
+        # can drive observed_load's averaging window from its simulated clock.
+        # Left on wall time, the synthetic run would integrate occupancy over
+        # real elapsed time while everything around it advanced virtually.
+        self._now: Callable[[], float] = time_source or time.monotonic
         self._lock = threading.RLock()
         self.node_ids = list(node_ids)
         self.trust_calc = trust_calculator or TrustCalculator()
@@ -99,6 +111,17 @@ class TrustState:
         self._reward_window = RewardWindow()
         self._window_started_at = time.time()
 
+        # How the winner is chosen among eligible nodes: 'argmax' (winner-take-all,
+        # original behaviour) or 'p2c' (power-of-two-choices, starvation-resistant).
+        # See controller/edge_selector.py and docs/LOAD_BALANCING_STARVATION.md.
+        self.selection_strategy = selection_strategy
+        self.d_choices = d_choices
+        # ε-exploration fraction layered on top of the base strategy (0.0 = off).
+        self.epsilon = epsilon
+        # Own RNG so routing is reproducible when seeded and never perturbs any
+        # other consumer of the global random stream.
+        self._selection_rng = selection_rng or random.Random()
+
         self.isolation_threshold = isolation_threshold
         self.anomaly_gate = anomaly_gate
         self.rate_limit_trust = rate_limit_trust
@@ -110,6 +133,12 @@ class TrustState:
 
         # Claimed telemetry from node_agent /status reports.
         self._claimed_cpu: Dict[str, float] = {nid: 0.5 for nid in self.node_ids}
+        # Trailing (timestamp, claimed_cpu) samples, so the honesty check can
+        # average the node's claim over the same window it averages its own
+        # occupancy estimate over. See claimed_load().
+        self._claimed_hist: Dict[str, Deque[Tuple[float, float]]] = {
+            nid: deque() for nid in self.node_ids
+        }
         self._latency_ms: Dict[str, float] = {nid: 50.0 for nid in self.node_ids}
         # Smoothed anomaly Ā(n) in [0, 1].
         self._anomaly: Dict[str, float] = {nid: 0.0 for nid in self.node_ids}
@@ -122,6 +151,25 @@ class TrustState:
         # itself from what it actually dispatched, so a lying node cannot affect
         # it — unlike the claimed_cpu figures above.
         self._inflight: Dict[str, int] = {nid: 0 for nid in self.node_ids}
+        # Little's Law relates the *time-average* queue length to arrival rate
+        # times service time, so the occupancy estimate has to be integrated
+        # over a window rather than sampled. Sampling _inflight directly reads
+        # near-zero for a fast handler and jumps to 0.50 for a single instant
+        # with two concurrent requests -- past the 0.40 honesty threshold on its
+        # own, which brands a truthful idle node a liar. These track
+        # integral(inflight dt) and the trailing samples observed_load() needs.
+        self._inflight_area: Dict[str, float] = {nid: 0.0 for nid in self.node_ids}
+        self._inflight_area_ts: Dict[str, float] = {
+            nid: self._now() for nid in self.node_ids
+        }
+        self._inflight_hist: Dict[str, Deque[Tuple[float, float]]] = {
+            nid: deque() for nid in self.node_ids
+        }
+        # Averaging window for observed_load. Kept at the same order as the
+        # <3s isolation NFR: a genuinely saturated node still crosses the
+        # honesty threshold within the budget, while a millisecond-scale burst
+        # on an honest node averages away.
+        self.load_window_s: float = 3.0
         # (client_ip, client_port) -> which node that specific flow was routed to.
         self._dispatches: Dict[Tuple[str, int], _Dispatch] = {}
         # Dispatches older than this are assumed abandoned (client crashed rather
@@ -175,10 +223,58 @@ class TrustState:
         with self._lock:
             self._claimed_cpu[node_id] = cpu_load
             self._latency_ms[node_id] = measured_rtt_ms
+            # Keep the claim history the honesty check averages over. The node
+            # samples active/concurrency the instant its handler runs, so this
+            # series is a quantised step function ({0, 0.25, 0.5, ...} at
+            # concurrency 4) -- comparing one such sample against the
+            # controller's windowed occupancy is comparing two different
+            # quantities, and it trips in whichever direction happens to be
+            # ahead at that instant.
+            hist = self._claimed_hist.setdefault(node_id, deque())
+            now = self._now()
+            hist.append((now, float(cpu_load)))
+            cutoff = now - 2 * self.load_window_s
+            while len(hist) > 1 and hist[0][0] < cutoff:
+                hist.popleft()
 
     def get_claimed_cpu(self, node_id: str) -> float:
         with self._lock:
             return self._claimed_cpu.get(node_id, 0.5)
+
+    def claimed_load(self, node_id: str) -> float:
+        """The node's self-reported CPU, time-averaged over the same window as
+        observed_load, so the honesty check compares like with like.
+
+        The raw claim stays available via get_claimed_cpu() and still drives the
+        EdgeScore CPU term, where reacting to the latest reading is wanted --
+        it is only the *honesty* comparison that needs both sides smoothed.
+        """
+        with self._lock:
+            hist = self._claimed_hist.get(node_id)
+            if not hist:
+                return self._claimed_cpu.get(node_id, 0.5)
+
+            now = self._now()
+            target = now - self.load_window_s
+            # Time-weight each claim by how long it stood, matching the way
+            # observed_load integrates occupancy rather than counting samples.
+            total = 0.0
+            weight = 0.0
+            prev_t, prev_v = hist[0]
+            for ts, val in list(hist)[1:]:
+                if ts > target:
+                    dt = ts - max(prev_t, target)
+                    if dt > 0:
+                        total += prev_v * dt
+                        weight += dt
+                prev_t, prev_v = ts, val
+            dt = now - max(prev_t, target)
+            if dt > 0:
+                total += prev_v * dt
+                weight += dt
+            if weight <= 0:
+                return prev_v
+            return max(0.0, min(1.0, total / weight))
 
     def set_anomaly_raw(self, node_id: str, anomaly_raw: float) -> float:
         """EMA-smooth a 0/1 anomaly signal (deviation or drop detected this poll)
@@ -214,6 +310,7 @@ class TrustState:
         with self._lock:
             self._reap_stale_dispatches_locked()
             self._dispatches[(client_ip, client_port)] = _Dispatch(node_id, time.time())
+            self._accrue_inflight_locked(node_id)
             self._inflight[node_id] = self._inflight.get(node_id, 0) + 1
 
     def complete_dispatch(self, client_ip: str, client_port: int) -> Optional[str]:
@@ -224,6 +321,7 @@ class TrustState:
             entry = self._dispatches.pop((client_ip, client_port), None)
             if entry is None:
                 return None
+            self._accrue_inflight_locked(entry.node_id)
             self._inflight[entry.node_id] = max(0, self._inflight.get(entry.node_id, 0) - 1)
             return entry.node_id
 
@@ -245,6 +343,8 @@ class TrustState:
             for key, d in list(self._dispatches.items()):
                 if d.node_id == from_node_id:
                     self._dispatches[key] = _Dispatch(to_node_id, time.time())
+                    self._accrue_inflight_locked(from_node_id)
+                    self._accrue_inflight_locked(to_node_id)
                     self._inflight[from_node_id] = max(0, self._inflight.get(from_node_id, 0) - 1)
                     self._inflight[to_node_id] = self._inflight.get(to_node_id, 0) + 1
                     moved.append(key)
@@ -258,26 +358,91 @@ class TrustState:
         ]
         for key in stale:
             entry = self._dispatches.pop(key)
+            self._accrue_inflight_locked(entry.node_id)
             self._inflight[entry.node_id] = max(0, self._inflight.get(entry.node_id, 0) - 1)
             logger.warning(
                 "Reaped abandoned dispatch to %s (client never reported completion)",
                 entry.node_id,
             )
 
+    def reap_stale_dispatches(self) -> None:
+        """Periodic sweep for abandoned dispatches, called from FlowMonitor's
+        poll loop.
+
+        The reap must not be driven only by new dispatches: the moment every
+        node is quarantined, choose_edge_node() returns None, nothing registers,
+        and the sweep stops running exactly when it is needed most. Whatever was
+        inflight at that moment then stays inflight forever, pinning
+        observed_load high, which keeps the honesty check tripping, which keeps
+        the nodes quarantined -- a terminal state nothing can leave.
+        """
+        with self._lock:
+            self._reap_stale_dispatches_locked()
+
     def get_inflight(self, node_id: str) -> int:
         with self._lock:
             return self._inflight.get(node_id, 0)
 
+    def _accrue_inflight_locked(self, node_id: str) -> float:
+        """Advance integral(inflight dt) for this node up to now and record a
+        trailing sample. Must be called with the lock held, and immediately
+        *before* any mutation of _inflight[node_id], so the area accumulated so
+        far is attributed to the old value. Returns the current timestamp."""
+        now = self._now()
+        last = self._inflight_area_ts.get(node_id, now)
+        area = (
+            self._inflight_area.get(node_id, 0.0)
+            + self._inflight.get(node_id, 0) * (now - last)
+        )
+        self._inflight_area[node_id] = area
+        self._inflight_area_ts[node_id] = now
+
+        hist = self._inflight_hist.setdefault(node_id, deque())
+        hist.append((now, area))
+        # Keep a little more than one window so there is always a sample old
+        # enough to average against.
+        cutoff = now - 2 * self.load_window_s
+        while len(hist) > 2 and hist[0][0] < cutoff:
+            hist.popleft()
+        return now
+
     def observed_load(self, node_id: str) -> float:
-        """Little's-Law-style utilisation estimate: inflight / concurrency,
+        """Little's-Law utilisation estimate: the *time-averaged* number of
+        inflight tasks over the last load_window_s, divided by concurrency and
         clamped to [0, 1]. This is the CPU proxy flow_monitor cross-checks the
         node's claimed CPU against — it is counted by the controller from what it
         itself dispatched, so a dishonest node cannot influence it directly (it
-        can only genuinely take longer to finish tasks, which raises inflight)."""
+        can only genuinely take longer to finish tasks, which raises inflight).
+
+        Averaged rather than sampled on purpose: an instantaneous read is a
+        step function over {0, 0.25, 0.50, ...} for concurrency 4, so an honest
+        node that happens to be serving two quick requests at the polling
+        instant reads 0.50 against a truthful claim of 0.00 and trips the
+        honesty check on its own. Occupancy is only meaningful over time.
+        """
         with self._lock:
+            now = self._accrue_inflight_locked(node_id)
             concurrency = max(1, self._concurrency.get(node_id, 4))
-            inflight = self._inflight.get(node_id, 0)
-            return max(0.0, min(1.0, inflight / concurrency))
+
+            hist = self._inflight_hist.get(node_id)
+            if not hist:
+                return max(0.0, min(1.0, self._inflight.get(node_id, 0) / concurrency))
+
+            # Oldest sample still at least a full window back, else the oldest
+            # we have (the window is not yet full — early in a run).
+            target = now - self.load_window_s
+            t0, a0 = hist[0]
+            for ts, ar in hist:
+                if ts > target:
+                    break
+                t0, a0 = ts, ar
+
+            span = now - t0
+            if span <= 0.0:
+                mean_inflight = float(self._inflight.get(node_id, 0))
+            else:
+                mean_inflight = (self._inflight_area[node_id] - a0) / span
+            return max(0.0, min(1.0, mean_inflight / concurrency))
 
     # ------------------------------------------------------------------ #
     # Trust updates                                                       #
@@ -372,20 +537,34 @@ class TrustState:
                 self.rate_limit_trust, self.anomaly_warn,
             )
 
-    def poll_newly_quarantined(self) -> List[str]:
-        """Return node_ids that just crossed into quarantine since the last call.
+    def poll_quarantine_transitions(self) -> Tuple[List[str], List[str]]:
+        """Return (newly_quarantined, newly_recovered) since the last call.
 
-        Callers (the OpenFlow app) use this edge-trigger to issue OFPFC_DELETE
-        exactly once per collapse, rather than re-deleting flows every poll.
+        Callers (the OpenFlow app) use these edge-triggers to issue the flow
+        mods exactly once per transition, rather than re-sending them every
+        poll. Recovery needs an edge-trigger of its own: is_quarantined() is
+        derived live from trust and Ā, so the *state* clears itself as soon as
+        the node behaves, but the drop rules installed on collapse are physical
+        and stay in the switch until something deletes them.
         """
         with self._lock:
             newly: List[str] = []
+            recovered: List[str] = []
             for nid in self.node_ids:
                 now_q = self.is_quarantined(nid)
-                if now_q and not self._was_quarantined.get(nid, False):
+                was_q = self._was_quarantined.get(nid, False)
+                if now_q and not was_q:
                     newly.append(nid)
+                elif was_q and not now_q:
+                    recovered.append(nid)
                 self._was_quarantined[nid] = now_q
-            return newly
+            return newly, recovered
+
+    def poll_newly_quarantined(self) -> List[str]:
+        """Back-compat wrapper: the quarantine half of
+        poll_quarantine_transitions(). Both consume the same edge state, so
+        only one of the two may be called per cycle."""
+        return self.poll_quarantine_transitions()[0]
 
     def choose_edge_node(self) -> Optional[str]:
         """n* = argmax EdgeScore(n) among non-quarantined nodes, or None if all
@@ -403,7 +582,9 @@ class TrustState:
             ]
             weights = self.optimizer.active_weights()
             chosen, score, ranked = select_edge_node(
-                states, weights, self.isolation_threshold, self.anomaly_gate
+                states, weights, self.isolation_threshold, self.anomaly_gate,
+                strategy=self.selection_strategy, d_choices=self.d_choices,
+                epsilon=self.epsilon, rng=self._selection_rng,
             )
             if self._optimizer_enabled and chosen is not None:
                 # Feed the chosen node's normalized latency into the reward window,
@@ -461,6 +642,11 @@ class TrustState:
                 # 'optimizer' event stream, so no separate training log is needed.
                 'conditions': self._conditions_snapshot_locked(),
             }
+            # Per-arm pull counts / mean rewards, so a dashboard driven only by
+            # this event stream (e.g. the sudo-free replay) can render the full
+            # bandit state without also polling /api/optimizer.
+            if hasattr(self.optimizer, 'stats'):
+                summary['arms'] = self.optimizer.stats()
             self._reward_window = RewardWindow()
             self._window_started_at = time.time()
             return summary

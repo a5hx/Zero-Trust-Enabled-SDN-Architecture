@@ -15,6 +15,14 @@ import re
 # controller proxy-ARPs for it and rewrites traffic to/from it.
 VIP_MAC = '02:00:00:00:99:01'
 
+# Data-plane address of the root-namespace `cx` routing node. The controller
+# process runs outside every Mininet namespace and reaches the emulated subnets
+# only through that hop, so this is the source address of FlowMonitor's /status
+# polls. The controller needs it to carve those polls out of the quarantine
+# drop rules (trust_balancer.PRIO_HEALTH_CHECK), which is why it lives here
+# rather than in topology.py -- importing that would drag in Mininet.
+CX_IP = '10.0.99.254'
+
 _SRV_RE = re.compile(r'^srv(\d+)$')
 
 

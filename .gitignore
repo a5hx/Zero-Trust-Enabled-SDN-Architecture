@@ -10,3 +10,6 @@ build/
 .eggs/
 .pytest_cache/
 *.log
+
+# Local-only WSL helper scripts (machine-specific, not shared)
+scripts/

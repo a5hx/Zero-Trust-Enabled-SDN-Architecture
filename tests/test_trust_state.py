@@ -26,14 +26,46 @@ def test_dispatch_tracks_inflight_and_observed_load():
     state.set_concurrency('srv1', 4)
     assert state.observed_load('srv1') == 0.0
 
+    time.sleep(0.2)  # a little idle history, as any live node has
     state.register_dispatch('10.0.0.5', 5000, 'srv1')
     state.register_dispatch('10.0.0.6', 5001, 'srv1')
+    # inflight stays an exact instantaneous count...
     assert state.get_inflight('srv1') == 2
-    assert state.observed_load('srv1') == 0.5
+    # ...but observed_load is the time-average of it (Little's Law is a
+    # statement about time averages), so two tasks that have only just been
+    # dispatched have barely any occupancy behind them yet. Reading 2/4 = 0.5
+    # here is what used to brand a truthful idle node a liar: 0.5 against a
+    # claimed 0.0 clears the 0.40 honesty threshold on its own.
+    assert state.observed_load('srv1') < 0.1
 
     node = state.complete_dispatch('10.0.0.5', 5000)
     assert node == 'srv1'
     assert state.get_inflight('srv1') == 1
+
+
+def test_observed_load_averages_over_the_window_not_the_instant():
+    """A brief burst must average away; sustained occupancy must not."""
+    state = _make_state()
+    state.set_concurrency('srv1', 4)
+    state.load_window_s = 1.0
+
+    # Brief burst: 4 tasks held for 20ms out of a 1s window.
+    for i in range(4):
+        state.register_dispatch('10.0.0.5', 6000 + i, 'srv1')
+    time.sleep(0.02)
+    for i in range(4):
+        state.complete_dispatch('10.0.0.5', 6000 + i)
+    time.sleep(0.4)
+    assert state.observed_load('srv1') < 0.2, 'transient burst must not read as load'
+
+    # Sustained: 4 tasks held for longer than the whole window.
+    state2 = _make_state()
+    state2.set_concurrency('srv1', 4)
+    state2.load_window_s = 0.3
+    for i in range(4):
+        state2.register_dispatch('10.0.0.6', 7000 + i, 'srv1')
+    time.sleep(0.45)
+    assert state2.observed_load('srv1') > 0.9, 'sustained saturation must read as load'
 
 
 def test_complete_dispatch_unknown_flow_returns_none():
@@ -208,3 +240,47 @@ def test_optimizer_never_reenables_a_quarantined_node():
     for _ in range(10):
         state.optimizer_tick()
         assert state.choose_edge_node() == 'srv2'  # never srv1, whatever the arm
+
+
+def test_claimed_load_averages_the_node_self_report():
+    """Both sides of the honesty check must be averaged over the same window.
+
+    node_agent samples active/concurrency the instant its handler runs, so the
+    claim series is a quantised step function. Comparing one such sample against
+    the controller's windowed occupancy tripped the check in whichever direction
+    happened to be ahead -- an idle node caught mid-burst reported claimed 0.50
+    against an observed 0.03 and was quarantined for it.
+    """
+    state = _make_state()
+    state.set_concurrency('srv1', 4)
+    state.load_window_s = 1.0
+
+    # Mostly idle, with one instantaneous 0.50 spike -- the 18:30:00 pattern.
+    for _ in range(8):
+        state.report_claimed_status('srv1', 0.0, 30.0)
+        time.sleep(0.05)
+    state.report_claimed_status('srv1', 0.5, 30.0)
+
+    assert state.get_claimed_cpu('srv1') == 0.5, 'raw claim stays available'
+    assert state.claimed_load('srv1') < 0.1, 'windowed claim must ignore the spike'
+
+
+def test_stale_dispatches_are_reaped_without_new_dispatches():
+    """The reap sweep must not be driven only by register_dispatch.
+
+    Once every node is quarantined nothing registers, so a reaper that only ran
+    on dispatch froze inflight forever -- pinning observed_load high, which kept
+    the honesty check tripping, which kept the nodes quarantined.
+    """
+    state = _make_state()
+    state.set_concurrency('srv1', 4)
+    state._dispatch_reap_after_s = 0.05
+
+    state.register_dispatch('10.0.0.5', 5000, 'srv1')
+    state.register_dispatch('10.0.0.6', 5001, 'srv1')
+    assert state.get_inflight('srv1') == 2
+
+    time.sleep(0.1)
+    # No further dispatches -- exactly the all-quarantined case.
+    state.reap_stale_dispatches()
+    assert state.get_inflight('srv1') == 0, 'stale dispatches must drain on their own'

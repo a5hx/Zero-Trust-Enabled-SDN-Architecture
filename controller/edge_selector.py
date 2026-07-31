@@ -17,6 +17,7 @@ If every candidate is quarantined, selection returns None — deny by default ra
 than fall back to an untrusted node.
 """
 
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -29,6 +30,26 @@ from contracts.thresholds import (
 BAND_QUARANTINED = 'quarantined'
 BAND_RATE_LIMITED = 'rate_limited'
 BAND_FULL = 'full'
+
+# Selection strategies (how the winner is picked among *eligible* nodes).
+#   argmax -- the original winner-take-all: n* = argmax EdgeScore(n). One node
+#             wins every decision; a node a hair behind never wins, and once
+#             trust (the heaviest term) entrenches ~2 nodes the rest starve
+#             regardless of how many servers exist. See docs/LOAD_BALANCING_STARVATION.md.
+#   p2c    -- power-of-two-choices: sample d eligible nodes uniformly at random
+#             and route to the best of that sample. Quarantine still excludes
+#             malicious nodes *before* the sample, so security is unchanged, but
+#             healthy nodes can no longer be permanently starved -- the standard
+#             fix from Mitzenmacher, "The Power of Two Choices in Randomized Load
+#             Balancing," IEEE TPDS 2001.
+STRATEGY_ARGMAX = 'argmax'
+STRATEGY_P2C = 'p2c'
+DEFAULT_SELECTION_STRATEGY = STRATEGY_ARGMAX
+DEFAULT_D_CHOICES = 2
+# ε-exploration fraction. 0.0 disables it (routing depends only on the base
+# strategy). A small positive value guarantees no eligible node is permanently
+# starved even under frozen scores -- see select_edge_node's docstring.
+DEFAULT_EPSILON = 0.0
 
 
 @dataclass(frozen=True)
@@ -147,18 +168,41 @@ def select_edge_node(
     isolation_threshold: float = DEFAULT_ISOLATION_THRESHOLD,
     anomaly_gate: float = DEFAULT_ANOMALY_GATE,
     tie_epsilon: float = 1e-9,
+    strategy: str = DEFAULT_SELECTION_STRATEGY,
+    d_choices: int = DEFAULT_D_CHOICES,
+    epsilon: float = DEFAULT_EPSILON,
+    rng: Optional[random.Random] = None,
 ) -> Tuple[Optional[str], float, List[Tuple[str, float]]]:
-    """Pick n* = argmax EdgeScore(n) among non-quarantined nodes.
+    """Pick the winning node among non-quarantined candidates.
 
-    Ties (e.g. every node at t=0, all holding initial_score) are broken by
-    round-robin rather than always picking the first node in `states` — otherwise
-    the routing-distribution figure looks skewed for the first several seconds of
-    any run, purely as a sorting artifact rather than a real trust/load signal.
+    Quarantine is always applied first, so `strategy`/`epsilon` only ever decide
+    *which* eligible node wins, never whether a malicious node can be chosen.
+
+    strategy='argmax' (default): n* = argmax EdgeScore(n). Exact ties (e.g. every
+        node at t=0 holding initial_score) are broken round-robin so the first
+        seconds of a run aren't a sorting artifact. This is winner-take-all and
+        can permanently starve a healthy node that sits a hair behind — see
+        docs/LOAD_BALANCING_STARVATION.md.
+    strategy='p2c': power-of-two-choices. Sample min(d_choices, len(eligible))
+        eligible nodes uniformly at random and return the best-scoring of the
+        sample. Breaks the starvation lock-in while still excluding quarantined
+        nodes. `rng` is injectable for reproducible runs/tests; it defaults to
+        the module `random`.
+
+    epsilon > 0: ε-exploration on top of whichever base strategy is chosen. With
+        probability epsilon the decision ignores the score and routes to a
+        uniformly random eligible node. This closes the one gap p2c leaves — the
+        strict-worst node under frozen scores is never the better of any sampled
+        pair, so it can still be starved by p2c alone; ε-exploration guarantees
+        every eligible node is selected with probability >= epsilon/|eligible|
+        per decision, so no eligible node can be permanently starved. Off (0.0)
+        by default, so it never perturbs a run that doesn't ask for it.
 
     Returns:
         (chosen_node_id, its_score, all_scores) where all_scores is
         [(node_id, score), ...] for the *eligible* nodes only, sorted best-first
-        (useful for logging why a decision was made). chosen_node_id is None when
+        (the full ranking, for logging why a decision was made — note under p2c
+        the chosen node need not be all_scores[0]). chosen_node_id is None when
         every candidate is quarantined — the caller must then deny the request
         rather than route to an untrusted node.
     """
@@ -171,9 +215,26 @@ def select_edge_node(
     if not eligible:
         return None, 0.0, []
 
+    # Latency is normalised over the whole eligible set (not just any sampled
+    # subset) so a node's score means the same thing regardless of who it was
+    # compared against this decision.
     max_latency = max((s.latency_ms for s in eligible), default=1.0)
     scored = [(s.node_id, edge_score(s, weights, max_latency)) for s in eligible]
     scored.sort(key=lambda pair: pair[1], reverse=True)
+
+    r = rng or random
+
+    # ε-exploration: route to a uniformly random eligible node with probability
+    # epsilon, independent of the base strategy. Guarantees no eligible node is
+    # permanently starved (see the epsilon note in the docstring).
+    if epsilon > 0.0 and r.random() < epsilon:
+        return (*r.choice(scored), scored)
+
+    if strategy == STRATEGY_P2C:
+        d = max(1, min(d_choices, len(scored)))
+        sample = r.sample(scored, d)
+        best_id, best_score = max(sample, key=lambda pair: pair[1])
+        return best_id, best_score, scored
 
     top_score = scored[0][1]
     tied = [pair for pair in scored if abs(pair[1] - top_score) <= tie_epsilon]
