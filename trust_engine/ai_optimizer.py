@@ -250,6 +250,30 @@ class UCB1WeightOptimizer:
         self._active_index = best_index
         return self._arms[best_index]
 
+    def seed_values(self, values: Sequence[float], pseudo_count: int = 3) -> None:
+        """Warm-start value_i from an external prior (offline Random Forest,
+        docs/AI_OPTIMIZER.md Part 2), instead of the cold-start-at-zero default.
+
+        Must be called before any observe()/select(); it does not change the
+        WeightOptimizer protocol -- this is an extra method on the concrete
+        UCB1 class, exactly like active_index/stats below. Setting every count
+        to the same pseudo_count keeps the exploration bonus equal across arms
+        at the first select() (so the prior's mean-reward ordering, not an
+        artifact of unequal counts, decides which arm is picked first), while
+        still letting observe()'s incremental mean bend the estimate toward
+        real evidence at pseudo_count's weight rather than staying pinned to
+        the prior forever.
+        """
+        if len(values) != len(self._arms):
+            raise ValueError(
+                f"expected {len(self._arms)} prior values, got {len(values)}"
+            )
+        if pseudo_count < 1:
+            raise ValueError("pseudo_count must be >= 1")
+        self._values = list(values)
+        self._counts = [pseudo_count] * len(self._arms)
+        self._total_pulls = pseudo_count * len(self._arms)
+
     # -- introspection (backs GET /api/optimizer and logging) ---------------- #
     @property
     def active_index(self) -> int:

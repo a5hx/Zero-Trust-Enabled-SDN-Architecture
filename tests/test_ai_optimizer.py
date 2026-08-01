@@ -142,6 +142,52 @@ def test_ucb1_incremental_mean_matches_plain_average():
 
 
 # --------------------------------------------------------------------------- #
+# Offline Random Forest warm start (trust_engine/rf_optimizer.py's seam)      #
+# --------------------------------------------------------------------------- #
+def test_seed_values_sets_value_and_count_per_arm():
+    opt = UCB1WeightOptimizer(ARMS)
+    prior = [0.1, 0.9, 0.2, 0.3, 0.4]
+    opt.seed_values(prior, pseudo_count=5)
+    stats = opt.stats()
+    assert [s['mean_reward'] for s in stats] == pytest.approx(prior)
+    assert all(s['count'] == 5 for s in stats)
+
+
+def test_seed_values_first_select_picks_the_best_prior_arm():
+    """With every arm's count equal after seeding, the exploration bonus is
+    identical across arms, so the first select() must be decided by the prior
+    values alone -- proving the warm start actually steers routing before any
+    real observation exists."""
+    opt = UCB1WeightOptimizer(ARMS)
+    opt.seed_values([0.1, 0.9, 0.2, 0.3, 0.4], pseudo_count=5)
+    opt.select()
+    assert opt.active_index == 1
+
+
+def test_seed_values_prior_is_overtaken_by_real_evidence():
+    opt = UCB1WeightOptimizer(ARMS, exploration_c=0.1)
+    opt.seed_values([0.9, 0.0, 0.0, 0.0, 0.0], pseudo_count=2)
+    # Arm 0 looked best a priori, but always pays 0; arm 1 always pays 1.
+    for _ in range(50):
+        w = opt.select()
+        i = opt.active_index
+        opt.observe(1.0 if i == 1 else 0.0)
+    assert opt.active_index == 1
+
+
+def test_seed_values_rejects_wrong_length():
+    opt = UCB1WeightOptimizer(ARMS)
+    with pytest.raises(ValueError):
+        opt.seed_values([0.5, 0.5], pseudo_count=1)
+
+
+def test_seed_values_rejects_non_positive_pseudo_count():
+    opt = UCB1WeightOptimizer(ARMS)
+    with pytest.raises(ValueError):
+        opt.seed_values([0.0] * len(ARMS), pseudo_count=0)
+
+
+# --------------------------------------------------------------------------- #
 # Config factory                                                               #
 # --------------------------------------------------------------------------- #
 def test_build_optimizer_off_by_default_returns_static():
