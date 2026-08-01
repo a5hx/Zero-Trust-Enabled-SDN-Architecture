@@ -19,9 +19,22 @@ class Ledger:
     """
 
     def __init__(self) -> None:
-        """Create a new ledger with a genesis block."""
+        """Create a new ledger with a genesis block.
+
+        `timestamp` is pinned to 0.0 rather than the `Block` dataclass's
+        `time.time()` default: genesis carries no real data (merkle_root is
+        the sentinel 'GENESIS'), but its timestamp is still inside the hash
+        preimage (`Block.compute_hash`). A RAFT cluster builds one `Ledger`
+        per replica independently (`RaftBackend.__init__`); if each used
+        `time.time()`, every replica would start from a different genesis
+        hash and every block after it would mismatch on `previous_hash`, even
+        though the replicated content is identical. A single-replica
+        `LocalLedgerBackend` never noticed because it only ever compares its
+        own chain against itself.
+        """
         genesis = Block(
             index=0,
+            timestamp=0.0,
             previous_hash='0' * 64,
             merkle_root='GENESIS',
             proposer_id='genesis',

@@ -11,14 +11,16 @@ The three weights `w1/w2/w3` decide how much trust, load, and latency each count
 They used to be hand-picked constants (`0.50 / 0.30 / 0.20`). The **AI weight
 optimizer learns them from measured outcomes** instead.
 
-This document describes what is built (the online UCB1 bandit), what is
-deliberately deferred (the offline Random Forest), and the seam that lets the
+This document describes what is built — the online UCB1 bandit (Part 1) and the
+offline Random Forest warm-start prior (Part 2) — and the seam that lets the
 second drop in behind the first with no controller changes.
 
 > Framing for the viva: this is **classical UCB1**, not deep reinforcement
-> learning. It assumes a roughly stationary reward. The offline model is
-> **deferred on purpose** until the evaluation harness can generate honest
-> training data — building it on fabricated data would be dishonest.
+> learning. It assumes a roughly stationary reward. The offline Random Forest
+> was built once the simulator could generate honest training data at scale
+> (Part 2) — and the honest result is that it does **not** beat hand-tuned
+> static weights here; that measured negative is reported below rather than
+> smoothed over.
 
 ---
 
@@ -162,17 +164,24 @@ discounted / sliding-window UCB is the future fix.
 
 ---
 
-## Part 2 — Offline Random Forest (deferred, seam ready)
+## Part 2 — Offline Random Forest (built)
 
-The offline model predicts good weights (or an arm's expected reward) from the
-current network conditions — because no single weight setting is best in every
-condition (calm vs. congested, quiet vs. under-attack).
+The offline model predicts an arm's expected reward from the current network
+conditions — because no single weight setting is best in every condition (calm
+vs. congested, quiet vs. under-attack).
 
-It is **not built yet**: it needs a batch of labelled runs to train on, which the
-**evaluation harness** (a later milestone) produces. It is not blocked on RAFT or
-anything else — only on having honest data.
+**Correction to the original framing.** This section used to say the training
+data was "already produced" by the evaluation harness. That was aspirational,
+not true: `evaluation/baseline.py`'s five comparison strategies never touched
+the optimizer at all, and a live capture into `data/events.jsonl` would have
+been small, slow, and — since `data/` is gitignored — not reproducible from
+git. The fix: a live UCB1 bandit now runs **inside** the same discrete-event
+simulator the harness already uses, across many seeds and all four attack
+scenarios, so the training data is real-component-driven and reproducible the
+same way the 600-run comparison is (see `evaluation/baseline.py`'s own
+docstring for that argument).
 
-**The seam.** Everything routes through one protocol:
+**The seam did not change.** Everything still routes through one protocol:
 
 ```python
 class WeightOptimizer(Protocol):
@@ -181,15 +190,75 @@ class WeightOptimizer(Protocol):
     def select(self) -> EdgeWeights: ...
 ```
 
-`UCB1WeightOptimizer` and `StaticWeightOptimizer` implement it today. The Random
-Forest lands as a third implementation, or — better — as a **warm-start prior**
-that seeds UCB1's `value_i` estimates from the model instead of starting at zero.
-Either way the controller does not change.
+The Random Forest is **not** a third implementation of it. It lands as a
+**warm-start prior**: `UCB1WeightOptimizer.seed_values(values, pseudo_count)`
+sets every arm's `value_i` and `count_i` from the model's prediction instead of
+zero, so the very first `select()` of a run is informed by learned conditions
+rather than blind. Real observations still overtake the prior at
+`pseudo_count`'s weight via the same incremental-mean `observe()` as always.
+`TrustState`/the controller are unchanged.
 
-**The training data is a byproduct of running the bandit.** Each closed window
-emits an `optimizer` event carrying both the reward/arm and a `conditions`
-snapshot (`mean_trust`, `mean_load`, `mean_latency_ms`, `num_quarantined`). When
-dashboard recording is on, those events are already persisted to
-`data/events.jsonl`. The Random Forest's training set is simply the `optimizer`
-events filtered out of that recorded stream — `(conditions → arm, reward)` rows.
-No separate logging path is required.
+### Pipeline
+
+```
+evaluation/generate_optimizer_dataset.py   # cold UCB1, run inside the simulator
+        -> data/optimizer_dataset.csv      # (conditions -> arm, reward) rows
+trust_engine/rf_optimizer.py train         # RandomForestRegressor, joblib-persisted
+        -> data/rf_optimizer.joblib
+evaluation/rf_comparison.py                # zt_sdn_rf: zt_sdn's selector, RF-warm-
+        -> results_rf.csv                  # started UCB1 weights, same seeds as the
+                                            # other 5 strategies
+evaluation/stats.py --system zt_sdn_rf     # same Wilcoxon + Holm-Bonferroni layer,
+                                            # unmodified
+```
+
+Feature vector for both training and prediction: `[mean_trust, mean_load,
+mean_latency_ms, num_quarantined, w1_trust, w2_cpu, w3_latency]` — conditions
+plus the arm's own weight triple (not a bare arm index), so the model
+generalises across different `arms` lists instead of memorising an opaque
+label. `evaluation/rf_comparison.py` seeds the prior once per run from a fixed
+"cold" snapshot (healthy fleet at t=0), because that is genuinely all the
+system knows before a run starts; plain UCB1 (`observe`/`select`) drives
+everything after that, identically to the online-only bandit.
+
+### Measured result — does the learned prior beat static weights?
+
+**No — and that is the honest, reportable finding**, not a bug to chase. 720
+runs (6 strategies × 4 scenarios × 30 shared seeds, `config`: 8 nodes, 120s/run,
+same paired Wilcoxon + Holm-Bonferroni layer as the 5-strategy comparison in
+`docs/EVALUATION.md`) on `slo_violation_rate`:
+
+| scenario | `zt_sdn_rf` vs `zt_sdn` | Δ (median) | verdict |
+|---|---|---:|---|
+| clean | ns (p_adj = 0.077) | −0.00% | no difference |
+| sybil | **zt_sdn wins** (p_adj = 0.050) | −1.2% | RF-warm-started is worse |
+| drop  | ns (p_adj = 0.177) | −1.1% | no difference |
+| both  | **zt_sdn wins** (p_adj = 0.038) | −0.8% | RF-warm-started is worse |
+
+(`zt_sdn_rf` does beat the four weak baselines — random, round_robin,
+least_conn, no_trust — in 14/16 of those comparisons, same pattern as plain
+`zt_sdn`: that win is the trust score + anomaly gate doing the work, not the
+learned prior, exactly as it is for the static-weight system.)
+
+Effect sizes on the two significant losses are medium (r ≈ −0.4) but the
+absolute magnitude is under 1.2% relative — real, but small. The likely cause
+is not the Random Forest being wrong: under p2c + ε selection the weight
+arms barely differ in reward to begin with (`docs/LOAD_BALANCING_STARVATION.md`
+§5's table — imbalance goes quiet, and even latency spread across the 5
+presets is modest), so a policy that keeps re-selecting among near-equal arms
+via UCB1 — warm-started or not — adds a little switching variance around
+whatever a competent hand-tuned static point already sits at. That is a
+property of running *any* multi-armed bandit in a low-arm-differentiation
+regime, not specifically a Random Forest failure; it is consistent with the
+"Known limitation" already documented below (UCB1 assumes stationary reward
+and only visibly helps under stress).
+
+**Reproduce:**
+```
+python3 -m evaluation.generate_optimizer_dataset --runs 60 --sim-s 120 --nodes 8 \
+    --csv data/optimizer_dataset.csv
+python3 -m trust_engine.rf_optimizer train data/optimizer_dataset.csv data/rf_optimizer.joblib
+python3 -m evaluation.rf_comparison --model data/rf_optimizer.joblib --runs 30 \
+    --sim-s 120 --nodes 8 --csv data/results_rf.csv
+python3 -m evaluation.stats data/results_rf.csv --system zt_sdn_rf
+```

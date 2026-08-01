@@ -119,6 +119,7 @@ from controller.edge_selector import (
     STRATEGY_P2C, EdgeWeights, NodeState, select_edge_node,
 )
 from controller.flow_monitor import evaluate_latency_tell, fleet_latency_baseline
+from trust_engine.ai_optimizer import RewardWindow, UCB1WeightOptimizer, WeightOptimizer, compute_reward
 from trust_engine.trust_calculator import TrustCalculator
 
 # --- Defaults, mirroring config/params_trust_demo.yaml + TrustState ---------
@@ -175,6 +176,29 @@ STRATEGIES = ('random', 'round_robin', 'least_conn', 'no_trust', 'zt_sdn')
 SCENARIOS = ('clean', 'sybil', 'drop', 'both')
 SYSTEM_UNDER_TEST = 'zt_sdn'
 
+# The 6th strategy (Step 1, offline Random Forest, docs/AI_OPTIMIZER.md Part 2):
+# zt_sdn with weights chosen by a live UCB1WeightOptimizer instead of the fixed
+# WEIGHTS -- either freshly cold (data generation, see
+# evaluation/generate_optimizer_dataset.py) or warm-started from an offline RF
+# prior (evaluation/rf_comparison.py). Kept OUT of STRATEGIES/run_experiment's
+# default so it never silently changes the already-reported 5-strategy,
+# 600-run headline in docs/EVALUATION.md; it is simulated explicitly by name.
+STRATEGY_ZT_SDN_RF = 'zt_sdn_rf'
+ALL_STRATEGIES = STRATEGIES + (STRATEGY_ZT_SDN_RF,)
+
+# The 5 discrete weight presets from docs/AI_OPTIMIZER.md's table / the
+# optimizer: block in config/params_trust_demo.yaml -- duplicated here (rather
+# than parsed from YAML) so this module has no config-file dependency, matching
+# every other constant in this section.
+DEFAULT_ARMS = [
+    EdgeWeights(0.50, 0.30, 0.20),
+    EdgeWeights(0.70, 0.20, 0.10),
+    EdgeWeights(0.34, 0.50, 0.16),
+    EdgeWeights(0.34, 0.16, 0.50),
+    EdgeWeights(0.45, 0.45, 0.10),
+]
+DEFAULT_WINDOW_S = 10.0    # matches optimizer.window_s in config/params_trust_demo.yaml
+
 
 def _gini(values: Sequence[int]) -> float:
     xs = sorted(values)
@@ -199,6 +223,10 @@ class RunResult:
     latencies_ms: List[float] = field(default_factory=list)
     served: List[int] = field(default_factory=list)
     time_to_isolate_s: Optional[float] = None
+    # Populated only for strategy='zt_sdn_rf': one row per closed optimizer
+    # window, (conditions -> arm, reward) -- the offline Random Forest's
+    # training data. Empty for every other strategy.
+    optimizer_rows: List[Dict] = field(default_factory=list)
 
     @property
     def failure_rate(self) -> float:
@@ -271,11 +299,15 @@ class _Router:
         claimed_cpu: Sequence[float],
         rtt_ms: Sequence[float],
         anomaly: Sequence[float],
+        weights: EdgeWeights = WEIGHTS,
     ) -> Optional[int]:
         """Return the chosen node index, or None if every node was refused.
 
-        None is only ever possible for `zt_sdn`: the baselines have no notion of
-        refusing a node, which is exactly the difference being measured.
+        None is only ever possible for `zt_sdn`/`zt_sdn_rf`: the baselines have
+        no notion of refusing a node, which is exactly the difference being
+        measured. `weights` is ignored by every strategy except the two
+        EdgeScore variants -- the baselines don't have a weighted score to
+        apply it to.
         """
         if self.strategy == 'random':
             return self.rng.randrange(self.n)
@@ -291,7 +323,7 @@ class _Router:
             candidates = [i for i, c in enumerate(claimed_cpu) if c <= lowest + 1e-9]
             return self.rng.choice(candidates)
 
-        # Both EdgeScore variants go through the real selector.
+        # All EdgeScore variants go through the real selector.
         if self.strategy == 'no_trust':
             # Trust pinned high and uniform: the w1 term becomes a constant and
             # drops out of the ranking, leaving load + latency. Quarantine is
@@ -310,7 +342,7 @@ class _Router:
             isolation, gate = DEFAULT_ISOLATION_THRESHOLD, DEFAULT_ANOMALY_GATE
 
         chosen, _, _ = select_edge_node(
-            states, WEIGHTS,
+            states, weights,
             isolation_threshold=isolation, anomaly_gate=gate,
             strategy=STRATEGY_P2C, d_choices=D_CHOICES, epsilon=EPSILON,
             rng=self.rng,
@@ -326,6 +358,8 @@ def simulate(
     sim_s: float = SIM_S,
     load_factor: float = LOAD_FACTOR,
     slo_ms: float = SLO_MS,
+    optimizer: Optional[WeightOptimizer] = None,
+    window_s: float = DEFAULT_WINDOW_S,
 ) -> RunResult:
     """Run one seeded simulation and return its metrics.
 
@@ -340,8 +374,18 @@ def simulate(
     decay into independent sampling. Separate streams keep the k-th draw of each
     kind identical across strategies -- common random numbers, the standard
     variance-reduction technique for paired simulation experiments.
+
+    `optimizer`/`window_s` only apply to strategy='zt_sdn_rf': a live
+    WeightOptimizer replaces the fixed WEIGHTS, and every `window_s` sim-seconds
+    the accumulated RewardWindow is scored and fed back (mirrors
+    TrustState.optimizer_tick + FlowMonitor's poll loop). If no optimizer is
+    given, a fresh, cold UCB1WeightOptimizer over DEFAULT_ARMS is used --
+    that's what generates the offline Random Forest's training data (see
+    evaluation/generate_optimizer_dataset.py); passing an RF-warm-started one is
+    what the 6th-strategy comparison run does instead (see
+    evaluation/rf_comparison.py).
     """
-    if strategy not in STRATEGIES:
+    if strategy not in ALL_STRATEGIES:
         raise ValueError(f"unknown strategy {strategy!r}")
 
     arr_rng = random.Random(seed)             # interarrival times
@@ -373,6 +417,14 @@ def simulate(
     result = RunResult(strategy=strategy, scenario=scenario, seed=seed,
                        served=[0] * n_nodes)
 
+    # Cold by default (data-generation runs); a caller passes a warm-started
+    # one for the 6th-strategy comparison. Only 'zt_sdn_rf' drives a bandit.
+    bandit: Optional[WeightOptimizer] = None
+    reward_window: Optional[RewardWindow] = None
+    if strategy == STRATEGY_ZT_SDN_RF:
+        bandit = optimizer if optimizer is not None else UCB1WeightOptimizer(arms=list(DEFAULT_ARMS))
+        reward_window = RewardWindow()
+
     # (time, tiebreak, kind, node, task). The counter keeps ordering total and
     # deterministic when two events land on the same timestamp. `task` is
     # (arrived_at, service_demand_s).
@@ -393,11 +445,45 @@ def simulate(
 
     heapq.heappush(evq, (arr_rng.expovariate(lam), next(counter), 'arr', -1, None))
     heapq.heappush(evq, (POLL_S, next(counter), 'poll', -1, None))
+    if bandit is not None:
+        heapq.heappush(evq, (window_s, next(counter), 'window', -1, None))
 
     while evq:
         now, _, kind, node, task = heapq.heappop(evq)
         if now > sim_s:
             break
+
+        if kind == 'window':
+            # Mirrors TrustState.optimizer_tick(): score the arm that was active
+            # over the window that just closed, feed the reward back, and switch
+            # to whatever the bandit selects next. load_samples uses the same
+            # "true" per-node occupancy the completion handler below computes as
+            # actual_cpu -- the controller's observed_load, not the claim.
+            load_samples = [
+                min(1.0, (busy[i] + len(backlog[i])) / CONCURRENCY)
+                for i in range(n_nodes)
+            ]
+            reward_window.load_samples = load_samples
+            reward = compute_reward(reward_window)
+            num_quarantined = sum(
+                1 for i in range(n_nodes)
+                if trust[i] < DEFAULT_ISOLATION_THRESHOLD or anomaly[i] >= DEFAULT_ANOMALY_GATE
+            )
+            result.optimizer_rows.append({
+                'scenario': scenario,
+                'seed': seed,
+                'arm': getattr(bandit, 'active_index', 0),
+                'reward': round(reward, 4),
+                'mean_trust': round(sum(trust) / n_nodes, 4),
+                'mean_load': round(sum(load_samples) / n_nodes, 4),
+                'mean_latency_ms': round(sum(rtt_ms) / n_nodes, 2),
+                'num_quarantined': num_quarantined,
+            })
+            bandit.observe(reward)
+            bandit.select()
+            reward_window = RewardWindow()
+            heapq.heappush(evq, (now + window_s, next(counter), 'window', -1, None))
+            continue
 
         if kind == 'poll':
             # What each node reports, and how fast it answers.
@@ -448,7 +534,8 @@ def simulate(
             # Drawn here, from its own stream, so the k-th arrival carries the
             # same service demand no matter which strategy is routing it.
             demand = svc_rng.expovariate(1 / SERVICE_MEAN_S)
-            i = router.choose(trust, claimed_cpu, rtt_ms, anomaly)
+            weights = bandit.active_weights() if bandit is not None else WEIGHTS
+            i = router.choose(trust, claimed_cpu, rtt_ms, anomaly, weights)
             heapq.heappush(evq, (now + arr_rng.expovariate(lam), next(counter),
                                  'arr', -1, None))
 
@@ -458,6 +545,13 @@ def simulate(
                 result.failed += 1
                 result.slo_violations += 1
                 continue
+
+            if reward_window is not None:
+                # Mirrors TrustState.choose_edge_node's reward-window hook: the
+                # chosen node's normalized latency at the moment of the
+                # decision, not at completion.
+                max_lat = max(rtt_ms) if rtt_ms else 1.0
+                reward_window.record_latency(rtt_ms[i] / max(max_lat, 1.0))
 
             result.served[i] += 1
             if i in roles:
@@ -484,6 +578,9 @@ def simulate(
             result.latencies_ms.append(latency_ms)
             if latency_ms > slo_ms:
                 result.slo_violations += 1
+
+        if reward_window is not None:
+            reward_window.record_outcome('timeout' if timed_out else 'success')
 
         # Free worker: pull the next task off this node's backlog. Anything that
         # waited longer than the client timeout has already given up.

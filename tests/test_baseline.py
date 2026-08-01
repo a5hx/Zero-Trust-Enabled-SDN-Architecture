@@ -180,6 +180,71 @@ class TestMetrics:
             B.simulate('zt_sdn', 'nope', seed=1, **SHORT)
 
 
+class TestOptimizerStrategy:
+    """zt_sdn_rf (Step 1, offline Random Forest, docs/AI_OPTIMIZER.md Part 2):
+    zt_sdn's real selector, but with a live UCB1WeightOptimizer choosing
+    weights instead of the fixed WEIGHTS. Kept out of STRATEGIES/run_experiment
+    defaults (see the comment above STRATEGY_ZT_SDN_RF) but must still satisfy
+    the same pairing/isolation properties as zt_sdn wherever it applies."""
+
+    def test_unknown_strategy_still_rejected_with_the_wider_strategy_set(self) -> None:
+        with pytest.raises(ValueError):
+            B.simulate('nope', 'clean', seed=1, **SHORT)
+
+    def test_zt_sdn_rf_is_not_in_the_default_comparison_set(self) -> None:
+        assert B.STRATEGY_ZT_SDN_RF not in B.STRATEGIES
+        assert B.STRATEGY_ZT_SDN_RF in B.ALL_STRATEGIES
+
+    def test_zt_sdn_rf_keeps_the_workload_paired_with_the_other_strategies(self) -> None:
+        """Same seed -> same arrival count, regardless of which strategy (or
+        bandit) is doing the routing -- the pairing the stats layer relies on."""
+        offered = {
+            strategy: B.simulate(strategy, 'clean', seed=7, **SHORT).offered
+            for strategy in B.ALL_STRATEGIES
+        }
+        assert len(set(offered.values())) == 1, f"workload drifted per strategy: {offered}"
+
+    def test_zt_sdn_rf_is_reproducible(self) -> None:
+        first = B.simulate(B.STRATEGY_ZT_SDN_RF, 'both', seed=11, **SHORT)
+        second = B.simulate(B.STRATEGY_ZT_SDN_RF, 'both', seed=11, **SHORT)
+        assert first.served == second.served
+        assert first.optimizer_rows == second.optimizer_rows
+
+    def test_zt_sdn_rf_emits_one_optimizer_row_per_closed_window(self) -> None:
+        run = B.simulate(B.STRATEGY_ZT_SDN_RF, 'clean', seed=1, sim_s=45.0, n_nodes=6,
+                         window_s=10.0)
+        assert len(run.optimizer_rows) == 4  # floor(45 / 10)
+        for row in run.optimizer_rows:
+            assert set(row) == {
+                'scenario', 'seed', 'arm', 'reward',
+                'mean_trust', 'mean_load', 'mean_latency_ms', 'num_quarantined',
+            }
+            assert 0 <= row['arm'] < len(B.DEFAULT_ARMS)
+
+    def test_zt_sdn_rf_isolates_the_sybil_like_zt_sdn(self) -> None:
+        run = B.simulate(B.STRATEGY_ZT_SDN_RF, 'sybil', seed=5, **SHORT)
+        rr = B.simulate('round_robin', 'sybil', seed=5, **SHORT)
+        assert run.time_to_isolate_s is not None
+        assert run.malicious_share < rr.malicious_share / 2
+
+    def test_zt_sdn_rf_accepts_a_preseeded_optimizer(self) -> None:
+        """A caller-supplied optimizer (the RF-warm-started case) is used
+        as-is rather than replaced by a fresh cold one."""
+        seeded = B.UCB1WeightOptimizer(arms=list(B.DEFAULT_ARMS))
+        seeded.seed_values([0.9, 0.1, 0.1, 0.1, 0.1], pseudo_count=5)
+        run = B.simulate(B.STRATEGY_ZT_SDN_RF, 'clean', seed=1, optimizer=seeded, **SHORT)
+        # The seeded optimizer starts every run at arm 0 (highest prior value,
+        # equal counts) -- the first window's arm confirms it was actually used.
+        assert run.optimizer_rows[0]['arm'] == 0
+
+    def test_zt_sdn_rf_with_no_optimizer_argument_still_works(self) -> None:
+        """B.STRATEGIES/ALL_STRATEGIES-driven loops (like the pairing test
+        above) call simulate() with no `optimizer` kwarg; it must fall back to
+        a fresh cold UCB1WeightOptimizer rather than raising."""
+        run = B.simulate(B.STRATEGY_ZT_SDN_RF, 'drop', seed=3, **SHORT)
+        assert run.optimizer_rows  # at least one window closed
+
+
 class TestExperiment:
     """The runner and its CSV output."""
 
