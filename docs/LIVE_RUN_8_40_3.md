@@ -11,6 +11,14 @@ routing attempts were denied. It also produced clean numbers for three of the
 four NFRs, and two genuine defects. Both defects are fixed; this document is
 the before/after evidence.
 
+> **Read the ending first.** This document is chronological across five runs.
+> Runs 1–4 each collapsed and each exposed a different defect — seven in all,
+> every one of them the controller's own bookkeeping feeding a *working*
+> detector bad input. **Run 5 (2026-08-02) is the confirming run**: zero
+> routing denials across 18,539 routes, 18,185 task successes against 19
+> timeouts, all three attackers isolated, all five honest nodes serving
+> throughout. Jump to "Run 5" for the closing evidence.
+
 ---
 
 ## NFR results (run 1, from the recording)
@@ -474,3 +482,121 @@ attributed to the node rather than to the network and control plane in front of
 it. If a future run trips the honesty check on healthy nodes at high latency
 with the invariant holding, this is the thing to fix, and the fix is to
 estimate service time rather than residence time — not to retune the workload.
+
+---
+
+---
+
+# Run 5 — the confirming run: no collapse, no denials, no leak
+
+Run 5 (2026-08-02) is the first run with the Defect 7 fix in, and the first
+that ends the way the architecture claims it should. All four NFRs PASS — but
+so did they in runs 1–4, so the NFR table is not the evidence. These are:
+
+| | run 3 | run 4 | **run 5** |
+|---|---|---|---|
+| `route_denied` events | 88.5% of attempts | 46.9% | **0** (18,539 routes, none denied) |
+| task successes : timeouts | 356 : 3,427 | — | **18,185 : 19** (+5 failures) |
+| CPU-honesty firings, honest nodes | — | 2,937 | **4** |
+| CPU-honesty firings, attackers | — | 626 | 4 |
+| worst frozen `inflight` | — | 976 s at 2 | **4–16 polls, all values transient** |
+| honest nodes serving at end of workload | 0 | degrading | **5 of 5** |
+| mean end-to-end task latency | 341 ms | 282 ms | **91.7 ms** |
+
+Service was continuous from t=5.6 s to t=1,717.9 s at a flat ~640 routes/min
+with no degradation in any 60 s bin. Nothing in the run resembles the
+positive-feedback cascades of runs 1–4.
+
+## Defect 7 is closed, on the measurement that found it
+
+`inflight` now moves. Over 1,309 status polls the five honest nodes changed
+value 487–535 times each, ranging 0–8, and the longest run at a constant
+non-zero value was 4–16 polls. Compare run 4's srv1: frozen at exactly 2 for
+976 s, never once decrementing. The distinction from
+`inflight-dispatch-invariant` — *frozen means a leak, oscillating means real
+load* — is the test, and run 5 passes it directly rather than by proxy.
+
+The consequence shows up exactly where predicted. The CPU-honesty check fired
+**8 times in the whole run** (4 on honest nodes, 4 on srv6), against run 4's
+3,563. It has stopped being a false-positive generator, which is what it was
+when fed a corrupted occupancy input. Final observed loads are 0.00–0.38
+against truthful claims of 0.00, all comfortably under the 0.40 gate.
+
+## What actually caught the attackers
+
+Detection has moved entirely onto the latency tell:
+
+| reason | firings | honest | attackers |
+|---|---|---|---|
+| latency tell (claims idle, RTT is a multiple of fleet median, sustained) | 2,198 | **0** | 2,198 (srv8 1,128 / srv3 1,070) |
+| `/status` unreachable | 25 | 10 | 15 |
+| CPU honesty | 8 | 4 | 4 |
+
+The latency tell has **perfect precision in this run**: 2,198 firings, every
+one on a sybil, none on an honest node. That is the detector added in
+`4f63d40` / `a9bad07` doing the whole job.
+
+Isolation held. srv6 (drop) completed **zero** tasks in 1,720 s; srv3 and srv8
+(sybil) completed 43 and 36 against ~3,200–3,800 each for the five honest
+nodes — and those are probation trials being consumed, not service.
+
+## Finding 1, confirmed in live telemetry
+
+The two sybils ended the run at **trust 0.742 and 0.693** — higher than srv4,
+an honest node, at 0.400. They were isolated solely by the anomaly gate
+(anomaly 1.00 on both). This is the deck's Finding 1 measured on the real
+OpenFlow path rather than in the simulator: *the published trust formula
+cannot isolate a competent liar; the anomaly gate is what does it.* A sybil
+that fabricates plausible reports keeps climbing the T rail indefinitely.
+Regression test: `test_f04_non_degrading_liar_needs_anomaly_gate`.
+
+## Probation, measured
+
+330 trial routes across 6 nodes, or one per 5.6 s against
+`probation_interval_s: 5.0` — the exposure cap holds. The split is the
+interesting part: **301 went to srv6**, the drop attacker, which failed every
+one and stayed quarantined. srv4 took 23 and recovered with them, having been
+quarantined at t=18.4 s on genuine early-startup congestion and released at
+t=128.6 s. Probation is doing exactly what the half-open leg of a circuit
+breaker should: cheaply re-testing a stale verdict, cheaply re-confirming a
+true one.
+
+## Two things that are still not right
+
+Neither affects the result above, and neither is a detector or trust-engine
+defect.
+
+### The teardown quarantines all 8 nodes
+
+The final `node_status` shows all 8 nodes quarantined at anomaly 0.98–1.00,
+which reads like another collapse and is not one. 16 of the 25 `/status
+unreachable` anomalies land at t=1,718 s and t=1,720 s — 8 nodes each, one
+sweep apiece — because `run_demo.py` kills the agents while the controller is
+still polling every second. Every honest node was serving normally until
+t=1,717.9 s. srv2 and srv7 have exactly one quarantine each for the entire
+run, both at t=1,719 s.
+
+It is cosmetic, but it poisons the last frame of the dashboard and the final
+state anyone would quote from the recording. The fix is ordering: stop the
+monitor (or mark teardown in the recording) before stopping agents.
+
+### `pingAll` now costs 82% of the run
+
+`simulation/topology.py` runs `net.pingAll()` at line 280, between agent launch
+and the `time.sleep(duration)` at line 294 — so its cost is **additive** to
+`duration_s`, not overlapped with it. Run 5 was configured for `duration_s:
+300` and took **1,720 s**, of which roughly 1,415 s was the 2,352-ping sweep
+running against the live workload.
+
+The workload does not care — service ran flat throughout, and the first route
+was at t=5.6 s, so the reachability sweep is not blocking startup. But the run
+is 5.7× its configured length for a check that could be satisfied by sampling.
+Run 1 measured 163 s for the same sweep on an idle box; the growth is
+contention, not topology. Sample it, or skip it in `trust_mode`.
+
+## Verdict
+
+Step 3 is closed. The 8/40/3 topology runs to completion with zero routing
+denials, a 99.87% task success rate, all three attackers isolated, all five
+honest nodes serving throughout, and every one of the seven defects found in
+runs 1–4 confirmed fixed against the specific measurement that exposed it.

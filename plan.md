@@ -1,13 +1,14 @@
 # Project Plan — Zero Trust–Enabled SDN Architecture
 
-*Last updated: 2026-08-01. Verified against working tree on `feature/ai-optimizer`
-(commit `e1ead99` + this session's Step 3 work, uncommitted as of writing):
-321/321 tests passing — 22 new for the offline Random Forest in Step 1, 33 new
-for RAFT wiring in Step 2, 31 new for the Step 3 NFR instrumentation/
-orchestration below, and 12 new for the escape-from-quarantine work (stale-
-evidence abstention + probation) that live runs 1–3 drove out. Three live
-8/40/3 runs are done; a fourth, confirming one is still pending a human with
-sudo.*
+*Last updated: 2026-08-02. Verified against working tree on `feature/ai-optimizer`
+(commit `248feca`): **325/325 tests passing** — 22 new for the offline Random
+Forest in Step 1, 33 new for RAFT wiring in Step 2, 31 new for the Step 3 NFR
+instrumentation/orchestration below, and 16 new for the escape-from-quarantine
+work (stale-evidence abstention + probation) and the inflight-invariant fix
+that live runs 1–4 drove out. **Five live 8/40/3 runs are done; run 5
+(2026-08-02) is the confirming one and Step 3 is closed** — zero routing
+denials, 99.87% task success, all 3 attackers isolated, all 5 honest nodes
+serving throughout.*
 
 This is the working roadmap from here to submission. It supersedes the
 "Not started at all" section of `DIRECTION.md` (2026-07-17), which is now
@@ -17,7 +18,7 @@ stale — four of the five items it lists as 0-byte stubs are built.
 
 ## Verified state (re-check before trusting old docs)
 
-`pytest tests/` → **216 passed**. Status vs. the deck's headline components:
+`pytest tests/` → **325 passed** (15.3s). Status vs. the deck's headline components:
 
 | Deck component | Real status |
 |---|---|
@@ -49,10 +50,13 @@ same window the controller integrates occupancy over).
    does not beat hand-tuned static weights** — significantly *worse* in
    `sybil`/`both` (≈1% relative, medium effect size), no difference in
    `clean`/`drop`. Reported as the honest finding, not chased further.
-3. **Full-scale 8/40/3 live** — orchestrator + NFR report built AND run once
-   (2026-08-01). All four NFRs PASS, but the run collapsed to all-8-quarantined
-   via two defects, both now fixed — see Step 3 and `docs/LIVE_RUN_8_40_3.md`.
-   A confirming re-run is still outstanding.
+3. ~~Full-scale 8/40/3 live~~ — **done.** Five runs (2026-08-01/02) drove out
+   seven defects, every one of them the controller's own bookkeeping feeding a
+   working detector bad input — never the detectors themselves. Run 5 confirms
+   all seven fixed: zero routing denials, 99.87% task success, attackers
+   isolated, honest nodes serving throughout. See Step 3 and
+   `docs/LIVE_RUN_8_40_3.md`. Two non-blocking items left (teardown artifact,
+   `pingAll` wall-clock) — both listed in Step 3.
 4. **Study run C** — `docs/study/trust-routing-study.html` sections 6–8 still
    narrate the H-term/starvation defects as open; both are now fixed in code.
    Needs a fresh live run to confirm in real telemetry (or reopen the finding).
@@ -253,13 +257,53 @@ component.
       on true evidence (real timeouts at mean 341ms / p95 1609ms task latency
       while 40 clients and 8 agents came up on 4 cores). What was missing was
       any path back. 309 → 321 tests, all green.
-- [ ] **Live run 4 — not yet done.** Needs a human with sudo, per memory
-      `wsl-run-prerequisites`. This is the first run where honest nodes are
-      expected to *stay* up (or recover) while srv3/srv6/srv8 are still
-      caught, and the first that could give a denial rate near zero.
-      Still outstanding regardless: `net.pingAll()` is O(hosts²) and costs
-      ~163s at this scale — since run 1's fix that is wasted wall-clock rather
-      than a correctness problem, but it dominates startup.
+- [x] **Live run 4 done (2026-08-01).** Both Defect 6 escapes worked — 143
+      probation trials, 22 continuous recoveries, 0.0% denial for the first
+      55s — and then the run degraded to 46.9% denial via **Defect 7**:
+      `register_dispatch` overwrote an already-present key while keeping its
+      inflight count, orphaning it permanently (no dict entry for the reaper,
+      no completion report to release it). srv1 — zero probation trials, so
+      nothing new could be blamed — sat at exactly 2 orphaned dispatches for
+      976s, pinning `observed_load` 0.50 against a truthful `claimed_cpu`
+      0.00, one tick over the 0.40 gate, producing 707 quarantines of a
+      healthy node. Little's Law is what proved the occupancy was fabricated
+      (0.01 predicted vs 2 actual). Fixed; four tests assert the invariant
+      `sum(_inflight) == len(_dispatches)` directly.
+- [x] **Live run 5 done (2026-08-02) — the confirming run. Step 3 is closed.**
+      1,720s at 8/40/3 with **zero `route_denied` events** across 18,539
+      routes, **18,185 task successes against 19 timeouts** (99.87%), and flat
+      ~640 routes/min service from t=5.6s to t=1,717.9s with no degradation in
+      any 60s bin. All four NFRs PASS (routing mean 0.68ms; isolation mean
+      13.5ms; blockchain overhead 0.056%; RAFT per `docs/RAFT.md`).
+      - **Defect 7 confirmed fixed on the measurement that found it**:
+        `inflight` oscillates — 487–535 changes over 1,309 polls per honest
+        node, longest constant non-zero run 4–16 polls, vs run 4's 976s
+        freeze. CPU-honesty firings fell from 3,563 to **8** (4 honest / 4
+        attacker).
+      - **Detection is carried entirely by the latency tell**: 2,198 firings,
+        every one on a sybil, **zero on honest nodes**. srv6 (drop) completed
+        0 tasks; srv3/srv8 completed 43/36 (probation trials) vs ~3,200–3,800
+        each for the honest five.
+      - **Finding 1 confirmed live**: both sybils ended at trust 0.742/0.693 —
+        *higher* than honest srv4 at 0.400 — and were isolated purely by the
+        anomaly gate. Good material for the viva.
+      - **Probation measured**: 330 trials, one per 5.6s against a 5.0s
+        interval (cap holds); 301 went to srv6 and correctly re-confirmed its
+        verdict, while srv4 recovered on its 23 after a genuine startup
+        congestion quarantine.
+- [ ] **Teardown quarantines all 8 nodes (cosmetic, but fix it).** `run_demo.py`
+      kills the agents while the controller is still polling, so 16 `/status
+      unreachable` anomalies land in the last 2s and the final `node_status` —
+      the frame anyone would screenshot — shows all 8 quarantined at anomaly
+      0.98–1.00. Every honest node was serving normally until t=1,717.9s. Stop
+      the monitor (or mark teardown in the recording) before stopping agents.
+- [ ] **`pingAll` costs 82% of the run.** `net.pingAll()` sits at
+      `simulation/topology.py:280`, between agent launch and the
+      `time.sleep(duration)` at line 294, so its cost is *additive* to
+      `duration_s`: run 5 was configured for 300s and took 1,720s, ~1,415s of
+      it the 2,352-ping sweep. Not a correctness problem (first route at
+      t=5.6s, service flat throughout) but it makes every live run 5.7× longer
+      than it needs to be. Sample reachability, or skip it in `trust_mode`.
 
 Note the evaluation harness already defaults to 8 edge nodes
 (`config/params.yaml`), so scale is already proven *statistically* — this step
