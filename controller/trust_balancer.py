@@ -1174,7 +1174,21 @@ class TrustBalancerApp(app_manager.OSKenApp):
             )
             return None
 
-        claimed_cpu = self.state.get_claimed_cpu(node_id)
+        # The *time-averaged* claim, not the raw one. `honesty_delta()` compares
+        # this against `observed`, which is an integral over load_window_s, so
+        # feeding it the instantaneous `get_claimed_cpu()` compares two different
+        # quantities -- the same defect flow_monitor.py:297 already fixed on the
+        # anomaly-gate side, left behind here on the trust side.
+        #
+        # It is not a false-quarantine bug (this path never gates), it is a
+        # steady tax: the node samples active/concurrency the moment its handler
+        # runs, so at task_work_ms=15 it truthfully claims 0.00 in 98.49% of
+        # samples (measured, live run 5). The deviation then *is* the occupancy
+        # -- dev/occ = 1.000 in every bin -- making h_raw = 1 - 2*occupancy, so a
+        # busy honest node loses trust for being busy. That is the study's
+        # Finding 6 (docs/study §7), and it survived because claimed_load() was
+        # only ever wired into one of its two consumers.
+        claimed_cpu = self.state.claimed_load(node_id)
         observed = self.state.observed_load(node_id)
         upd = TrustUpdate(
             device_id=device_id, edge_node_id=node_id, task_status=status,

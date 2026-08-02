@@ -28,10 +28,15 @@ stale — four of the five items it lists as 0-byte stubs are built.
 | RAFT | ✅ Done (not yet wired to the live controller) — TCP transport + `RaftBackend` + a 3-process live demo with measured commit latency (`docs/RAFT.md`) |
 
 Also fixed since `DIRECTION.md` / earlier memory notes were written: Merkle
-order-sensitivity, EdgeScore starvation (p2c + ε-exploration), the Sybil
-latency tell, and the run-B trust H-term mismatch (`TrustState.claimed_load()`
-in `controller/trust_state.py` now time-averages the node's claim over the
-same window the controller integrates occupancy over).
+order-sensitivity, EdgeScore starvation (p2c + ε-exploration — confirmed in
+live run 5: Jain fairness 0.9971, zero starved windows), and the Sybil latency
+tell.
+
+**Correction (2026-08-02):** earlier versions of this file said the run-B
+H-term mismatch was closed by `TrustState.claimed_load()`. It is **not**.
+`claimed_load()` is wired into the anomaly gate (`flow_monitor.py:297`) but
+*not* into the trust formula — `trust_balancer.py:1177` still passes the raw
+`get_claimed_cpu()` into `TrustUpdate.reported_cpu`. See Step 3's Defect 8.
 
 ## Two real gaps left (offline Random Forest and RAFT wiring closed — see below)
 
@@ -291,6 +296,19 @@ component.
         interval (cap holds); 301 went to srv6 and correctly re-confirmed its
         verdict, while srv4 recovered on its 23 after a genuine startup
         congestion quarantine.
+- [x] **Defect 8 — the honesty fix was wired into one of two consumers**
+      (found 2026-08-02 by analysing run 5's recording for the *study's*
+      Finding 6, not by any run failing). `claimed_load()` was in the anomaly
+      gate (`flow_monitor.py:297`) but the trust path still passed raw
+      `get_claimed_cpu()` into `TrustUpdate.reported_cpu` →
+      `honesty_delta()` → `h_raw = 1 - delta/0.5`. Since the agent truthfully
+      claims 0.00 in 98.49% of samples at `task_work_ms: 15`, the deviation
+      *is* the occupancy (`dev/occ = 1.000` in every bin), so H fell as
+      `1 - 2*occupancy` — the study's §7 honesty tax at full strength, masked
+      by the retuned workload rather than fixed. Fixed + pinned by
+      `test_trust_path_uses_the_windowed_claim_not_the_raw_one` (fails
+      `0.5 < 0.1` against the old line). 326 tests green. **Needs run 6 to
+      confirm live.**
 - [ ] **Teardown quarantines all 8 nodes (cosmetic, but fix it).** `run_demo.py`
       kills the agents while the controller is still polling, so 16 `/status
       unreachable` anomalies land in the last 2s and the final `node_status` —

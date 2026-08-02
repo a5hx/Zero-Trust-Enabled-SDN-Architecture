@@ -697,3 +697,68 @@ def test_a_leaked_dispatch_would_have_tripped_the_honesty_check():
         'a node that holds no live dispatches must not read as loaded'
     )
     _assert_invariant(state)
+
+
+# ---------------------------------------------------------------------------
+# The honesty comparison has TWO consumers, and they must agree
+# ---------------------------------------------------------------------------
+
+def test_trust_path_uses_the_windowed_claim_not_the_raw_one():
+    """`honesty_delta()` must compare two quantities measured the same way.
+
+    `claimed_load()` was added to fix exactly this, but was only ever wired
+    into the anomaly gate (flow_monitor.py). The trust path kept passing the
+    raw `get_claimed_cpu()` into `TrustUpdate.reported_cpu`, so the *gate*
+    compared like with like and the *trust formula* did not.
+
+    That is not a false-quarantine bug -- this path never gates -- it is a
+    steady tax. The agent samples active/concurrency the instant its handler
+    runs, so at a small `task_work_ms` it truthfully claims 0.00 almost always:
+    live run 5 measured 98.49% of honest samples at 0.00, which makes the
+    deviation *equal to* the occupancy (dev/occ = 1.000 in every bin) and
+    h_raw = 1 - 2*occupancy. A busy honest node loses trust for being busy --
+    the study's Finding 6 (docs/study §7).
+    """
+    import types
+    from controller.trust_balancer import TrustBalancerApp
+
+    state = _make_state()
+    state.set_concurrency('srv1', 4)
+    state.load_window_s = 1.0
+
+    # Mostly idle with one instantaneous spike, exactly as a real agent reports.
+    for _ in range(8):
+        state.report_claimed_status('srv1', 0.0, 30.0)
+        time.sleep(0.05)
+    state.report_claimed_status('srv1', 0.5, 30.0)
+
+    raw = state.get_claimed_cpu('srv1')
+    windowed = state.claimed_load('srv1')
+    assert raw == 0.5, 'precondition: the raw claim is the spike'
+    assert windowed < 0.1, 'precondition: the windowed claim ignores it'
+
+    state.register_dispatch('10.0.0.5', 5000, 'srv1')
+
+    captured = {}
+
+    class _Bus:
+        def publish(self, _topic, **kw):
+            captured.update(kw)
+
+    class _Backend:
+        commit_count = 0
+
+    stub = types.SimpleNamespace(
+        state=state, bus=_Bus(), _commit_backend=_Backend(),
+    )
+    TrustBalancerApp.handle_client_report(
+        stub, '10.0.0.5', 5000, 'iot1', 'success', 42.0,
+    )
+
+    # The value that reached the trust formula, as recorded on the event bus.
+    assert captured['claimed_cpu'] < 0.1, (
+        f"the trust path published claimed_cpu={captured['claimed_cpu']}, i.e. the "
+        f"raw instantaneous claim ({raw}) rather than the windowed one "
+        f"({windowed:.4f}) -- honesty_delta is comparing an instant against an "
+        f"integral again"
+    )

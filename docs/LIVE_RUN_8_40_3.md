@@ -11,13 +11,18 @@ routing attempts were denied. It also produced clean numbers for three of the
 four NFRs, and two genuine defects. Both defects are fixed; this document is
 the before/after evidence.
 
-> **Read the ending first.** This document is chronological across five runs.
-> Runs 1–4 each collapsed and each exposed a different defect — seven in all,
-> every one of them the controller's own bookkeeping feeding a *working*
-> detector bad input. **Run 5 (2026-08-02) is the confirming run**: zero
-> routing denials across 18,539 routes, 18,185 task successes against 19
+> **Read the ending first.** This document is chronological across five runs
+> and eight defects. Runs 1–4 each collapsed and each exposed a different one —
+> seven in all, every one of them the controller's own bookkeeping feeding a
+> *working* detector bad input. **Run 5 (2026-08-02) is the confirming run**:
+> zero routing denials across 18,539 routes, 18,185 task successes against 19
 > timeouts, all three attackers isolated, all five honest nodes serving
 > throughout. Jump to "Run 5" for the closing evidence.
+>
+> **Defect 8 is different in kind** and worth reading on its own: run 5 passed,
+> and analysing its recording afterwards showed a fix from *weeks* earlier had
+> only ever been wired into one of its two consumers. It quarantined nothing
+> and failed no test — it was hidden by a workload retune. See "Defect 8".
 
 ---
 
@@ -600,3 +605,64 @@ Step 3 is closed. The 8/40/3 topology runs to completion with zero routing
 denials, a 99.87% task success rate, all three attackers isolated, all five
 honest nodes serving throughout, and every one of the seven defects found in
 runs 1–4 confirmed fixed against the specific measurement that exposed it.
+
+---
+
+## Defect 8 — the honesty fix was wired into one of its two consumers
+
+Found on 2026-08-02 by analysing run 5's recording for the *study's* Finding 6,
+not by a failure in the run itself. It is the first defect in this document
+that never quarantined anything.
+
+`claimed_load()` exists precisely to stop the honesty comparison putting an
+instantaneous sample next to a windowed integral. It is wired into the anomaly
+gate and nowhere else:
+
+| consumer | claim used | |
+|---|---|---|
+| anomaly gate, `flow_monitor.py:297` | `claimed_load()` — time-averaged | correct |
+| trust H term, `trust_balancer.py:1177` | `get_claimed_cpu()` — **raw instant** | **wrong** |
+
+The raw value flows `TrustUpdate.reported_cpu` → `honesty_delta()`
+(`contracts/trust_update.py:20`) → `h_raw = max(0, 1 - delta/0.5)`
+(`trust_engine/trust_calculator.py:107`) → the `γ·H̄` term of
+`T = 0.35R̄ + 0.25B̄ + 0.25H̄ − 0.15Ā`.
+
+### Why run 5 hid it and also proves it
+
+The agent samples `active/concurrency` the instant its `/status` handler runs.
+At `task_work_ms: 15` it is genuinely idle at that instant almost every time,
+so it truthfully claims 0.00 — in **98.49% of the 6,545 honest samples**. When
+the claim is zero the deviation *is* the occupancy:
+
+| occupancy | n | mean claimed | mean \|dev\| | dev/occ |
+|---|---|---|---|---|
+| 0.00–0.05 | 1,794 | 0.0067 | 0.0343 | 1.226 |
+| 0.05–0.10 | 3,578 | 0.0034 | 0.0752 | 1.019 |
+| 0.10–0.15 | 1,004 | 0.0050 | 0.1166 | 1.005 |
+| 0.15–0.20 | 62 | 0.0121 | 0.1635 | 0.982 |
+| 0.25–0.30 | 48 | 0.0000 | 0.2665 | 1.000 |
+| 0.30–0.40 | 45 | 0.0000 | 0.3202 | 1.000 |
+
+`dev/occ = 1.000` at every load. So `h_raw = 1 − 2·occupancy`: H is 0.74 at 13%
+occupancy and 0.50 at 25%. That is the study's §7 "honesty tax" — *a busy
+honest node loses trust for being busy* — running at full strength, and it is
+the run-B mechanism that `claimed_load()` was written to remove.
+
+It never trips the 0.40 gate here (0.367% of samples) only because the retuned
+workload keeps occupancy under ~0.15. **The finding was masked by the workload,
+not fixed by the code.** Any return to run 1's intensity brings it back.
+
+**A correction to the record:** `plan.md` and the project memory both asserted
+this mismatch was closed by `claimed_load()`. Half of it was. Both have been
+corrected.
+
+**Fix:** `trust_balancer.py` passes `claimed_load()` into `TrustUpdate`,
+matching the gate. Pinned by
+`test_trust_path_uses_the_windowed_claim_not_the_raw_one`, which drives the
+real `handle_client_report` and fails with `0.5 < 0.1` against the old line.
+326 tests green.
+
+**Not yet confirmed live** — needs a run 6. The expected signature: trust on
+busy honest nodes stops drifting down with occupancy, and mean ΔT per poll
+stops going negative in the modal 0.05–0.10 occupancy bin (run 5: −0.00323).
