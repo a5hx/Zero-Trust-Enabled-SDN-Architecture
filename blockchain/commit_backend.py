@@ -47,6 +47,55 @@ class CommitBackend(Protocol):
         ...
 
 
+class TimingCommitBackend:
+    """Wraps any CommitBackend and times each real commit() call.
+
+    Built for the live full-scale demo's blockchain-overhead NFR
+    (`evaluation/nfr_report.py`, <15%). Nothing else in the controller times a
+    commit: `handle_client_report` (controller/trust_balancer.py) calls
+    straight into `TrustState.record_task_outcome`, which only commits every
+    `max_updates_per_block`-th report (see `_flush_pending_locked`), so there
+    is no other seam to isolate "this /report happened to trigger a block
+    commit" from one that didn't. `commit_count` lets the caller detect which
+    of its own calls triggered a commit without changing `commit()`'s return
+    type.
+    """
+
+    def __init__(
+        self,
+        inner: CommitBackend,
+        on_commit: Optional[Callable[[Optional[Block], float, int], None]] = None,
+    ) -> None:
+        self._inner = inner
+        self._on_commit = on_commit
+        self.commit_count = 0
+
+    def commit(self, updates: List[TrustUpdate]) -> Optional[Block]:
+        if not updates:
+            return self._inner.commit(updates)
+
+        self.commit_count += 1
+        start = time.monotonic()
+        block = self._inner.commit(updates)
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        if self._on_commit is not None:
+            self._on_commit(block, elapsed_ms, len(updates))
+        return block
+
+    def latest_score(self, node_id: str) -> Optional[float]:
+        return self._inner.latest_score(node_id)
+
+    def verify(self) -> bool:
+        return self._inner.verify()
+
+    def chain_length(self) -> int:
+        return self._inner.chain_length()
+
+    @property
+    def ledger(self) -> Ledger:
+        return self._inner.ledger  # type: ignore[attr-defined]
+
+
 class LocalLedgerBackend:
     """Single-replica backend: append straight to the in-memory Ledger.
 

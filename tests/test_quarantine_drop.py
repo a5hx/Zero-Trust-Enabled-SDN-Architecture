@@ -156,3 +156,54 @@ def test_quarantine_redispatches_active_clients_to_next_best(app):
         and m.cookie == app._cookie_for(target)
     ]
     assert len(vip_adds) == 2, 'expected forward+reverse VIP rules to the target'
+
+
+def test_probation_trial_flows_out_rank_the_quarantine_drops(app):
+    """A probation trial exists to let one task reach a quarantined node so it
+    can earn trust back. Installed at the ordinary PRIO_CONNECTION it would be
+    black-holed by that node's own drop rules, every trial would read as a
+    timeout, and probation would become a machine for confirming the verdict it
+    is meant to re-test.
+    """
+    assert app.PRIO_PROBATION > app.PRIO_QUARANTINE_DROP
+
+    dp = _fake_datapath()
+    app._datapaths = {dp.id: dp}
+    app._on_trust_collapse('srv3')  # srv3 is now dropping
+    dp.send_msg.reset_mock()
+
+    app._install_vip_pair(dp, '10.0.0.5', 5000, 'srv3', probation=True)
+
+    adds = [
+        c.args[0] for c in dp.send_msg.call_args_list
+        if c.args[0].command == ofproto_v1_3.OFPFC_ADD
+    ]
+    assert len(adds) == 2, 'forward + reverse rewrite'
+    for m in adds:
+        assert m.priority == app.PRIO_PROBATION
+        assert m.priority > app.PRIO_QUARANTINE_DROP
+        assert m.instructions != [], 'a trial must forward, not drop'
+        # The carve-out has to close on its own, or one trial would leave a
+        # quarantined node reachable for the full flow_hard_timeout.
+        assert 0 < m.hard_timeout <= max(2, round(app.task_timeout_s))
+        assert m.idle_timeout == 0
+
+
+def test_ordinary_routing_is_unchanged_by_the_probation_path(app):
+    """Probation must be inert on the normal path: same priority, same
+    timeouts as before it existed."""
+    dp = _fake_datapath()
+    app._datapaths = {dp.id: dp}
+
+    app._install_vip_pair(dp, '10.0.0.5', 5000, 'srv3')
+
+    adds = [
+        c.args[0] for c in dp.send_msg.call_args_list
+        if c.args[0].command == ofproto_v1_3.OFPFC_ADD
+    ]
+    assert len(adds) == 2
+    for m in adds:
+        assert m.priority == app.PRIO_CONNECTION
+        assert m.priority < app.PRIO_QUARANTINE_DROP
+        assert m.idle_timeout == app.flow_idle_timeout
+        assert m.hard_timeout == app.flow_hard_timeout

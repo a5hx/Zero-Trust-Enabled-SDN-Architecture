@@ -10,12 +10,16 @@ Usage:
 
 import argparse
 import logging
+import os
 import queue
 import random
+import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -358,6 +362,141 @@ def run_standalone(cfg: Dict[str, Any], duration: int, attack_mode: str) -> None
 
 
 # ---------------------------------------------------------------------------
+# Mininet mode (Project Plan Step 3): a real full-scale live entry point
+# ---------------------------------------------------------------------------
+DEFAULT_MININET_CONFIG = 'config/params_trust_full.yaml'
+_CONTROLLER_START_TIMEOUT_S = 20.0
+
+
+def _wait_for_controller(api_host: str, api_port: int, timeout_s: float) -> bool:
+    """Poll the northbound REST API until it answers, or timeout_s elapses.
+
+    Mininet's own switches connect on their own schedule once the OpenFlow
+    port is listening, but the *live* topology run (run_topology, below)
+    calls net.pingAll() immediately after net.start() -- if the controller
+    isn't up yet every switch sits in fail-secure mode with no flows and
+    pingAll silently times out on every pair (see memory
+    'wsl-run-prerequisites'). Waiting here, before Mininet ever starts,
+    avoids that race instead of debugging it after the fact.
+    """
+    host = '127.0.0.1' if api_host in ('0.0.0.0', '') else api_host
+    url = f'http://{host}:{api_port}/api/topology'
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1.0) as resp:
+                if resp.status == 200:
+                    return True
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def run_mininet(config_path: str, duration: Optional[int]) -> None:
+    """Real `--mode mininet` entry point (Project Plan Step 3).
+
+    Brings up the os-ken trust-aware controller as a subprocess, then a real
+    Mininet network (real edge-server/IoT-client processes, real OpenFlow,
+    real quarantine/re-dispatch) for `config['simulation']['duration_s']`
+    seconds (or `duration` if given), tears both down, and prints/saves the
+    NFR validation report computed from the run's recorded events
+    (evaluation/nfr_report.py).
+
+    Needs root -- Mininet creates real network namespaces/veth pairs -- and a
+    Linux box with Open vSwitch + os-ken installed. On WSL2 specifically, the
+    OVS daemon and tc qdisc kernel modules need starting once per session
+    first (see SETUP.md / memory 'wsl-run-prerequisites'); this function
+    checks neither, since both fail loudly and specifically on their own if
+    missing (Mininet itself refuses to build bridges without OVS running).
+    """
+    if os.geteuid() != 0:
+        print("`--mode mininet` needs root -- Mininet creates real network")
+        print("namespaces and veth pairs, which requires CAP_NET_ADMIN.")
+        print()
+        print("Re-run as:  sudo python3 run_demo.py --mode mininet ...")
+        print()
+        print("First time this session (WSL2 in particular doesn't auto-start")
+        print("these): sudo service openvswitch-switch start")
+        print("        sudo modprobe -a sch_htb sch_netem sch_tbf sch_prio ifb")
+        sys.exit(1)
+
+    from simulation.topology import _MININET_AVAILABLE, run_topology
+
+    if not _MININET_AVAILABLE:
+        print("Mininet is not installed. See SETUP.md for install steps.")
+        print("Use --mode standalone for a demo that needs no Mininet/root.")
+        sys.exit(1)
+
+    _ensure_dirs()
+    cfg = _load_config(config_path)
+    if 'controller' not in cfg:
+        print(f"{config_path} has no `controller:` block, so it can't drive the")
+        print(f"live trust-aware demo -- see {DEFAULT_MININET_CONFIG} for the shape")
+        print("a live-mode config needs (controller/security/agents/optimizer).")
+        sys.exit(1)
+    if duration is not None:
+        cfg['simulation']['duration_s'] = duration
+
+    ctrl_cfg = cfg['controller']
+    events_path = ctrl_cfg.get('dashboard', {}).get('record_path', 'data/events.jsonl')
+    # Start from a clean recording -- a stale file from a previous run would
+    # silently corrupt the NFR report computed at the end of this one.
+    Path(events_path).unlink(missing_ok=True)
+
+    env = dict(os.environ)
+    env['ZTSDN_CONFIG'] = config_path
+    logger.info("Starting the trust-aware controller (config=%s)...", config_path)
+    controller_log = open(Path('logs') / 'controller.log', 'w')
+    controller_proc = subprocess.Popen(
+        [sys.executable, '-m', 'controller.osken_manager', 'controller.trust_balancer'],
+        env=env, stdout=controller_log, stderr=subprocess.STDOUT,
+    )
+
+    try:
+        if not _wait_for_controller(ctrl_cfg['api_host'], ctrl_cfg['api_port'],
+                                     _CONTROLLER_START_TIMEOUT_S):
+            print(f"Controller did not come up within {_CONTROLLER_START_TIMEOUT_S:.0f}s "
+                  "-- see logs/controller.log")
+            sys.exit(1)
+
+        logger.info(
+            "Controller up on %s:%d. Launching the %d-edge/%d-IoT Mininet "
+            "topology for %ds (needs root; this is the long-running part)...",
+            ctrl_cfg['api_host'], ctrl_cfg['api_port'],
+            cfg['simulation']['num_edge_nodes'], cfg['simulation']['num_iot_devices'],
+            cfg['simulation']['duration_s'],
+        )
+        run_topology(cfg, interactive=False)
+    except KeyboardInterrupt:
+        logger.warning("Interrupted -- tearing down early.")
+    finally:
+        controller_proc.terminate()
+        try:
+            controller_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            controller_proc.kill()
+            controller_proc.wait()
+        controller_log.close()
+
+    logger.info("Live run complete. Computing the NFR report from %s...", events_path)
+    if not Path(events_path).exists():
+        print(f"No events were recorded at {events_path} -- can't compute the NFR report.")
+        print("Check logs/controller.log and logs/srvN_agent.log / iotN_client.log.")
+        return
+
+    from evaluation.nfr_report import build_report, format_report, load_events
+
+    events = load_events(events_path)
+    results = build_report(events, poll_interval_s=ctrl_cfg.get('monitor_interval_s'))
+    text = format_report(results)
+    print('\n' + text)
+    report_path = 'data/nfr_report.txt'
+    Path(report_path).write_text(text)
+    print(f"NFR report saved to {report_path}")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -369,29 +508,31 @@ def main() -> None:
         help='Run mode (default: standalone)',
     )
     parser.add_argument(
-        '--duration', type=int, default=120,
-        help='Simulation duration in seconds (default: 120)',
+        '--duration', type=int, default=None,
+        help='Simulation duration in seconds (standalone default: 120; '
+             'mininet default: the config file\'s simulation.duration_s)',
     )
     parser.add_argument(
         '--attack', choices=['none', 'sybil', 'packet_drop', 'both'], default='both',
-        help='Attack scenario (default: both)',
+        help='Attack scenario (standalone mode only; mininet attacks are '
+             'config-driven -- see simulation.malicious_edge_nodes/'
+             'security.malicious_iot_devices)',
     )
     parser.add_argument(
-        '--config', type=str, default='config/params.yaml',
-        help='Path to config file (default: config/params.yaml)',
+        '--config', type=str, default=None,
+        help='Path to config file (standalone default: config/params.yaml; '
+             f'mininet default: {DEFAULT_MININET_CONFIG})',
     )
 
     args = parser.parse_args()
 
-    cfg = _load_config(args.config)
-
     if args.mode == 'standalone':
-        run_standalone(cfg, args.duration, args.attack)
+        config_path = args.config or 'config/params.yaml'
+        cfg = _load_config(config_path)
+        run_standalone(cfg, args.duration if args.duration is not None else 120, args.attack)
     else:
-        print("Mininet mode requires Linux with Mininet/Open vSwitch/os-ken installed.")
-        print("See SETUP.md for the live controller + Mininet demo (three terminals).")
-        print("Use --mode standalone for the review demo.")
-        sys.exit(1)
+        config_path = args.config or DEFAULT_MININET_CONFIG
+        run_mininet(config_path, args.duration)
 
 
 if __name__ == '__main__':

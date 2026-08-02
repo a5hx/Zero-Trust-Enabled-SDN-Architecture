@@ -29,7 +29,9 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from blockchain.commit_backend import CommitBackend, LocalLedgerBackend
 from contracts.thresholds import (
     DEFAULT_ANOMALY_GATE, DEFAULT_ANOMALY_WARN,
-    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_RATE_LIMIT_TRUST,
+    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_PROBATION_INTERVAL_S,
+    DEFAULT_RATE_LIMIT_TRUST, DEFAULT_TASK_TIMEOUT_S,
+    DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR,
 )
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import (
@@ -82,6 +84,8 @@ class TrustState:
         epsilon: float = DEFAULT_EPSILON,
         selection_rng: Optional[random.Random] = None,
         time_source: Optional[Callable[[], float]] = None,
+        task_timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
+        probation_interval_s: float = DEFAULT_PROBATION_INTERVAL_S,
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
         # can drive observed_load's averaging window from its simulated clock.
@@ -172,17 +176,46 @@ class TrustState:
         self.load_window_s: float = 3.0
         # (client_ip, client_port) -> which node that specific flow was routed to.
         self._dispatches: Dict[Tuple[str, int], _Dispatch] = {}
-        # Dispatches older than this are assumed abandoned (client crashed rather
-        # than reporting) and get reaped so _inflight doesn't leak upward forever.
-        self._dispatch_reap_after_s = 30.0
+        # Dispatches older than this are assumed abandoned (the client gave up
+        # rather than reporting) and get reaped so _inflight doesn't leak upward
+        # forever.
+        #
+        # DERIVED from the client's own task_timeout_s, never hardcoded: a client
+        # that times out at task_timeout_s never sends /report at all, so any
+        # fixed value larger than it keeps counting a task the client already
+        # abandoned. This was a real, load-dependent defect -- at 30.0s against a
+        # 2.0s client timeout, the 8/40/3 live run accumulated 15 cycles of
+        # phantom inflight on every node under saturation, so observed_load read
+        # 0.75 on nodes that were genuinely idle (real inflight 0, RTT 31ms).
+        # flow_monitor's honesty check then compared that against their truthful
+        # claimed_cpu of 0.00, branded five *honest* nodes liars, and each
+        # quarantine re-dispatched its clients onto the survivors until all 8
+        # were quarantined and 91.7% of routing attempts were denied. The
+        # detectors were correct throughout; the load they were fed was not.
+        # The 1.5x margin covers the report's own network return trip.
+        self._dispatch_reap_after_s = max(1.0, task_timeout_s * 1.5)
 
         # Recent task_status history per node, for flow_monitor's packet-drop
         # tell: a drop attacker can self-report CPU honestly (the CPU-honesty
         # check misses it entirely — see contracts/thresholds.py), but it cannot
         # avoid a high timeout rate among its own recent task outcomes.
-        self._recent_statuses: Dict[str, Deque[str]] = {
+        #
+        # Entries are (timestamp, status), not bare statuses. The window is
+        # count-based (last 10), so once a node stops receiving tasks it stops
+        # turning over and freezes whatever verdict was in it — which is exactly
+        # what quarantine does. The timestamps let recent_timeout_rate() notice
+        # that and abstain instead of re-asserting stale evidence forever.
+        self._recent_statuses: Dict[str, Deque[Tuple[float, str]]] = {
             nid: deque(maxlen=10) for nid in self.node_ids
         }
+        self._timeout_evidence_max_age_s = max(
+            2.0, task_timeout_s * DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR
+        )
+
+        # Probation ("half-open"): the last time each node was offered a trial
+        # task while quarantined. See _probation_candidate_locked().
+        self.probation_interval_s = probation_interval_s
+        self._last_probation: Dict[str, float] = {}
 
         self._pending_updates: List[TrustUpdate] = []
         self._routing_decisions: List[Dict[str, Any]] = []
@@ -306,10 +339,51 @@ class TrustState:
     # numerator that flow_monitor turns into `inflight / concurrency`)       #
     # ------------------------------------------------------------------ #
     def register_dispatch(self, client_ip: str, client_port: int, node_id: str) -> None:
-        """Called by the OpenFlow app the instant it installs a VIP rewrite pair."""
+        """Called by the OpenFlow app the instant it installs a VIP rewrite pair.
+
+        The class invariant this has to preserve is
+        `sum(_inflight.values()) == len(_dispatches)`: every count is owned by
+        exactly one dict entry. Every *decrement* is paired with a
+        `_dispatches.pop()` (complete_dispatch, the reaper) or a matching
+        increment (reassign_dispatches), so the only way to break it is here --
+        by incrementing while overwriting a key that was already present.
+        """
         with self._lock:
             self._reap_stale_dispatches_locked()
-            self._dispatches[(client_ip, client_port)] = _Dispatch(node_id, time.time())
+            key = (client_ip, client_port)
+            prev = self._dispatches.get(key)
+            if prev is not None:
+                # This flow already had an outstanding dispatch, and the
+                # assignment below is about to drop that entry on the floor.
+                # Releasing its count first is what keeps the invariant: without
+                # it the old holder carries a phantom inflight *forever* -- no
+                # dict entry survives for the reaper to find, and no completion
+                # report will ever reference it.
+                #
+                # Measured in the 8/40/3 live run 4: 57 keys were re-registered
+                # while still outstanding, and srv1 -- a healthy node with zero
+                # probation trials -- sat at exactly its 2 orphaned dispatches
+                # for 976 s. That pinned observed_load at 0.50 against a
+                # truthful claimed 0.00, one decisive tick over the 0.40 honesty
+                # gate, and produced 707 quarantine-triggering anomalies on a
+                # node that was behaving perfectly.
+                #
+                # Re-registration is legitimate: a PacketIn means a genuinely
+                # new connection (the client may reuse an ephemeral port, and
+                # the re-steer path reinstalls rules that draw fresh PacketIns),
+                # so the new entry correctly stamps `now` -- unlike
+                # reassign_dispatches, which moves the *same* task and must keep
+                # the original clock.
+                self._accrue_inflight_locked(prev.node_id)
+                self._inflight[prev.node_id] = max(
+                    0, self._inflight.get(prev.node_id, 0) - 1
+                )
+                logger.info(
+                    "Re-registered dispatch %s:%d (was on %s, now %s) -- "
+                    "released the superseded inflight",
+                    client_ip, client_port, prev.node_id, node_id,
+                )
+            self._dispatches[key] = _Dispatch(node_id, time.time())
             self._accrue_inflight_locked(node_id)
             self._inflight[node_id] = self._inflight.get(node_id, 0) + 1
 
@@ -342,7 +416,20 @@ class TrustState:
             moved: List[Tuple[str, int]] = []
             for key, d in list(self._dispatches.items()):
                 if d.node_id == from_node_id:
-                    self._dispatches[key] = _Dispatch(to_node_id, time.time())
+                    # Carry the ORIGINAL dispatched_at across, never time.time().
+                    # dispatched_at answers "has the client given up on this task
+                    # yet?", and re-steering does not restart the client's own
+                    # timer -- it dispatched at T and abandons at
+                    # T + task_timeout_s no matter how many times the controller
+                    # re-points its flow. Stamping `now` here made every
+                    # re-dispatch rejuvenate the entry, so under quarantine churn
+                    # (exactly when this path runs) dispatches never reached the
+                    # reap horizon at all: the 8/40/3 live run held inflight
+                    # pinned at 7 for its entire length with only 50 reaps, which
+                    # pinned observed_load at 1.00 against a truthful claimed_cpu
+                    # of 0.00 and re-tripped the honesty check on every survivor
+                    # the load was moved to.
+                    self._dispatches[key] = _Dispatch(to_node_id, d.dispatched_at)
                     self._accrue_inflight_locked(from_node_id)
                     self._accrue_inflight_locked(to_node_id)
                     self._inflight[from_node_id] = max(0, self._inflight.get(from_node_id, 0) - 1)
@@ -459,7 +546,7 @@ class TrustState:
             self._pending_updates.append(upd)
             self._recent_statuses.setdefault(
                 upd.edge_node_id, deque(maxlen=10)
-            ).append(upd.task_status)
+            ).append((self._now(), upd.task_status))
             if self._optimizer_enabled:
                 # Credit this outcome to the arm currently active, for the reward
                 # of the window it lands in (window-granularity attribution).
@@ -473,15 +560,25 @@ class TrustState:
     def recent_timeout_rate(self, node_id: str, min_samples: int = 4) -> Optional[float]:
         """Fraction of the last (up to 10) task outcomes that were timeouts.
 
-        Returns None if fewer than min_samples outcomes have been recorded yet —
-        callers should not trigger on that little data, to avoid false positives
-        during a node's first few interactions.
+        Returns None — "no opinion" — in two cases, and callers must not trigger
+        on either:
+
+        1. Fewer than min_samples outcomes recorded, to avoid false positives
+           during a node's first few interactions.
+        2. The newest outcome is older than _timeout_evidence_max_age_s. The
+           window is count-based, so it only turns over when tasks arrive; a
+           quarantined node receives none, and without this its last verdict
+           would stand forever and hold it in quarantine on evidence that has
+           stopped being observed. See contracts/thresholds.py.
         """
         with self._lock:
             history = self._recent_statuses.get(node_id)
             if not history or len(history) < min_samples:
                 return None
-            return sum(1 for s in history if s == 'timeout') / len(history)
+            newest_at = history[-1][0]
+            if self._now() - newest_at > self._timeout_evidence_max_age_s:
+                return None
+            return sum(1 for _, s in history if s == 'timeout') / len(history)
 
     def _flush_pending_locked(self) -> None:
         if self._pending_updates:
@@ -566,10 +663,91 @@ class TrustState:
         only one of the two may be called per cycle."""
         return self.poll_quarantine_transitions()[0]
 
-    def choose_edge_node(self) -> Optional[str]:
-        """n* = argmax EdgeScore(n) among non-quarantined nodes, or None if all
-        candidates are quarantined (deny by default)."""
+    def _probation_candidate_locked(self) -> Optional[str]:
+        """The node most deserving of a trial task right now, or None.
+
+        Eligible = quarantined on the TRUST rail only, with Ā already back below
+        the anomaly gate, and not probed within the last probation_interval_s.
+        Among those, the highest-trust node goes first (closest to earning its
+        way out). Must be called with the lock held.
+
+        Why this is needed at all: quarantine cuts service traffic, task
+        outcomes are the only thing that raises R and B, so a node quarantined
+        on trust can never recover on its own — the 8/40/3 live run left three
+        provably healthy servers (Ā = 0.0, 29ms RTT, zero inflight) isolated for
+        the rest of the run at trust ~0.18. A trial task is the only evidence
+        that can settle the question.
+
+        Why this does not weaken the model: Ā >= gate is still an absolute bar,
+        so nothing the anomaly rail has flagged is ever probed; and the trial is
+        one task per node per interval, which is a trickle, not a route back to
+        service. A node that fails its trial simply stays where it is.
+        """
+        now = self._now()
+        best: Optional[str] = None
+        best_trust = -1.0
+        for nid in self.node_ids:
+            if not self._is_on_probation_locked(nid):
+                # Either the anomaly rail has it flagged (never probed) or it is
+                # not quarantined at all (the normal path already has it).
+                continue
+            trust = self.trust_calc.get_score(nid)
+            last = self._last_probation.get(nid)
+            if last is not None and now - last < self.probation_interval_s:
+                continue
+            if trust > best_trust:
+                best_trust = trust
+                best = nid
+        return best
+
+    def _is_on_probation_locked(self, node_id: str) -> bool:
+        return (
+            self._anomaly.get(node_id, 0.0) < self.anomaly_gate
+            and self.trust_calc.get_score(node_id) < self.isolation_threshold
+        )
+
+    def is_on_probation(self, node_id: str) -> bool:
+        """True if this node is quarantined but currently eligible for trials."""
         with self._lock:
+            return self._is_on_probation_locked(node_id)
+
+    def choose_edge_node(self) -> Optional[str]:
+        """Back-compat wrapper for choose_edge_node_ex(), dropping the
+        probation flag."""
+        return self.choose_edge_node_ex()[0]
+
+    def choose_edge_node_ex(self) -> Tuple[Optional[str], bool]:
+        """(chosen, is_probation_trial).
+
+        n* = argmax EdgeScore(n) among non-quarantined nodes. Returns
+        (None, False) if no node is eligible and none is due a trial — deny by
+        default is otherwise unchanged.
+
+        A due probation trial takes precedence over the normal pick. That
+        ordering looks aggressive but is self-limiting: each node is probed at
+        most once per probation_interval_s, so the trials this can divert are
+        capped at |nodes| / probation_interval_s decisions per second regardless
+        of load, and when nothing is quarantined there are no candidates and the
+        path is inert — routing is then byte-for-byte what it was before.
+        """
+        with self._lock:
+            probe = self._probation_candidate_locked()
+            if probe is not None:
+                self._last_probation[probe] = self._now()
+                logger.info(
+                    "%s: probation trial (trust %.3f < %.2f, anomaly clear)",
+                    probe, self.trust_calc.get_score(probe),
+                    self.isolation_threshold,
+                )
+                self._routing_decisions.append({
+                    'timestamp': time.time(),
+                    'chosen': probe,
+                    'score': None,
+                    'ranked': [],
+                    'probation': True,
+                })
+                return probe, True
+
             states = [
                 NodeState(
                     node_id=nid,
@@ -599,8 +777,9 @@ class TrustState:
                 'chosen': chosen,
                 'score': score,
                 'ranked': ranked,
+                'probation': False,
             })
-            return chosen
+            return chosen, False
 
     def optimizer_tick(self) -> Optional[Dict[str, Any]]:
         """Drive the AI optimizer one step. Call ~1 Hz (flow_monitor's poll loop).
@@ -697,6 +876,12 @@ class TrustState:
                     'latency_ms': round(self._latency_ms.get(nid, 50.0), 2),
                     'anomaly': round(self._anomaly.get(nid, 0.0), 4),
                     'quarantined': self.is_quarantined(nid),
+                    # Quarantined, but on the trust rail only and with Ā back
+                    # under the gate -- i.e. being offered trial tasks to earn
+                    # its way out. Distinguishing this on screen matters: it is
+                    # the difference between "isolated and under active
+                    # suspicion" and "isolated and being re-tested".
+                    'probation': self._is_on_probation_locked(nid),
                 }
                 for nid in self.node_ids
             }

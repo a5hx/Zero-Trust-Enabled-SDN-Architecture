@@ -1,0 +1,157 @@
+# config/params_trust_full.yaml
+# Full-scale live trust-aware demo: 8 edge servers / 40 IoT devices / 3
+# malicious edge servers (+ 2 malicious IoT devices for the auth-deny path).
+#
+# This is params_trust_demo.yaml (4/12/1) scaled to the deck's numbers, used
+# by `run_demo.py --mode mininet` (Project Plan Step 3) to validate all four
+# NFRs against a real Mininet network + real os-ken controller: routing
+# decision <200ms, isolation <3s, blockchain overhead <15%, RAFT commit
+# <500ms (RAFT measured separately -- see docs/RAFT.md, plan.md Step 2).
+#
+# "3 malicious" here means malicious EDGE SERVERS, matching the evaluation
+# harness's convention (config/params.yaml's num_malicious=3 is consumed the
+# same way by evaluation/baseline.py -- the last N node indices become
+# attackers). The 2 malicious IoT devices below are a separate mechanism
+# (PRESENT-80 admission denial, Sprint 2) layered on top, not counted against
+# num_malicious. See plan.md Step 6 / DIRECTION.md for why this
+# malicious-edge-servers vs. malicious-IoT-devices split is called out as an
+# open reframing rather than silently assumed.
+trust:
+  alpha: 0.35
+  beta: 0.25
+  gamma: 0.25
+  delta: 0.15
+  lambda_decay: 0.85
+  initial_score: 0.5
+
+  isolation_threshold: 0.3
+  anomaly_gate: 0.5
+
+  rate_limit_trust: 0.5
+  anomaly_warn: 0.25
+
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+  selection: p2c
+  d_choices: 2
+  epsilon: 0.05
+
+optimizer:
+  enabled: true
+  algorithm: ucb1
+  window_s: 10.0
+  exploration_c: 1.41
+  reward:
+    latency_penalty: 0.2
+    imbalance_penalty: 0.2
+  arms:
+    - [0.50, 0.30, 0.20]
+    - [0.70, 0.20, 0.10]
+    - [0.34, 0.50, 0.16]
+    - [0.34, 0.16, 0.50]
+    - [0.45, 0.45, 0.10]
+
+simulation:
+  num_edge_nodes: 8
+  num_iot_devices: 40
+  num_malicious: 3
+  duration_s: 300
+
+  # 3 malicious edge servers, deliberately spread across the fleet (not
+  # adjacent node indices) so p2c/epsilon routing has to route around
+  # attackers scattered through its sampling pool, not clustered at one end.
+  malicious_edge_nodes:
+    - node: srv3
+      attack: sybil
+      start_s: 20
+    - node: srv6
+      attack: drop
+      start_s: 30
+    - node: srv8
+      attack: sybil
+      start_s: 40
+
+security:
+  auth_scheme: present80
+  shared_key_hex: "00112233445566778899"
+
+  # Malicious IoT devices (wrong key -> denied at admission, never generate
+  # VIP traffic). Separate from malicious_edge_nodes above.
+  malicious_iot_devices:
+    - iot39
+    - iot40
+
+blockchain:
+  max_updates_per_block: 10
+  block_commit_timeout_s: 5.0
+
+controller:
+  vip: 10.0.99.1
+  vip_port: 9000
+
+  api_host: 0.0.0.0
+  api_port: 8081
+
+  flow_idle_timeout_s: 10
+  flow_hard_timeout_s: 30
+  monitor_interval_s: 1.0
+
+  latency_liar_ratio: 3.0
+  latency_liar_floor_ms: 40.0
+  idle_claim_threshold: 0.25
+  latency_liar_persist: 3
+
+  rate_limit:
+    enabled: true
+    rate_kbps: 2000
+    burst_kb: 200
+
+  dashboard:
+    enabled: true
+    record_path: data/events.jsonl
+
+  honesty_deviation_threshold: 0.40
+
+  # How often a node quarantined on TRUST alone -- with its anomaly rail
+  # already back below the gate -- is offered a single trial task, so it can
+  # earn trust back. Without this, quarantine is an absorbing state: it cuts
+  # the service traffic that produces the only outcomes R and B are built
+  # from, so a node below the isolation threshold can never climb back over
+  # it. The 8/40/3 live run ended with srv1/srv4/srv7 at anomaly 0.0, 29ms
+  # RTT and zero inflight -- provably healthy -- and isolated for the rest of
+  # the run at trust ~0.18. See contracts/thresholds.py and
+  # docs/LIVE_RUN_8_40_3.md.
+  #
+  # The anomaly gate is NOT relaxed by this: a node the anomaly rail has
+  # flagged is never probed. The exposure is one task per node per interval.
+  probation_interval_s: 5.0
+
+agents:
+  node_port: 8000
+  # Workload intensity, tuned so a 4-core box can actually carry 8/40/3.
+  #
+  # The scale figures the deck commits to are topological -- 8 edge servers,
+  # 40 IoT devices, 3 attackers -- and those are unchanged above. What is
+  # tuned here is how hard each device pushes, which is a property of the
+  # host, not of the architecture.
+  #
+  # The arithmetic that matters: offered task CPU = num_iot / report_interval_s
+  # x task_work_ms. At the demo-scale values (1.0s / 40ms) that is
+  # 40/1.0 x 40ms = 1.60 cores of pure task work, 40% of a 4-core box BEFORE
+  # the 40 client + 8 agent + controller + OVS processes are scheduled at all.
+  # The first live run measured the result: 243.7ms mean task latency against
+  # 40ms of actual work, and a 90% client timeout rate.
+  # At 2.0s / 15ms it is 40/2.0 x 15ms = 0.30 cores (8%), which leaves the
+  # control plane -- the thing under test -- room to be measured rather than
+  # starved.
+  #
+  # To run this as a deliberate saturation experiment instead, put these back
+  # to 1.0 / 40 and expect the collapse documented in docs/LIVE_RUN_8_40_3.md.
+  report_interval_s: 2.0
+  # 2x the old value: under load the honest tail matters more than a tight
+  # bound, and every abandoned task costs the controller a phantom inflight
+  # until the reaper (1.5x this) drops it.
+  task_timeout_s: 4.0
+  task_work_ms: 15

@@ -201,11 +201,46 @@ def test_packet_drop_tell_uses_timeout_rate_not_cpu_honesty():
 
 
 def test_unreachable_agent_treated_as_anomalous():
+    """A node that HAS been seen and then goes silent is anomalous.
+
+    This is the original Sprint 1 finding ("unreachable = anomalous"): a node
+    that stops answering is indistinguishable from one that has failed or been
+    taken over, so silence must score rather than be skipped. The
+    first-contact requirement added for the startup window (see the test
+    below) must not weaken this -- hence one healthy poll first, then silence.
+    """
     state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
-    fm, quarantined = _make_monitor(state, {'srv1': None})
+    statuses = {'srv1': {'cpu_load': 0.2, 'latency_ms': 20.0, 'concurrency': 4}}
+    fm, quarantined = _make_monitor(state, statuses)
+    fm._poll_once()                     # seen once, healthy
+    assert state.get_anomaly('srv1') < 0.5
+    assert quarantined == []
+
+    statuses['srv1'] = None             # now it goes dark
     fm._poll_once()
     assert state.get_anomaly('srv1') > 0.5
     assert quarantined == ['srv1']
+
+
+def test_never_seen_agent_is_unknown_not_anomalous():
+    """A node that has never answered once must not be scored.
+
+    The controller has to be listening before any switch can connect, so it
+    necessarily starts seconds before Mininet builds the network and the
+    agents inside it. Scoring that window pushed A to 0.85 on the very first
+    poll and quarantined all 8 servers at t=0.5s of the 8/40/3 live run --
+    before a single agent existed. Absence of evidence is not evidence of
+    misbehaviour; a node that never comes up simply never becomes a routing
+    candidate.
+    """
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    fm, quarantined = _make_monitor(state, {'srv1': None})
+
+    for _ in range(5):
+        fm._poll_once()
+
+    assert state.get_anomaly('srv1') == 0.0
+    assert quarantined == []
 
 
 def test_measured_rtt_feeds_routing_not_self_reported_latency():

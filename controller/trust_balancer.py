@@ -23,7 +23,7 @@ import yaml
 from contracts.trust_update import TrustUpdate
 from trust_engine.trust_calculator import TrustCalculator
 from blockchain.block import build_block
-from blockchain.commit_backend import LocalLedgerBackend
+from blockchain.commit_backend import LocalLedgerBackend, TimingCommitBackend
 from blockchain.ledger import Ledger
 
 from os_ken.base import app_manager
@@ -33,7 +33,10 @@ from os_ken.lib import hub
 from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
 from os_ken.ofproto import inet, ofproto_v1_3
 
-from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
+from contracts.thresholds import (
+    DEFAULT_ANOMALY_WARN, DEFAULT_PROBATION_INTERVAL_S,
+    DEFAULT_RATE_LIMIT_TRUST, DEFAULT_TASK_TIMEOUT_S,
+)
 from controller.edge_selector import (
     BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_EPSILON,
     DEFAULT_SELECTION_STRATEGY, EdgeWeights, NodeState,
@@ -293,6 +296,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # Ā back down, so dropping it too makes quarantine a one-way door and
     # contradicts flow_monitor's own contract ("Ā decays back down ... once
     # misbehaviour stops"). Service traffic is still fully cut.
+    # A probation trial has to out-rank the drop rules for the same reason the
+    # health check does, and more so: the whole point is to let one task reach a
+    # quarantined node so it can earn trust back. Installed below
+    # PRIO_QUARANTINE_DROP it would be black-holed by the very rules it exists
+    # to escape, and every trial would read as a timeout -- turning probation
+    # into a machine for confirming the verdict it is meant to re-test.
+    # These flows carry a short hard_timeout (see _install_vip_pair) so the hole
+    # closes on its own within about one task.
+    PRIO_PROBATION = 460
     PRIO_HEALTH_CHECK = 450
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
@@ -310,6 +322,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         n = cfg['simulation']['num_edge_nodes']
         node_ids = [f'srv{i}' for i in range(1, n + 1)]
+
+        # The clients' own give-up time. Read once here because two separate
+        # things need it: the dispatch reaper's horizon (TrustState) and the
+        # lifetime of a probation trial's flow rules (_install_vip_pair).
+        self.task_timeout_s = float(
+            cfg.get('agents', {}).get('task_timeout_s', DEFAULT_TASK_TIMEOUT_S)
+        )
 
         trust_cfg = cfg['trust']
         trust_calc = TrustCalculator(
@@ -340,10 +359,32 @@ class TrustBalancerApp(app_manager.OSKenApp):
         optimizer_cfg = cfg.get('optimizer')
         reward_cfg = (optimizer_cfg or {}).get('reward', {})
 
+        # Dashboard event bus. Absent/disabled config -> NullBus, so every
+        # self.bus.publish() below is a no-op and the controller behaves
+        # bit-for-bit as it did before the dashboard existed. Built before
+        # TrustState (below) so TimingCommitBackend can publish 'block'
+        # events straight onto it -- see _on_block_committed.
+        dash_cfg = cfg['controller'].get('dashboard', {})
+        self.dashboard_enabled: bool = bool(dash_cfg.get('enabled', False))
+        if self.dashboard_enabled:
+            self.bus: Any = EventBus(
+                record_path=dash_cfg.get('record_path', 'data/events.jsonl'),
+            )
+        else:
+            self.bus = NullBus()
+
+        # Times every real commit() call so the live full-scale demo can
+        # measure the blockchain-overhead NFR (<15%, evaluation/nfr_report.py)
+        # -- see TimingCommitBackend's docstring for why this can't be
+        # inferred from TrustState alone.
+        self._commit_backend = TimingCommitBackend(
+            LocalLedgerBackend(), on_commit=self._on_block_committed,
+        )
+
         self.state = TrustState(
             node_ids=node_ids,
             trust_calculator=trust_calc,
-            commit_backend=LocalLedgerBackend(),
+            commit_backend=self._commit_backend,
             authenticator=_build_authenticator(cfg),
             edge_weights=edge_weights,
             optimizer=build_optimizer(optimizer_cfg, fallback=edge_weights),
@@ -360,6 +401,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
             epsilon=selection_epsilon,
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
+            # The clients' own give-up time, so the dispatch reaper tracks it
+            # rather than out-living it (see TrustState._dispatch_reap_after_s).
+            task_timeout_s=self.task_timeout_s,
+            # How often a trust-quarantined node with a clear anomaly rail may
+            # be offered a trial task, so quarantine is recoverable rather than
+            # absorbing (see TrustState._probation_candidate_locked).
+            probation_interval_s=cfg.get('controller', {}).get(
+                'probation_interval_s', DEFAULT_PROBATION_INTERVAL_S,
+            ),
         )
 
         ctrl_cfg = cfg['controller']
@@ -392,18 +442,6 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._datapaths: Dict[int, Any] = {}
         self._mac_to_port: Dict[int, Dict[str, int]] = {}
         self._cookie_base = 0x5A00000000000000
-
-        # Dashboard event bus. Absent/disabled config -> NullBus, so every
-        # self.bus.publish() below is a no-op and the controller behaves
-        # bit-for-bit as it did before the dashboard existed.
-        dash_cfg = ctrl_cfg.get('dashboard', {})
-        self.dashboard_enabled: bool = bool(dash_cfg.get('enabled', False))
-        if self.dashboard_enabled:
-            self.bus: Any = EventBus(
-                record_path=dash_cfg.get('record_path', 'data/events.jsonl'),
-            )
-        else:
-            self.bus = NullBus()
 
         # Imported here (not at module scope) because FlowMonitor is built and
         # wired in the same Sprint 1 pass as this class -- avoids a hard
@@ -608,7 +646,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
         client_ip = ip_pkt.src
         client_port = tcp_pkt.src_port
 
-        chosen = self.state.choose_edge_node()
+        chosen, probation = self.state.choose_edge_node_ex()
         if chosen is None:
             logger.warning(
                 "No eligible edge node for %s:%d -- all quarantined, denying",
@@ -621,13 +659,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
             return
 
         self.state.register_dispatch(client_ip, client_port, chosen)
-        self._install_vip_pair(dp, client_ip, client_port, chosen)
+        self._install_vip_pair(
+            dp, client_ip, client_port, chosen, probation=probation,
+        )
         self._resend_packet(dp, msg, in_port)
 
         decision_ms = (time.monotonic() - decision_start) * 1000.0
         logger.info(
-            "Routed %s:%d -> %s (decision took %.2fms)",
-            client_ip, client_port, chosen, decision_ms,
+            "Routed %s:%d -> %s%s (decision took %.2fms)",
+            client_ip, client_port, chosen,
+            " [PROBATION TRIAL]" if probation else "", decision_ms,
         )
 
         # The ranked list is what makes the decision explicable on screen: the
@@ -639,6 +680,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             client_ip=client_ip, client_port=client_port, chosen=chosen,
             edge_score=last.get('score'), ranked=last.get('ranked'),
             decision_ms=round(decision_ms, 2), dpid=dp.id,
+            probation=probation,
         )
 
     def _send_arp_reply(self, dp, in_port, arp_pkt, eth) -> None:
@@ -668,12 +710,27 @@ class TrustBalancerApp(app_manager.OSKenApp):
         )
         dp.send_msg(out)
 
-    def _install_vip_pair(self, dp, client_ip: str, client_port: int, node_id: str) -> None:
+    def _install_vip_pair(
+        self, dp, client_ip: str, client_port: int, node_id: str,
+        probation: bool = False,
+    ) -> None:
         parser = dp.ofproto_parser
         idx = srv_index(node_id)
         s_ip = srv_ip(idx)
         s_mac = srv_mac(idx)
         cookie = self._cookie_for(node_id)
+
+        # A probation trial goes in above the quarantine drop rules and expires
+        # after roughly one task, so the exception it carves out is both
+        # necessary (otherwise the trial cannot reach the node) and temporary.
+        if probation:
+            priority = self.PRIO_PROBATION
+            idle_timeout = 0
+            hard_timeout = max(2, int(round(self.task_timeout_s)))
+        else:
+            priority = self.PRIO_CONNECTION
+            idle_timeout = self.flow_idle_timeout
+            hard_timeout = self.flow_hard_timeout
 
         forward_match = parser.OFPMatch(
             eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
@@ -695,9 +752,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # rate-limiting the *load offered to* a suspect node is the point.
         meter_id = self._meter_for_node(dp, node_id)
         self._install_goto_l2(
-            dp, self.TABLE_VIP, self.PRIO_CONNECTION, forward_match, forward_actions,
-            cookie=cookie, idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout, meter_id=meter_id,
+            dp, self.TABLE_VIP, priority, forward_match, forward_actions,
+            cookie=cookie, idle_timeout=idle_timeout,
+            hard_timeout=hard_timeout, meter_id=meter_id,
         )
 
         # Reverse direction is installed on the SAME datapath (the client's
@@ -719,9 +776,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
             parser.OFPActionSetField(tcp_src=self.vip_port),
         ]
         self._install_goto_l2(
-            dp, self.TABLE_VIP, self.PRIO_CONNECTION, reverse_match, reverse_actions,
-            cookie=cookie, idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout,
+            dp, self.TABLE_VIP, priority, reverse_match, reverse_actions,
+            cookie=cookie, idle_timeout=idle_timeout,
+            hard_timeout=hard_timeout,
         )
 
         # Rendered as text here rather than in the browser: this is the exact
@@ -730,9 +787,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # what was actually installed.
         self.bus.publish(
             'flow_install', dpid=dp.id, node=node_id, cookie=cookie,
-            table=self.TABLE_VIP, priority=self.PRIO_CONNECTION,
-            idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout,
+            table=self.TABLE_VIP, priority=priority,
+            idle_timeout=idle_timeout,
+            hard_timeout=hard_timeout,
+            probation=probation,
             rate_limited=meter_id is not None,
             rate_limit_kbps=self.rate_limit_kbps if meter_id is not None else None,
             rules=[
@@ -1122,7 +1180,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
             device_id=device_id, edge_node_id=node_id, task_status=status,
             cpu_usage=observed, reported_cpu=claimed_cpu, latency_ms=latency_ms,
         )
+        # Timed for the blockchain-overhead NFR: `commit_count` before/after
+        # tells us whether *this* report happened to trigger a block commit
+        # (every max_updates_per_block-th one does, via _flush_pending_locked)
+        # without record_task_outcome's return type needing to say so.
+        commits_before = self._commit_backend.commit_count
+        t0 = time.monotonic()
         score = self.state.record_task_outcome(upd)
+        report_ms = (time.monotonic() - t0) * 1000.0
+        committed = self._commit_backend.commit_count > commits_before
         logger.info(
             "Report: %s task=%s from %s -> %s trust=%.4f",
             device_id, status, node_id, node_id, score,
@@ -1131,8 +1197,23 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'report', device=device_id, node=node_id, status=status,
             latency_ms=round(latency_ms, 2), trust=round(score, 4),
             claimed_cpu=round(claimed_cpu, 4), observed_load=round(observed, 4),
+            report_ms=round(report_ms, 4), committed=committed,
         )
         return score
+
+    def _on_block_committed(
+        self, block: Optional[Any], elapsed_ms: float, num_updates: int,
+    ) -> None:
+        """TimingCommitBackend's on_commit hook -- publishes one 'block' event
+        per real commit() call, success or rejection, for the blockchain
+        overhead NFR (evaluation/nfr_report.py)."""
+        self.bus.publish(
+            'block',
+            index=(block.index if block is not None else None),
+            commit_ms=round(elapsed_ms, 4),
+            num_updates=num_updates,
+            accepted=block is not None,
+        )
 
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py -- dashboard                            #

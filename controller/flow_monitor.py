@@ -42,7 +42,7 @@ import logging
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set
 
 from os_ken.lib import hub
 
@@ -209,6 +209,10 @@ class FlowMonitor:
         self.idle_claim_threshold = idle_claim_threshold
         self.latency_liar_persist = latency_liar_persist
         self._latency_strikes: Dict[str, int] = {nid: 0 for nid in self.node_ids}
+        # Nodes that have answered /status at least once. Until a node is in
+        # here it is UNKNOWN rather than anomalous -- see _poll_once for why an
+        # unanswered poll from a node that has never been seen must not score.
+        self._ever_seen: Set[str] = set()
         # Optional so existing callers (run_demo.py, the unit tests) keep
         # working unchanged -- they never quarantine anything, so they have
         # nothing to undo.
@@ -261,6 +265,9 @@ class FlowMonitor:
             reasons: List[str] = []
 
             if status is not None:
+                # First contact: from here on, silence from this node is a
+                # genuine failure signal rather than "not started yet".
+                self._ever_seen.add(node_id)
                 raw_cpu = status.get('cpu_load')
                 has_claim = isinstance(raw_cpu, (int, float))
                 claimed_cpu = float(raw_cpu) if has_claim else 0.5
@@ -338,7 +345,7 @@ class FlowMonitor:
                         f'{measured_rtt:.0f}ms is {tell.ratio:.1f}x fleet median '
                         f'{latency_baseline:.0f}ms (sustained)'
                     )
-            else:
+            elif node_id in self._ever_seen:
                 # Agent unreachable this cycle -- treat as suspicious rather
                 # than silently skipping, but don't crash the loop over it.
                 # The anomaly EMA (lambda=0.85 by default) means even one
@@ -348,6 +355,23 @@ class FlowMonitor:
                 logger.warning("%s: /status poll failed this cycle", node_id)
                 anomaly_raw = 1.0
                 reasons.append('/status unreachable')
+            else:
+                # Never successfully polled even once: this node is UNKNOWN, not
+                # anomalous. A node that has gone silent after being healthy is a
+                # real failure signal and is scored as one above -- but one that
+                # has never answered has not misbehaved, it has not started. The
+                # controller must be listening before any switch can connect, so
+                # it necessarily comes up seconds before Mininet builds the
+                # network and the agents inside it; scoring that window pushed Ā
+                # to 0.85 on the first poll and quarantined all 8 servers at
+                # t=0.5s of the 8/40/3 live run, before a single one existed.
+                # Staying silent here costs nothing: a node that never comes up
+                # never gets traffic either, because it is never a routing
+                # candidate until it reports.
+                logger.info(
+                    "%s: not seen yet (no successful /status poll) -- treating as "
+                    "unknown, not anomalous", node_id,
+                )
 
             timeout_rate = self.state.recent_timeout_rate(node_id, min_samples=_MIN_TIMEOUT_SAMPLES)
             if timeout_rate is not None and timeout_rate > self.honesty_deviation_threshold:

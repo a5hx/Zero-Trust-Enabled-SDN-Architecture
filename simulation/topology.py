@@ -265,9 +265,20 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
 
     if trust_mode:
         _add_cx_node(net, net.get('s0'))
-        loss = net.pingAll()
-        logger.info("pingAll loss: %s%% (reachability check before agents start)", loss)
+        # Agents BEFORE pingAll, not after. The controller starts polling every
+        # node's /status the moment it has datapaths, and scores an unanswered
+        # poll as anomalous -- correctly, since an unreachable node is exactly
+        # what a failed one looks like. But pingAll is O(hosts^2): at the 4/12
+        # demo scale its 272 pings pass in seconds, while at the 8/40/3 full
+        # scale its 2,352 pings took 163s, during which the controller
+        # quarantined all 8 servers for not answering polls on agents that had
+        # not been started yet. That is 44% of a 300s run spent judging
+        # processes that did not exist. Starting the agents first costs
+        # nothing: pingAll's own reachability check is unaffected by them
+        # running, and the switches are already up either way.
         _launch_trust_agents(net, cfg)
+        loss = net.pingAll()
+        logger.info("pingAll loss: %s%% (reachability check, agents already up)", loss)
 
         duration = cfg['simulation']['duration_s']
         logger.info("Trust-aware demo running for %d seconds (Ctrl-C / exit to stop early)...", duration)

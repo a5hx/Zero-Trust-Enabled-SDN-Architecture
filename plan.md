@@ -1,8 +1,13 @@
 # Project Plan — Zero Trust–Enabled SDN Architecture
 
-*Last updated: 2026-08-01. Verified against working tree at commit `045683b`
-on `feature/ai-optimizer` (271/271 tests passing — 22 new for the offline
-Random Forest in Step 1, 33 new for RAFT wiring in Step 2).*
+*Last updated: 2026-08-01. Verified against working tree on `feature/ai-optimizer`
+(commit `e1ead99` + this session's Step 3 work, uncommitted as of writing):
+321/321 tests passing — 22 new for the offline Random Forest in Step 1, 33 new
+for RAFT wiring in Step 2, 31 new for the Step 3 NFR instrumentation/
+orchestration below, and 12 new for the escape-from-quarantine work (stale-
+evidence abstention + probation) that live runs 1–3 drove out. Three live
+8/40/3 runs are done; a fourth, confirming one is still pending a human with
+sudo.*
 
 This is the working roadmap from here to submission. It supersedes the
 "Not started at all" section of `DIRECTION.md` (2026-07-17), which is now
@@ -44,8 +49,10 @@ same window the controller integrates occupancy over).
    does not beat hand-tuned static weights** — significantly *worse* in
    `sybil`/`both` (≈1% relative, medium effect size), no difference in
    `clean`/`drop`. Reported as the honest finding, not chased further.
-3. **Full-scale 8/40/3 live** — `run_demo.py --mode mininet` is still a stub
-   that exits with a message (now says os-ken, not Ryu — fixed today).
+3. **Full-scale 8/40/3 live** — orchestrator + NFR report built AND run once
+   (2026-08-01). All four NFRs PASS, but the run collapsed to all-8-quarantined
+   via two defects, both now fixed — see Step 3 and `docs/LIVE_RUN_8_40_3.md`.
+   A confirming re-run is still outstanding.
 4. **Study run C** — `docs/study/trust-routing-study.html` sections 6–8 still
    narrate the H-term/starvation defects as open; both are now fixed in code.
    Needs a fresh live run to confirm in real telemetry (or reopen the finding).
@@ -143,15 +150,116 @@ component.
       in `docs/RAFT.md` first (who retries against `leader_id` when the
       active controller isn't the current leader).
 
-## Step 3 — Full-scale integration, 8 edge / 40 IoT / 3 malicious (~1 day)
+## Step 3 — Full-scale integration, 8 edge / 40 IoT / 3 malicious — CODE DONE, LIVE RUN PENDING
 
-Turn `run_demo.py --mode mininet` into a real entry point (currently exits
-immediately — see the message fixed in Step 0). Validate all four deck NFRs in
-one table:
-- routing decision <200 ms
-- isolation <3 s
-- blockchain overhead <15 %
-- RAFT commit <500 ms (once Step 2 lands)
+- [x] `run_demo.py --mode mininet` is a real entry point, not a stub: root +
+      Mininet-availability + config-shape checks, spawns the os-ken controller
+      as a subprocess (`ZTSDN_CONFIG` env var), polls the REST API until it's
+      up (`_wait_for_controller`, avoids the fail-secure-switches race), runs
+      `simulation.topology.run_topology(cfg, interactive=False)` for the
+      configured duration, tears the controller down, then computes and
+      prints/saves the NFR report.
+- [x] `config/params_trust_full.yaml` — the 8/40/3 live config
+      (`params_trust_demo.yaml`'s 4/12/1 scaled up): 3 malicious edge servers
+      spread through the fleet (srv3 sybil, srv6 drop, srv8 sybil) + 2
+      malicious IoT devices (wrong-key, auth-deny path). "3 malicious" = edge
+      servers, matching the evaluation harness's own convention
+      (`num_malicious` in `config/params.yaml`) — the malicious-edge vs.
+      malicious-IoT split stays an openly disclosed reframing (Step 6), not
+      silently resolved.
+- [x] `evaluation/nfr_report.py` — computes 3 of the 4 NFRs from a live run's
+      `data/events.jsonl`: routing decision (`route` events' `decision_ms`),
+      isolation (`reroute` events' `resteer_ms`, folded together with one
+      `monitor_interval_s` poll bound), blockchain overhead (`report` events'
+      `report_ms` split by a new `committed` flag — the relative slowdown a
+      `/report` call suffers when it happens to trigger a block commit vs.
+      one that doesn't). RAFT commit is reported from the already-measured
+      isolated figure (`docs/RAFT.md`), not computed live — RAFT stays
+      unwired into the live controller per Step 2.
+- [x] New instrumentation to make blockchain overhead measurable at all:
+      `TimingCommitBackend` (`blockchain/commit_backend.py`) wraps the
+      controller's commit backend, timing every real `commit()` call;
+      `handle_client_report` (`controller/trust_balancer.py`) times its own
+      `record_task_outcome` call and tags the existing `bus.publish('report',
+      ...)` event with `report_ms` + `committed`. Nothing on the OpenFlow
+      packet-in path (the <200ms NFR) was touched.
+- [x] Tests: `tests/test_commit_backend.py` (`TestTimingCommitBackend`),
+      `tests/test_nfr_report.py` (pure-function tests against synthetic
+      events, no Mininet needed), `tests/test_run_demo_mininet.py` (guard
+      clauses, config-default resolution, controller-readiness poll).
+      293 -> 302 tests, all green.
+- [x] **Live run 1 done (2026-08-01) — it collapsed, and that was useful.**
+      All four NFRs came out PASS on real data (routing mean 0.62ms / p95
+      0.91ms; isolation mean 28.6ms / max 42.0ms; blockchain overhead 0.018%;
+      RAFT from `docs/RAFT.md`), but all 8 servers ended quarantined with
+      91.7% of routing attempts denied. Full write-up, timelines and
+      before/after evidence: **`docs/LIVE_RUN_8_40_3.md`**. Two real defects
+      found and fixed:
+      1. `simulation/topology.py` ran `net.pingAll()` *before*
+         `_launch_trust_agents()`. O(hosts²) — 2,352 pings at 8/40 = 163s
+         during which the controller quarantined all 8 servers for not
+         answering polls on agents that did not exist yet (44% of the run).
+         Fixed by reordering; this was also the "laggy dashboard at startup".
+      2. `TrustState._dispatch_reap_after_s` was hardcoded to 30.0s against a
+         2.0s client `task_timeout_s`. A timed-out client never sends
+         `/report`, so its dispatch kept counting toward `observed_load` for
+         15 more cycles — honest, genuinely-idle nodes read as 0.75 loaded
+         against a truthful 0.00 claim, tripped the honesty check, and each
+         quarantine re-dispatched load onto the next survivor until all 8
+         fell. **The detectors were right the whole time** (the 3 real
+         attackers were caught first); the load signal feeding them was
+         wrong. Fixed by deriving the reap horizon from `task_timeout_s`
+         (`contracts/thresholds.DEFAULT_TASK_TIMEOUT_S`), so they cannot
+         drift apart again.
+      Also fixed a defect in the harness itself: `nfr_report.py`'s
+      blockchain-overhead denominator was an uncommitted `/report`'s handling
+      time (tens of µs), which reported a 0.42ms commit as 2155% overhead.
+      Now amortises over batch size and divides by end-to-end task latency.
+      307/307 tests green, with regression tests for all three.
+- [x] **Live runs 2 and 3 done (2026-08-01).** Run 2 found two more defects
+      (`reassign_dispatches` resetting the abandonment clock; the controller
+      scoring nodes that had never existed) — both fixed, see
+      `docs/LIVE_RUN_8_40_3.md`. Run 3 then **confirmed every structural fix
+      from runs 1–2**: no startup quarantine at all, first route 1.2s after
+      switch-up (vs 163s in run 1), 9 `/status unreachable` anomalies in the
+      whole run, and final `inflight` 0 / `observed_load` 0.00 on all 8
+      against truthful claims. The phantom-load cascade is gone.
+- [x] **Run 3 exposed the real root cause: quarantine was an absorbing
+      state.** All 8 still ended quarantined, but for a reason unrelated to
+      the load signal: quarantine cuts service traffic, and service traffic is
+      the only thing that produces task outcomes, so every detector reading
+      outcomes goes blind the moment it fires and every term of T that
+      outcomes feed stops moving. Two expressions, both fixed:
+      1. **Detectors latched on frozen evidence.** `_recent_statuses` was a
+         count-based `deque(maxlen=10)` of bare statuses, so it only turns
+         over when tasks arrive. srv5's last real outcome was t=9.2s and the
+         controller was still asserting `timeout rate 0.60 > 0.40` against it
+         at t=240.9s — 231s of Ā=1.0 from a sample that had stopped being
+         observed. Entries now carry timestamps and `recent_timeout_rate()`
+         returns `None` past `3 × task_timeout_s`: a detector with no recent
+         evidence must abstain, not re-assert its last verdict.
+      2. **Trust could not climb without traffic.** srv1/srv4/srv7 ended at
+         anomaly 0.0, ~29ms RTT, inflight 0 — provably healthy — and isolated
+         for the whole run at trust 0.18–0.21 vs a 0.3 threshold, because R
+         and B only move on outcomes quarantine prevents. Added **probation**,
+         the half-open leg of a circuit breaker: a node quarantined on the
+         trust rail *only*, with Ā already under the gate, gets one trial task
+         per `probation_interval_s` (5.0s). The anomaly gate stays an absolute
+         bar — a flagged node is never probed — and exposure is capped at one
+         task per node per interval, inert when nothing is quarantined. Trial
+         flows install at `PRIO_PROBATION = 460`, above the quarantine drops,
+         or they would be black-holed by the rules they exist to escape.
+      Again: **the detectors were right.** Run 3's initial quarantines fired
+      on true evidence (real timeouts at mean 341ms / p95 1609ms task latency
+      while 40 clients and 8 agents came up on 4 cores). What was missing was
+      any path back. 309 → 321 tests, all green.
+- [ ] **Live run 4 — not yet done.** Needs a human with sudo, per memory
+      `wsl-run-prerequisites`. This is the first run where honest nodes are
+      expected to *stay* up (or recover) while srv3/srv6/srv8 are still
+      caught, and the first that could give a denial rate near zero.
+      Still outstanding regardless: `net.pingAll()` is O(hosts²) and costs
+      ~163s at this scale — since run 1's fix that is wasted wall-clock rather
+      than a correctness problem, but it dominates startup.
 
 Note the evaluation harness already defaults to 8 edge nodes
 (`config/params.yaml`), so scale is already proven *statistically* — this step
