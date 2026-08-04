@@ -7,6 +7,8 @@ simulation can run without Mininet installed.
 import logging
 import random
 import sys
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -134,6 +136,67 @@ def _add_cx_node(net: Any, core_switch: Any) -> Any:
     return cx
 
 
+def _sampled_reachability_check(net: Any, cfg: Dict[str, Any]) -> float:
+    """Reachability check that does not cost more than the run it precedes.
+
+    `net.pingAll()` is O(hosts^2). At the 4/12 demo scale that is 272 pings and
+    nobody notices; at 8/40/3 it is 2,352, and because the fix for Defect 1 put
+    it *after* the agents start, those pings now contend with the live workload.
+    Measured: 163 s on an idle box (run 1), ~1,415 s of a 1,720 s run against a
+    live one (run 5) -- 82% of the run, for a check whose entire job is "is the
+    data plane wired up".
+
+    Reachability here is a property of the topology, not of the host pair: every
+    IoT client reaches its edge switch, the core, and the servers by the same
+    path. A sample settles it. Each client pings one server and each server one
+    client -- O(hosts) -- which is what `reachability_sample_size` bounds.
+
+    Set `simulation.full_pingall: true` to force the exhaustive sweep (the
+    original behaviour) when the O(hosts^2) result is actually wanted.
+    """
+    sim = cfg.get('simulation', {})
+    if sim.get('full_pingall'):
+        loss = net.pingAll()
+        logger.info("pingAll loss: %s%% (exhaustive, full_pingall: true)", loss)
+        return float(loss)
+
+    num_srv = sim.get('num_edge_nodes', 4)
+    num_iot = sim.get('num_iot_devices', 12)
+    servers = [net.get(f'srv{i}') for i in range(1, num_srv + 1)]
+    clients = [net.get(f'iot{i}') for i in range(1, num_iot + 1)]
+    if not servers or not clients:
+        return 0.0
+
+    cap = int(sim.get('reachability_sample_size', 2 * max(num_srv, num_iot)))
+    pairs = []
+    # Every client checked against one server, round-robin over servers, so each
+    # server appears at least once and no host is left unverified.
+    for i, c in enumerate(clients):
+        pairs.append((c, servers[i % len(servers)]))
+    # ...and the reverse direction once per server, since the flow rules are
+    # installed per-direction and a one-way path would otherwise read as fine.
+    for i, s in enumerate(servers):
+        pairs.append((s, clients[i % len(clients)]))
+    pairs = pairs[:cap]
+
+    t0 = time.time()
+    dropped = 0
+    for src, dst in pairs:
+        # -c1 -W1: one probe, one second. A reachable pair on this fabric
+        # answers in ~30 ms; anything at the 1 s bound is a genuine failure.
+        out = src.cmd(f'ping -c1 -W1 {dst.IP()}')
+        if ' 0% packet loss' not in out:
+            dropped += 1
+            logger.warning("reachability: %s -> %s did not answer", src.name, dst.name)
+    loss = 100.0 * dropped / len(pairs) if pairs else 0.0
+    logger.info(
+        "reachability loss: %.1f%% (%d/%d sampled pairs, %.1fs) -- set "
+        "simulation.full_pingall for the exhaustive O(hosts^2) sweep",
+        loss, len(pairs) - dropped, len(pairs), time.time() - t0,
+    )
+    return loss
+
+
 def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     """Start node_agent.py on every edge server and iot_client.py on every
     IoT host, backgrounded inside each Mininet host's own namespace. Reads
@@ -201,10 +264,41 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     )
 
 
+def _pause_controller_monitor(cfg: Dict[str, Any]) -> None:
+    """Ask the controller to stop polling before we kill the agents.
+
+    Without this the last one or two sweeps of a run find eight nodes that were
+    healthy a second ago and are now dead, score them anomaly 1.0 (correctly --
+    seen-then-dark is indistinguishable from failure) and quarantine the fleet.
+    The run's final recorded frame is then all-8-quarantined, which is the frame
+    anyone screenshots, on runs that actually served ~17k tasks cleanly.
+
+    Best-effort: a controller that is already gone, or predates the endpoint,
+    just means the old cosmetic artefact comes back. Never fatal to teardown.
+    """
+    ctrl = cfg.get('controller') or {}
+    host, port = ctrl.get('api_host'), ctrl.get('api_port')
+    if not host or not port:
+        return
+    try:
+        req = urllib.request.Request(
+            f'http://{host}:{port}/monitor/pause', data=b'{}',
+            headers={'Content-Type': 'application/json'}, method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=2.0):
+            logger.info("Controller monitor paused for teardown")
+    except Exception as exc:  # noqa: BLE001 -- teardown must not fail here
+        logger.warning(
+            "Could not pause the controller monitor (%s); the final frame may "
+            "show teardown unreachability as quarantine", exc,
+        )
+
+
 def _stop_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     """Explicitly kill backgrounded agent/client processes before net.stop()
     (mirrors traffic_gen.py's own `kill %iperf` cleanup) rather than relying
     on namespace teardown to reap them."""
+    _pause_controller_monitor(cfg)
     n_edge = cfg['simulation']['num_edge_nodes']
     n_iot = cfg['simulation']['num_iot_devices']
     for i in range(1, n_edge + 1):
@@ -277,8 +371,7 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         # nothing: pingAll's own reachability check is unaffected by them
         # running, and the switches are already up either way.
         _launch_trust_agents(net, cfg)
-        loss = net.pingAll()
-        logger.info("pingAll loss: %s%% (reachability check, agents already up)", loss)
+        loss = _sampled_reachability_check(net, cfg)
 
         duration = cfg['simulation']['duration_s']
         logger.info("Trust-aware demo running for %d seconds (Ctrl-C / exit to stop early)...", duration)

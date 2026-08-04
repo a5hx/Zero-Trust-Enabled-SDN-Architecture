@@ -1190,9 +1190,19 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # only ever wired into one of its two consumers.
         claimed_cpu = self.state.claimed_load(node_id)
         observed = self.state.observed_load(node_id)
+        # H compares these two as `|reported_cpu - cpu_usage|`, so they must be
+        # the same quantity. `observed_load` is residence time and the claim is
+        # service time (~6x apart, live run 6), which made H fall as
+        # 1 - 2*occupancy on perfectly honest nodes. Use the controller's
+        # service-time duty-cycle estimate when it has enough evidence, and fall
+        # back to observed_load only when it does not -- an imperfect H beats no
+        # H, and the fallback is what every pre-busy-seconds agent still gets.
+        expected = self.state.expected_duty_cycle(node_id)
+        honesty_reference = expected if expected is not None else observed
         upd = TrustUpdate(
             device_id=device_id, edge_node_id=node_id, task_status=status,
-            cpu_usage=observed, reported_cpu=claimed_cpu, latency_ms=latency_ms,
+            cpu_usage=honesty_reference, reported_cpu=claimed_cpu,
+            latency_ms=latency_ms,
         )
         # Timed for the blockchain-overhead NFR: `commit_count` before/after
         # tells us whether *this* report happened to trigger a block commit
@@ -1211,6 +1221,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'report', device=device_id, node=node_id, status=status,
             latency_ms=round(latency_ms, 2), trust=round(score, 4),
             claimed_cpu=round(claimed_cpu, 4), observed_load=round(observed, 4),
+            # Both sides of the H comparison, recorded so a run's honesty
+            # behaviour can be re-derived offline. `expected_duty` is None when
+            # the estimator abstained, and `honesty_reference` is what actually
+            # reached the trust formula -- keep both, since the gap between them
+            # is exactly what Defect 8 was invisible inside of.
+            expected_duty=None if expected is None else round(expected, 4),
+            honesty_reference=round(honesty_reference, 4),
             report_ms=round(report_ms, 4), committed=committed,
         )
         return score
@@ -1232,6 +1249,22 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py -- dashboard                            #
     # ------------------------------------------------------------------ #
+    def pause_monitor(self) -> bool:
+        """Stop the /status polling loop. Called by the harness immediately
+        before it kills the agents, so the fleet going away on purpose is not
+        recorded as eight simultaneous unreachability anomalies.
+
+        Idempotent, and one-way for the life of the process -- there is no
+        resume, because the only caller is teardown. Returns True if a monitor
+        was running to stop.
+        """
+        monitor = getattr(self, 'flow_monitor', None)
+        if monitor is None:
+            return False
+        logger.info("Monitor paused for teardown -- no further /status polls")
+        monitor.stop()
+        return True
+
     def topology_graph(self) -> Dict[str, Any]:
         """The node/link graph the dashboard draws.
 

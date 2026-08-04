@@ -38,6 +38,18 @@ _active_tasks = 0
 _recent_latencies_ms: list = []
 _LATENCY_WINDOW = 20
 
+# Cumulative seconds this process has spent *inside* /task doing real work.
+# Monotonic and never reset, so the controller can difference two polls and get
+# a duty cycle over exactly the window it chooses -- see TrustState.claimed_load.
+#
+# This exists because `active_tasks / concurrency` is an instantaneous sample of
+# a step function, and the controller's own occupancy estimate is an integral.
+# Comparing the two compares different quantities and taxes a busy honest node
+# (study Finding 6 / LIVE_RUN_8_40_3 Defect 8). A cumulative counter is the one
+# shape both sides can integrate identically.
+_busy_seconds_total = 0.0
+_agent_started_at = time.monotonic()
+
 
 def _burn_cpu_for_ms(duration_ms: float) -> None:
     """Spend roughly duration_ms of real CPU time hashing. Not a sleep — the
@@ -84,6 +96,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         with _state_lock:
             active = _active_tasks
+            busy_seconds = _busy_seconds_total
             latency_ms = (
                 sum(_recent_latencies_ms) / len(_recent_latencies_ms)
                 if _recent_latencies_ms else self.work_ms
@@ -91,6 +104,16 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         if self.malicious == 'sybil':
             cpu_load = self.claimed_cpu_lie  # the lie, regardless of real load
+            # Lie *consistently*. A fabricated cpu_load next to a truthful
+            # busy_seconds is an internal contradiction the controller could
+            # catch for free, which would make this a strictly weaker attacker
+            # than the one runs 1-6 were measured against. Advance the counter
+            # at exactly the duty cycle being claimed, so the two agree and the
+            # node still has to be caught on evidence it does not control (the
+            # latency tell, or busy-time-per-task against the fleet median).
+            uptime = time.monotonic() - _agent_started_at
+            busy_seconds = uptime * cpu_load * max(1, self.concurrency)
+
         else:
             cpu_load = min(1.0, active / max(1, self.concurrency))
 
@@ -100,6 +123,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             'latency_ms': round(latency_ms, 2),
             'active_tasks': active,
             'concurrency': self.concurrency,
+            # Cumulative, monotonic, in seconds. See _busy_seconds_total.
+            'busy_seconds': round(busy_seconds, 6),
         })
 
     def do_POST(self) -> None:
@@ -119,16 +144,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             time.sleep(3600)
             return
 
-        global _active_tasks
+        global _active_tasks, _busy_seconds_total
         with _state_lock:
             _active_tasks += 1
         start = time.monotonic()
         try:
             _burn_cpu_for_ms(self.work_ms)
         finally:
-            elapsed_ms = (time.monotonic() - start) * 1000.0
+            elapsed = time.monotonic() - start
+            elapsed_ms = elapsed * 1000.0
             with _state_lock:
                 _active_tasks -= 1
+                # Accrue *in-handler* time only. This is service time S, not the
+                # residence time L the controller sees end-to-end (L includes
+                # flow install, transit and the client's own report), which is
+                # exactly the distinction the honesty check needs.
+                _busy_seconds_total += elapsed
                 _recent_latencies_ms.append(elapsed_ms)
                 if len(_recent_latencies_ms) > _LATENCY_WINDOW:
                     _recent_latencies_ms.pop(0)

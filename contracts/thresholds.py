@@ -85,3 +85,18 @@ DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR = 3.0
 # bounded at one task per node per interval, so a genuinely bad node cannot be
 # handed meaningful traffic by this path.
 DEFAULT_PROBATION_INTERVAL_S = 5.0
+
+# HONESTY, BUSY-TIME FORM. Minimum span between the two busy-second samples
+# being differenced. Below this the quotient is dominated by poll jitter: at a
+# 1 s poll interval a 50 ms scheduling wobble is 5% of the window, which lands
+# straight on the duty cycle. Half a poll interval is the floor at which the
+# ratio is meaningful; under it, the estimator returns None and the check
+# abstains rather than guessing.
+DEFAULT_MIN_BUSY_SPAN_S = 0.5
+
+# Nodes that must have usable busy-time evidence before the fleet median
+# service time is trusted as a baseline. The median tolerates a minority of
+# liars (threat model: 3 malicious of 8), but only if enough honest nodes are
+# actually contributing -- with two samples the "median" is just an average of
+# whoever answered. See TrustState.fleet_service_time_s.
+DEFAULT_MIN_FLEET_SERVICE_SAMPLES = 3

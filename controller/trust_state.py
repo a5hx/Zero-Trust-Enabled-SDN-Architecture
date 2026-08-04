@@ -29,10 +29,14 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from blockchain.commit_backend import CommitBackend, LocalLedgerBackend
 from contracts.thresholds import (
     DEFAULT_ANOMALY_GATE, DEFAULT_ANOMALY_WARN,
-    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_PROBATION_INTERVAL_S,
+    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_MIN_BUSY_SPAN_S,
+    DEFAULT_MIN_FLEET_SERVICE_SAMPLES, DEFAULT_PROBATION_INTERVAL_S,
     DEFAULT_RATE_LIMIT_TRUST, DEFAULT_TASK_TIMEOUT_S,
     DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR,
 )
+
+_MIN_BUSY_SPAN_S = DEFAULT_MIN_BUSY_SPAN_S
+_MIN_FLEET_SAMPLES = DEFAULT_MIN_FLEET_SERVICE_SAMPLES
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import (
     DEFAULT_D_CHOICES, DEFAULT_EPSILON, DEFAULT_SELECTION_STRATEGY,
@@ -143,6 +147,22 @@ class TrustState:
         self._claimed_hist: Dict[str, Deque[Tuple[float, float]]] = {
             nid: deque() for nid in self.node_ids
         }
+        # Trailing (timestamp, cumulative_busy_seconds) from the agent's
+        # /status. The counter is monotonic, so differencing two samples gives
+        # the node's *duty cycle* over exactly the window we choose -- a time
+        # integral, the same shape as observed_load, which is the whole point.
+        # Empty when the agent predates the field; every consumer falls back.
+        self._busy_hist: Dict[str, Deque[Tuple[float, float]]] = {
+            nid: deque() for nid in self.node_ids
+        }
+        # Trailing (timestamp, cumulative_completions) counted by the controller
+        # itself. Pairs with _busy_hist to give busy-seconds-per-completed-task,
+        # i.e. the node's implied service time -- the quantity a liar has to
+        # distort and cannot hide, because the completion count is ours.
+        self._completions: Dict[str, int] = {nid: 0 for nid in self.node_ids}
+        self._completion_hist: Dict[str, Deque[Tuple[float, int]]] = {
+            nid: deque() for nid in self.node_ids
+        }
         self._latency_ms: Dict[str, float] = {nid: 50.0 for nid in self.node_ids}
         # Smoothed anomaly Ā(n) in [0, 1].
         self._anomaly: Dict[str, float] = {nid: 0.0 for nid in self.node_ids}
@@ -240,7 +260,10 @@ class TrustState:
     # ------------------------------------------------------------------ #
     # Telemetry ingestion                                                 #
     # ------------------------------------------------------------------ #
-    def report_claimed_status(self, node_id: str, cpu_load: float, measured_rtt_ms: float) -> None:
+    def report_claimed_status(
+        self, node_id: str, cpu_load: float, measured_rtt_ms: float,
+        busy_seconds: Optional[float] = None,
+    ) -> None:
         """Ingest one poll of a node's telemetry.
 
         Deliberate honesty asymmetry between the two values:
@@ -270,19 +293,47 @@ class TrustState:
             while len(hist) > 1 and hist[0][0] < cutoff:
                 hist.popleft()
 
+            if busy_seconds is not None:
+                bh = self._busy_hist.setdefault(node_id, deque())
+                # Monotonic by contract. A counter that goes *backwards* means
+                # the agent restarted (or is fabricating carelessly); drop the
+                # history rather than difference across the discontinuity and
+                # report a nonsense negative duty cycle.
+                if bh and float(busy_seconds) < bh[-1][1]:
+                    bh.clear()
+                bh.append((now, float(busy_seconds)))
+                while len(bh) > 1 and bh[0][0] < cutoff:
+                    bh.popleft()
+
     def get_claimed_cpu(self, node_id: str) -> float:
         with self._lock:
             return self._claimed_cpu.get(node_id, 0.5)
 
     def claimed_load(self, node_id: str) -> float:
-        """The node's self-reported CPU, time-averaged over the same window as
-        observed_load, so the honesty check compares like with like.
+        """The node's self-reported CPU as a *duty cycle* over load_window_s.
+
+        Preferred form, when the agent reports cumulative busy-seconds:
+
+            (B(t1) - B(t0)) / ((t1 - t0) * concurrency)
+
+        which is literally "fraction of available worker-time the node says it
+        spent working" -- a time integral of the same shape as observed_load,
+        and the only form that makes the honesty comparison dimensionally sound.
+
+        Falls back to time-averaging the instantaneous `cpu_load` samples for
+        agents that do not report busy-seconds. That fallback is *better than
+        sampling* but still not commensurable with a residence-time occupancy;
+        see LIVE_RUN_8_40_3 Defect 8 for why that distinction cost four runs.
 
         The raw claim stays available via get_claimed_cpu() and still drives the
         EdgeScore CPU term, where reacting to the latest reading is wanted --
-        it is only the *honesty* comparison that needs both sides smoothed.
+        it is only the *honesty* comparison that needs both sides integrated.
         """
         with self._lock:
+            duty = self._busy_duty_cycle_locked(node_id)
+            if duty is not None:
+                return duty
+
             hist = self._claimed_hist.get(node_id)
             if not hist:
                 return self._claimed_cpu.get(node_id, 0.5)
@@ -308,6 +359,125 @@ class TrustState:
             if weight <= 0:
                 return prev_v
             return max(0.0, min(1.0, total / weight))
+
+    # -- busy-time honesty: two integrals of the same quantity -------------- #
+    #
+    # The node reports service time S (in-handler seconds). The controller's
+    # observed_load() measures residence time L (dispatch -> report), which
+    # includes flow install, transit and the client's own reporting. L >> S --
+    # measured at ~6x in live run 6 -- so comparing a claim against
+    # observed_load taxes a busy honest node no matter how well either side is
+    # smoothed. These build the controller's own estimate in *service-time*
+    # units so both sides of the comparison are duty cycles.
+
+    def _busy_duty_cycle_locked(self, node_id: str) -> Optional[float]:
+        """Claimed duty cycle from the cumulative busy-second counter, or None
+        if the agent does not report it (or the window is too short to
+        difference meaningfully)."""
+        hist = self._busy_hist.get(node_id)
+        if not hist or len(hist) < 2:
+            return None
+        now = self._now()
+        target = now - self.load_window_s
+        t0, b0 = hist[0]
+        for ts, b in hist:
+            if ts > target:
+                break
+            t0, b0 = ts, b
+        t1, b1 = hist[-1]
+        span = t1 - t0
+        if span < _MIN_BUSY_SPAN_S:
+            return None
+        concurrency = max(1, self._concurrency.get(node_id, 4))
+        return max(0.0, min(1.0, (b1 - b0) / (span * concurrency)))
+
+    def _completion_rate_locked(self, node_id: str) -> Optional[Tuple[float, float]]:
+        """(completions per second, span) over load_window_s, or None."""
+        hist = self._completion_hist.get(node_id)
+        if not hist or len(hist) < 2:
+            return None
+        now = self._now()
+        target = now - self.load_window_s
+        t0, c0 = hist[0]
+        for ts, c in hist:
+            if ts > target:
+                break
+            t0, c0 = ts, c
+        t1, c1 = hist[-1]
+        span = t1 - t0
+        if span < _MIN_BUSY_SPAN_S:
+            return None
+        return (c1 - c0) / span, span
+
+    def implied_service_time_s(self, node_id: str) -> Optional[float]:
+        """Busy-seconds the node claims *per task the controller saw it finish*.
+
+        This is the quantity a liar has to distort: the numerator is the node's
+        own counter, the denominator is the controller's completion count. A
+        node that under-reports busy time while completing tasks at a normal
+        rate produces an implausibly small per-task service time, and that is
+        visible without trusting anything it said about its load.
+        """
+        with self._lock:
+            return self._implied_service_time_locked(node_id)
+
+    def _implied_service_time_locked(self, node_id: str) -> Optional[float]:
+        hist = self._busy_hist.get(node_id)
+        rate = self._completion_rate_locked(node_id)
+        if not hist or len(hist) < 2 or rate is None:
+            return None
+        completions_per_s, span = rate
+        if completions_per_s <= 0:
+            return None
+        duty = self._busy_duty_cycle_locked(node_id)
+        if duty is None:
+            return None
+        concurrency = max(1, self._concurrency.get(node_id, 4))
+        # busy_seconds/s = duty * concurrency; divide by tasks/s -> s per task.
+        return (duty * concurrency) / completions_per_s
+
+    def fleet_service_time_s(self) -> Optional[float]:
+        """Median implied service time across nodes that have enough data.
+
+        The median, not the mean, and for the same reason the latency tell uses
+        one: it survives a minority of liars. The threat model is 3 malicious of
+        8, so a statistic that needs >50% of the fleet to be honest is sound
+        here and its assumption is worth stating rather than hiding.
+        """
+        with self._lock:
+            return self._fleet_service_time_locked()
+
+    def _fleet_service_time_locked(self) -> Optional[float]:
+        vals = []
+        for nid in self.node_ids:
+            s = self._implied_service_time_locked(nid)
+            if s is not None and s > 0:
+                vals.append(s)
+        if len(vals) < _MIN_FLEET_SAMPLES:
+            return None
+        vals.sort()
+        mid = len(vals) // 2
+        if len(vals) % 2:
+            return vals[mid]
+        return (vals[mid - 1] + vals[mid]) / 2.0
+
+    def expected_duty_cycle(self, node_id: str) -> Optional[float]:
+        """What this node's duty cycle *should* be, in service-time units, from
+        quantities the controller owns: its own completion count for the node,
+        times the fleet's median per-task service time, over the window.
+
+        Returns None when there is not enough evidence, and None means "no
+        opinion" -- the honesty check must abstain rather than guess, the same
+        discipline stale-evidence abstention established in Defect 6.
+        """
+        with self._lock:
+            rate = self._completion_rate_locked(node_id)
+            fleet_s = self._fleet_service_time_locked()
+            if rate is None or fleet_s is None:
+                return None
+            completions_per_s, _span = rate
+            concurrency = max(1, self._concurrency.get(node_id, 4))
+            return max(0.0, min(1.0, completions_per_s * fleet_s / concurrency))
 
     def set_anomaly_raw(self, node_id: str, anomaly_raw: float) -> float:
         """EMA-smooth a 0/1 anomaly signal (deviation or drop detected this poll)
@@ -544,9 +714,23 @@ class TrustState:
             upd.anomaly_flag = self._anomaly.get(upd.edge_node_id, 0.0) >= self.anomaly_gate
             score = self.trust_calc.update(upd)
             self._pending_updates.append(upd)
+            now_c = self._now()
             self._recent_statuses.setdefault(
                 upd.edge_node_id, deque(maxlen=10)
-            ).append((self._now(), upd.task_status))
+            ).append((now_c, upd.task_status))
+            # Cumulative completions, counted by us. This is the denominator of
+            # implied_service_time_s -- the half of the honesty comparison the
+            # node cannot touch. Only successes count: a timeout means the node
+            # never finished, so charging it busy-time for one would understate
+            # its service time and make a slow node look honest.
+            if upd.task_status == 'success':
+                nid = upd.edge_node_id
+                self._completions[nid] = self._completions.get(nid, 0) + 1
+                ch = self._completion_hist.setdefault(nid, deque())
+                ch.append((now_c, self._completions[nid]))
+                cutoff_c = now_c - 2 * self.load_window_s
+                while len(ch) > 1 and ch[0][0] < cutoff_c:
+                    ch.popleft()
             if self._optimizer_enabled:
                 # Credit this outcome to the arm currently active, for the reward
                 # of the window it lands in (window-granularity attribution).

@@ -762,3 +762,158 @@ def test_trust_path_uses_the_windowed_claim_not_the_raw_one():
         f"({windowed:.4f}) -- honesty_delta is comparing an instant against an "
         f"integral again"
     )
+
+
+# ---------------------------------------------------------------------------
+# Busy-time honesty: comparing two integrals of the SAME quantity
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
+
+
+def _busy_fleet(clock, node_ids=('srv1', 'srv2', 'srv3', 'srv4')):
+    state = TrustState(node_ids=list(node_ids), time_source=clock)
+    for nid in node_ids:
+        state.set_concurrency(nid, 4)
+    return state
+
+
+def _drive_fleet(state, clock, specs, seconds, step=1.0):
+    """Drive every node in lockstep for `seconds`.
+
+    `specs` maps node_id -> (tasks_per_s, claimed_service_s). Each node reports
+    a cumulative busy-second counter of `completions * claimed_service_s`, and
+    the controller independently records the completions it saw. A *truthful*
+    node uses its real service time; a liar passes a smaller one, which is
+    exactly the fabrication the implied-service-time check has to catch.
+
+    All nodes report at the same instants and the clock advances once per step,
+    so every node's history spans the same window -- otherwise a node whose
+    samples all share one timestamp has zero span and the estimator (correctly)
+    abstains.
+    """
+    busy = {nid: 0.0 for nid in specs}
+    for _ in range(int(seconds / step)):
+        for nid, (tasks_per_s, service_s) in specs.items():
+            completions = int(tasks_per_s * step)
+            busy[nid] += completions * service_s
+            state.report_claimed_status(nid, 0.0, 30.0, busy_seconds=busy[nid])
+            for _ in range(completions):
+                state.record_task_outcome(TrustUpdate(
+                    device_id='iot1', edge_node_id=nid, task_status='success',
+                    cpu_usage=0.0, reported_cpu=0.0, latency_ms=90.0,
+                ))
+        clock.advance(step)
+    return busy
+
+
+def test_claimed_load_is_a_duty_cycle_not_an_instantaneous_sample():
+    """B(t1)-B(t0) over elapsed worker-seconds. 2 tasks/s x 0.015 s of work on
+    4 workers is a duty cycle of 0.0075, whatever the residence time is."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    _drive_fleet(state, clock, {'srv1': (2, 0.015)}, seconds=10)
+
+    duty = state.claimed_load('srv1')
+    assert abs(duty - (2 * 0.015 / 4)) < 0.002, (
+        f'duty cycle should be tasks/s * service_s / concurrency, got {duty}'
+    )
+
+
+def test_honest_busy_node_is_not_taxed_for_being_busy():
+    """The whole point of Defect 8's second layer.
+
+    The node truthfully reports service time; the controller's own estimate is
+    built from its completion count times the fleet median service time. Both
+    are duty cycles, so a *busy* honest node shows ~no deviation -- where the
+    old residence-time comparison produced |dev| ~= occupancy at every load
+    (dev/occ = 1.000 in every bin of live runs 5 and 6).
+    """
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    # A genuinely busy fleet: 20 tasks/s each, 15 ms of work, concurrency 4
+    # -> duty cycle 0.075. Residence time is irrelevant to both sides now.
+    _drive_fleet(state, clock, {
+        nid: (20, 0.015) for nid in ('srv1', 'srv2', 'srv3', 'srv4')
+    }, seconds=10)
+
+    claimed = state.claimed_load('srv1')
+    expected = state.expected_duty_cycle('srv1')
+    assert expected is not None, 'fleet has 4 reporting nodes; must have an opinion'
+    assert abs(claimed - expected) < 0.05, (
+        f'honest busy node still taxed: claimed duty {claimed:.4f} vs expected '
+        f'{expected:.4f} -- the two sides are not the same quantity'
+    )
+
+
+def test_sybil_under_reporting_busy_time_is_caught_by_implied_service_time():
+    """The attack the new comparison has to survive.
+
+    A liar can fabricate a busy-second counter as easily as a cpu_load. What it
+    cannot fabricate is how many tasks the *controller* saw it finish -- so
+    under-reporting busy time shows up as an implausibly small service time
+    against the fleet median.
+    """
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    # Three honest nodes at 0.100 s of work per task; srv1 completes just as
+    # many tasks but claims a tenth of the busy time for each.
+    _drive_fleet(state, clock, {
+        'srv1': (20, 0.010),
+        'srv2': (20, 0.100),
+        'srv3': (20, 0.100),
+        'srv4': (20, 0.100),
+    }, seconds=10)
+
+    claimed = state.claimed_load('srv1')
+    expected = state.expected_duty_cycle('srv1')
+    assert expected is not None
+    assert expected - claimed > 0.40, (
+        f'liar claimed duty {claimed:.3f} against an expected {expected:.3f}; '
+        f'deviation {expected - claimed:.3f} must clear the 0.40 honesty gate'
+    )
+    assert state.implied_service_time_s('srv1') < state.fleet_service_time_s()
+
+
+def test_duty_cycle_abstains_rather_than_guessing_without_evidence():
+    """No busy-second counter, too short a span, or too small a fleet -> None,
+    and callers fall back instead of inventing a comparison."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    assert state.expected_duty_cycle('srv1') is None, 'no data yet'
+
+    # One sample is not a difference.
+    state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=1.0)
+    assert state.claimed_load('srv1') is not None  # falls back, does not crash
+    assert state.expected_duty_cycle('srv1') is None
+
+    # An agent that never sends busy_seconds keeps the old averaged-claim path.
+    clock.advance(1.0)
+    state.report_claimed_status('srv2', 0.25, 30.0)
+    clock.advance(1.0)
+    state.report_claimed_status('srv2', 0.25, 30.0)
+    assert abs(state.claimed_load('srv2') - 0.25) < 0.01
+
+
+def test_busy_counter_going_backwards_resets_instead_of_going_negative():
+    """A restarted agent replays from zero. Differencing across that step would
+    hand the honesty check a negative duty cycle."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    for b in (10.0, 20.0, 30.0):
+        state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=b)
+        clock.advance(1.0)
+    state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=0.5)
+    clock.advance(1.0)
+    state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=1.0)
+
+    duty = state.claimed_load('srv1')
+    assert duty >= 0.0, f'duty cycle went negative across an agent restart: {duty}'

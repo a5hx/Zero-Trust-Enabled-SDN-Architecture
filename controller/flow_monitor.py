@@ -281,36 +281,59 @@ class FlowMonitor:
                 )
                 concurrency = status.get('concurrency')
 
-                self.state.report_claimed_status(node_id, claimed_cpu, latency_ms)
+                raw_busy = status.get('busy_seconds')
+                busy_seconds = (
+                    float(raw_busy) if isinstance(raw_busy, (int, float)) else None
+                )
+                self.state.report_claimed_status(
+                    node_id, claimed_cpu, latency_ms, busy_seconds=busy_seconds,
+                )
                 if concurrency:
                     self.state.set_concurrency(node_id, int(concurrency))
 
-                # Both sides averaged over the same window. The node samples
-                # active/concurrency the instant its handler runs, so its claim
-                # is a quantised step function; the controller's estimate is an
-                # integral. Comparing one against the other is comparing two
-                # different quantities, and it false-positives in whichever
-                # direction happens to be ahead -- a node caught mid-burst reads
-                # claimed 0.50 against observed 0.03, and one caught idle reads
-                # claimed 0.00 against observed 0.62. Neither is dishonesty.
+                # Duty cycle against duty cycle -- both sides "fraction of
+                # available worker-time spent working", integrated over the same
+                # window. The node's side comes from its cumulative busy-second
+                # counter; the controller's from its own completion count times
+                # the fleet median service time.
+                #
+                # What this replaces, and why: observed_load() measures
+                # *residence* time (dispatch -> report, including flow install,
+                # transit and the client's own reporting) while the node can only
+                # ever measure *service* time. Live run 6 put that ratio at ~6x,
+                # so |claimed - observed_load| was ~= occupancy at every load --
+                # a standing tax on being busy rather than a dishonesty signal.
+                # See LIVE_RUN_8_40_3 Defect 8.
                 observed = self.state.observed_load(node_id)
                 claimed_avg = self.state.claimed_load(node_id)
+                expected = self.state.expected_duty_cycle(node_id)
+                # Fall back to observed_load when the duty-cycle estimate has no
+                # opinion (agent predates busy_seconds, window too short, or too
+                # few honest nodes for a fleet median). That fallback is the old
+                # residence-time comparison, tax and all -- but *abstaining*
+                # instead would delete the sybil check outright for exactly the
+                # node that refuses to report busy time, which is a detection
+                # hole an attacker controls. Imperfect beats absent; the
+                # dimensionally-sound path is used whenever it is available.
+                reference = expected if expected is not None else observed
                 # Only cross-check a figure the node actually sent. Falling back
                 # to 0.5 and then comparing against that accuses the node of
                 # lying about a value it never claimed -- and the invented 0.5
                 # against an idle observed 0.0 is itself a 0.50 deviation, over
                 # the threshold before the node has done anything at all.
-                deviation = abs(claimed_avg - observed) if has_claim else 0.0
+                deviation = abs(claimed_avg - reference) if has_claim else 0.0
                 if has_claim and deviation > self.honesty_deviation_threshold:
+                    basis = 'expected duty' if expected is not None else 'observed'
                     logger.warning(
-                        "%s: honesty deviation %.3f (claimed=%.3f observed=%.3f) > %.3f",
-                        node_id, deviation, claimed_avg, observed,
+                        "%s: honesty deviation %.3f (claimed=%.3f %s=%.3f) > %.3f",
+                        node_id, deviation, claimed_avg, basis, reference,
                         self.honesty_deviation_threshold,
                     )
                     anomaly_raw = 1.0
                     reasons.append(
-                        f'CPU honesty: |claimed {claimed_avg:.2f} - observed '
-                        f'{observed:.2f}| = {deviation:.2f} > {self.honesty_deviation_threshold:.2f}'
+                        f'CPU honesty: |claimed {claimed_avg:.2f} - {basis} '
+                        f'{reference:.2f}| = {deviation:.2f} > '
+                        f'{self.honesty_deviation_threshold:.2f}'
                     )
 
                 # Load-independent Sybil tell (see __init__): claims idle but is

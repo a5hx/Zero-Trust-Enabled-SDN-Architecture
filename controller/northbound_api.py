@@ -158,6 +158,20 @@ def _make_handler(app: Any, state: TrustState):
                     self._handle_report(body)
                 elif path == '/register':
                     self._handle_register(body)
+                elif path == '/monitor/pause':
+                    # Teardown ordering, not a security control. The harness
+                    # kills the agents at end of run while the controller is
+                    # still polling every second, so the last two sweeps score
+                    # eight live-until-a-moment-ago nodes as unreachable and the
+                    # final recorded frame shows the whole fleet quarantined --
+                    # a run that served 16,586 tasks cleanly ends looking like a
+                    # collapse (live runs 5 and 6, t=1719s / t=1770s).
+                    #
+                    # This does NOT relax "seen-then-dark is anomalous", which
+                    # is a real Sprint 1 finding: polling stops entirely, so no
+                    # verdict is softened -- there is simply no sweep after the
+                    # operator says the fleet is going away on purpose.
+                    self._write_json(200, {'paused': app.pause_monitor()})
                 else:
                     self._write_json(404, {'error': 'not found'})
             except KeyError as exc:

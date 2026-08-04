@@ -309,19 +309,33 @@ component.
       `test_trust_path_uses_the_windowed_claim_not_the_raw_one` (fails
       `0.5 < 0.1` against the old line). 326 tests green. **Needs run 6 to
       confirm live.**
-- [ ] **Teardown quarantines all 8 nodes (cosmetic, but fix it).** `run_demo.py`
-      kills the agents while the controller is still polling, so 16 `/status
-      unreachable` anomalies land in the last 2s and the final `node_status` —
-      the frame anyone would screenshot — shows all 8 quarantined at anomaly
-      0.98–1.00. Every honest node was serving normally until t=1,717.9s. Stop
-      the monitor (or mark teardown in the recording) before stopping agents.
-- [ ] **`pingAll` costs 82% of the run.** `net.pingAll()` sits at
-      `simulation/topology.py:280`, between agent launch and the
-      `time.sleep(duration)` at line 294, so its cost is *additive* to
-      `duration_s`: run 5 was configured for 300s and took 1,720s, ~1,415s of
-      it the 2,352-ping sweep. Not a correctness problem (first route at
-      t=5.6s, service flat throughout) but it makes every live run 5.7× longer
-      than it needs to be. Sample reachability, or skip it in `trust_mode`.
+- [x] **Live run 6 done (2026-08-02).** Confirmed the Defect 8 one-liner worked
+      *and* was insufficient: on the `report` events, claimed-non-zero reaching
+      H went 0.47% → 4.16% and mean |dev| 0.0804 → 0.0701, but **`dev/occ`
+      stayed ~1.000**. Time-averaging a series that is genuinely ~0 still gives
+      ~0. Everything run 5 won held or improved (0 denials, 99.89% success,
+      Jain 0.9986, latency tell 2,254 firings with zero on honest nodes).
+- [x] **Defect 8, second layer — busy-time honesty (2026-08-03).** The node can
+      only measure *service* time S; `observed_load` measures *residence* time L
+      (~1:6 in run 6). Agent now reports cumulative `busy_seconds`; the
+      controller derives `claimed_duty` by differencing it and `expected_duty`
+      from its own completion count × the fleet median service time. Both sides
+      are duty cycles, so the comparison is finally dimensionally sound — and
+      under-reporting busy time now shows as an implausible implied service
+      time, a *stronger* sybil tell than the one it replaces. Abstains (falls
+      back, never skips) without enough evidence. 338 tests green.
+- [x] **Teardown no longer quarantines the fleet.** `topology.py` POSTs
+      `/monitor/pause` before killing agents. Does **not** weaken
+      "seen-then-dark is anomalous" — polling stops entirely rather than any
+      verdict being softened.
+- [x] **`pingAll` sampled.** `_sampled_reachability_check` probes O(hosts)
+      pairs instead of 2,352; `simulation.full_pingall: true` restores the
+      exhaustive sweep. Should cut a run from ~29 min to ~5–6.
+- [ ] **Live run 7 — confirms all four of the above.** Expected: mean |dev|
+      0.0701 → ~0, `h_raw` 0.86 → ~1.0, `dev/occ` finally stops tracking
+      occupancy, final frame no longer all-quarantined, run wall-clock ~6 min.
+      The `report` events now carry `expected_duty` and `honesty_reference`, so
+      it is checkable straight from the recording.
 
 Note the evaluation harness already defaults to 8 edge nodes
 (`config/params.yaml`), so scale is already proven *statistically* — this step

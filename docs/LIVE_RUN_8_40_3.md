@@ -666,3 +666,85 @@ real `handle_client_report` and fails with `0.5 < 0.1` against the old line.
 **Not yet confirmed live** — needs a run 6. The expected signature: trust on
 busy honest nodes stops drifting down with occupancy, and mean ΔT per poll
 stops going negative in the modal 0.05–0.10 occupancy bin (run 5: −0.00323).
+
+---
+
+## Defect 8, second layer — the two sides were never the same quantity
+
+Run 6 (2026-08-02) confirmed the one-line fix worked *and* that it was not
+enough. Measured on the `report` events, which carry the value that actually
+reaches `honesty_delta`:
+
+| | run 5 (before) | run 6 (after one-line fix) |
+|---|---|---|
+| claimed non-zero reaching H | 0.47% | **4.16%** |
+| mean \|deviation\| | 0.0804 | **0.0701** |
+| mean `h_raw` | 0.8392 | **0.8598** |
+| mean ΔT, modal 0.05–0.10 bin | −0.00323 | **−0.00201** |
+| **`dev/occ`** | ~1.000 | **~1.000 — unchanged** |
+
+Time-averaging did exactly what it was built to do (8.8× more non-zero claim
+reaching the formula, 13% off the tax) and `dev/occ` did not move, because
+**time-averaging a series that is genuinely ~0 still gives ~0.**
+
+The residual was never a wiring bug. The node can only measure *service* time S
+— seconds inside its `/task` handler. `observed_load()` measures *residence*
+time L — dispatch to report, including flow install, transit and the client's
+own reporting. Run 6 put S/L at roughly 1:6. No smoothing closes a gap between
+two different quantities.
+
+### The fix: both sides become duty cycles
+
+The agent now reports **`busy_seconds`**, a cumulative monotonic counter of
+in-handler time. Differencing two polls gives a duty cycle over exactly the
+controller's window:
+
+```
+claimed_duty  = (B(t1) - B(t0)) / ((t1 - t0) * concurrency)
+expected_duty = completions_per_s * fleet_median_service_time / concurrency
+```
+
+Both are "fraction of available worker-time spent working". The controller owns
+the completion count, so the honesty check no longer needs to trust anything
+the node said about its load — and a node that under-reports busy time while
+completing tasks normally shows an implausibly small implied service time
+(`busy_seconds / completions`) against the fleet median. That is a *stronger*
+sybil tell than the one it replaces, and it uses the median for the same reason
+the latency tell does: it survives the 3-of-8 threat model.
+
+Three design points worth not simplifying away:
+
+- **The sybil fabricates `busy_seconds` consistently** with its `cpu_load` lie
+  (`node_agent.py`). A liar that reported truthful busy time next to a false
+  load would be caught by a trivial internal contradiction, making it a weaker
+  attacker than the one runs 1–6 were measured against.
+- **The estimator abstains** (returns `None`) when the span is under
+  `DEFAULT_MIN_BUSY_SPAN_S` or fewer than `DEFAULT_MIN_FLEET_SERVICE_SAMPLES`
+  nodes have usable evidence — poll jitter otherwise lands straight on the
+  quotient.
+- **Abstention falls back, it does not skip the check.** The first cut abstained
+  outright and deleted sybil detection for any agent that simply declines to
+  report `busy_seconds` — a hole the attacker controls. Caught by
+  `test_sybil_liar_deviation_triggers_anomaly_and_quarantine`. The fallback is
+  the old residence-time comparison: imperfect, but never absent.
+
+Pinned by five tests in `tests/test_trust_state.py`, notably
+`test_honest_busy_node_is_not_taxed_for_being_busy` and
+`test_sybil_under_reporting_busy_time_is_caught_by_implied_service_time`.
+
+**Prediction for run 7:** mean |deviation| falls from 0.0701 to near zero,
+`h_raw` rises from 0.86 toward 1.0, and `dev/occ` finally stops tracking
+occupancy. The `report` events now carry `expected_duty` and
+`honesty_reference` so this is checkable directly from the recording.
+
+## Two harness items, fixed in the same batch
+
+- **Teardown no longer quarantines the fleet.** `topology.py` POSTs
+  `/monitor/pause` before killing agents, so the last sweeps do not score eight
+  just-killed nodes as unreachable. This does **not** weaken "seen-then-dark is
+  anomalous" — polling stops entirely rather than any verdict being softened.
+  Best-effort: an already-dead controller just restores the old artefact.
+- **`pingAll` is sampled.** `_sampled_reachability_check` probes O(hosts)
+  pairs — every client against a server, every server against a client — rather
+  than all 2,352. `simulation.full_pingall: true` restores the exhaustive
+  sweep. Run 7 should take roughly 5–6 minutes instead of 29.

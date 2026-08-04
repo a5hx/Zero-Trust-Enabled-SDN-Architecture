@@ -130,3 +130,116 @@ class TestMainConfigResolution:
         run_demo.main()
         assert captured['duration'] == 120
         assert captured['attack'] == 'both'
+
+
+class _FakeHost:
+    def __init__(self, name, ip, loss_to=()):
+        self.name = name
+        self._ip = ip
+        self._loss_to = set(loss_to)
+        self.pings = []
+
+    def IP(self):
+        return self._ip
+
+    def cmd(self, c):
+        target = c.rsplit(' ', 1)[-1]
+        self.pings.append(target)
+        if target in self._loss_to:
+            return '1 packets transmitted, 0 received, 100% packet loss'
+        return '1 packets transmitted, 1 received, 0% packet loss'
+
+
+class _FakeNet:
+    def __init__(self, n_srv, n_iot, loss_to=()):
+        self.hosts = {}
+        for i in range(1, n_srv + 1):
+            self.hosts[f'srv{i}'] = _FakeHost(f'srv{i}', f'10.0.1.{i}', loss_to)
+        for j in range(1, n_iot + 1):
+            self.hosts[f'iot{j}'] = _FakeHost(f'iot{j}', f'10.0.0.{j}', loss_to)
+        self.pingall_calls = 0
+
+    def get(self, name):
+        return self.hosts[name]
+
+    def pingAll(self):
+        self.pingall_calls += 1
+        return 0.0
+
+
+def _cfg(n_srv, n_iot, **extra):
+    sim = {'num_edge_nodes': n_srv, 'num_iot_devices': n_iot}
+    sim.update(extra)
+    return {'simulation': sim}
+
+
+class TestSampledReachability:
+    """pingAll is O(hosts^2) and, since Defect 1's fix put it after agent
+    launch, it runs against the live workload: ~1,415 s of a 1,720 s run at
+    8/40/3. The sample has to stay O(hosts) while still touching every host."""
+
+    def test_probe_count_is_linear_not_quadratic(self):
+        from simulation.topology import _sampled_reachability_check
+        net = _FakeNet(8, 40)
+        _sampled_reachability_check(net, _cfg(8, 40))
+        probes = sum(len(h.pings) for h in net.hosts.values())
+        assert probes <= 2 * 48, f'{probes} probes is not O(hosts)'
+        assert probes < 2352 / 10, 'must be far cheaper than the 2,352-ping sweep'
+        assert net.pingall_calls == 0
+
+    def test_every_host_is_covered_in_at_least_one_direction(self):
+        from simulation.topology import _sampled_reachability_check
+        net = _FakeNet(8, 40)
+        _sampled_reachability_check(net, _cfg(8, 40))
+        sources = {n for n, h in net.hosts.items() if h.pings}
+        targets = {t for h in net.hosts.values() for t in h.pings}
+        for j in range(1, 41):
+            assert f'iot{j}' in sources, f'iot{j} never probed anything'
+        for i in range(1, 9):
+            assert f'srv{i}' in sources, f'srv{i} never probed anything'
+            assert f'10.0.1.{i}' in targets, f'srv{i} was never a target'
+
+    def test_reports_loss_when_a_pair_does_not_answer(self):
+        from simulation.topology import _sampled_reachability_check
+        net = _FakeNet(4, 8, loss_to={'10.0.1.1'})
+        loss = _sampled_reachability_check(net, _cfg(4, 8))
+        assert loss > 0.0, 'a dead server must show up as loss, not be sampled away'
+
+    def test_full_pingall_opt_in_restores_the_exhaustive_sweep(self):
+        from simulation.topology import _sampled_reachability_check
+        net = _FakeNet(8, 40)
+        _sampled_reachability_check(net, _cfg(8, 40, full_pingall=True))
+        assert net.pingall_calls == 1
+        assert sum(len(h.pings) for h in net.hosts.values()) == 0
+
+
+class TestTeardownPausesTheMonitor:
+    """Runs 5 and 6 both ended with all 8 nodes quarantined in the final frame,
+    purely because the harness kills agents while the controller still polls."""
+
+    def test_pause_is_requested_before_agents_are_killed(self, monkeypatch):
+        import simulation.topology as topo
+        order = []
+
+        def _fake_pause(cfg):
+            order.append('pause')
+
+        net = _FakeNet(2, 2)
+        for h in net.hosts.values():
+            h.cmd = lambda c, _h=h: order.append(f'kill:{_h.name}')
+        monkeypatch.setattr(topo, '_pause_controller_monitor', _fake_pause)
+        topo._stop_trust_agents(net, _cfg(2, 2))
+
+        assert order[0] == 'pause', f'monitor must pause first, got {order}'
+        assert any(o.startswith('kill:') for o in order)
+
+    def test_teardown_survives_an_unreachable_controller(self):
+        import simulation.topology as topo
+        # Nothing listening on this port -- must warn, not raise.
+        topo._pause_controller_monitor(
+            {'controller': {'api_host': '127.0.0.1', 'api_port': 9}}
+        )
+
+    def test_no_controller_block_is_a_no_op(self):
+        import simulation.topology as topo
+        topo._pause_controller_monitor({'simulation': {}})
