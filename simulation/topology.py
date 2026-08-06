@@ -200,9 +200,11 @@ def _sampled_reachability_check(net: Any, cfg: Dict[str, Any]) -> float:
 def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     """Start node_agent.py on every edge server and iot_client.py on every
     IoT host, backgrounded inside each Mininet host's own namespace. Reads
-    --malicious from cfg['simulation']['malicious_edge_nodes'] (delayed
-    onset via that list's start_s is not implemented by node_agent.py --
-    malicious nodes misbehave from the moment they start)."""
+    --malicious from cfg['simulation']['malicious_edge_nodes'], including
+    each entry's optional start_s (delayed onset -- the node behaves
+    honestly until t+start_s, then arms; see node_agent.py's
+    --malicious-start-s). Omitted or 0 arms immediately, matching the old
+    behavior."""
     Path('logs').mkdir(exist_ok=True)
 
     n_edge = cfg['simulation']['num_edge_nodes']
@@ -221,13 +223,18 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         srv = net.get(node_id)
         mal = mal_by_node.get(node_id)
         attack = mal['attack'] if mal else 'none'
+        start_s = float(mal.get('start_s', 0.0)) if mal else 0.0
         cmd = (
             f'python3 -u -m simulation.node_agent --node-id {node_id} '
             f'--port {agent_port} --work-ms {work_ms} --malicious {attack} '
+            f'--malicious-start-s {start_s} '
             f'> logs/{node_id}_agent.log 2>&1 &'
         )
         srv.cmd(cmd)
-        logger.info("Started node_agent on %s (malicious=%s)", node_id, attack)
+        logger.info(
+            "Started node_agent on %s (malicious=%s, start_s=%.1f)",
+            node_id, attack, start_s,
+        )
 
     # Device authentication (Sprint 2). Legit devices get the shared key from
     # the config's security block; devices named in malicious_iot_devices get a

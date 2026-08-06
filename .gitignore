@@ -13,3 +13,7 @@ build/
 
 # Local-only WSL helper scripts (machine-specific, not shared)
 scripts/
+
+# Personal working explainer of what changed since the UCB1 demo (3de1b1b).
+# Notes-to-self, not a project artifact.
+explain.md
