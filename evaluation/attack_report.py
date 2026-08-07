@@ -125,7 +125,7 @@ def ground_truth(events: Sequence[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]
     """
     truth: Dict[str, Tuple[str, str]] = {}
     for ev in events:
-        if ev.get('event') != 'topology':
+        if ev.get('type') != 'topology':
             continue
         for node in ev.get('graph', {}).get('nodes', []):
             kind = node.get('kind')
@@ -150,7 +150,7 @@ def onset_times(events: Sequence[Dict[str, Any]]) -> Dict[str, float]:
     """
     onsets: Dict[str, float] = {}
     for ev in events:
-        if ev.get('event') != 'topology':
+        if ev.get('type') != 'topology':
             continue
         for node in ev.get('graph', {}).get('nodes', []):
             if 'attack_start_s' in node:
@@ -161,7 +161,7 @@ def onset_times(events: Sequence[Dict[str, Any]]) -> Dict[str, float]:
 
 def _run_start(events: Sequence[Dict[str, Any]]) -> float:
     for ev in events:
-        t = ev.get('t')
+        t = ev.get('ts')
         if isinstance(t, (int, float)):
             return float(t)
     return 0.0
@@ -179,7 +179,7 @@ def node_cycles(
     pending: Dict[str, Dict[str, float]] = {}
 
     for ev in events:
-        etype = ev.get('event')
+        etype = ev.get('type')
         if etype == 'anomaly':
             node = ev.get('node')
             if node in windows:
@@ -191,7 +191,7 @@ def node_cycles(
                 signals = ev.get('signals')
                 pending[node] = dict(signals) if signals else {'_unstructured': 1.0}
         elif etype == 'node_status':
-            t = float(ev.get('t', 0.0))
+            t = float(ev.get('ts', 0.0))
             for node in windows:
                 windows[node].append(Observation(t, pending.get(node, {})))
             pending.clear()
@@ -220,8 +220,8 @@ def client_observations(
         windows.setdefault(subject, []).append(Observation(t, signals))
 
     for ev in events:
-        etype = ev.get('event')
-        t = float(ev.get('t', 0.0))
+        etype = ev.get('type')
+        t = float(ev.get('ts', 0.0))
         if etype == 'flood':
             client = ev.get('client_ip')
             if client:
@@ -251,7 +251,7 @@ def subject_aliases(events: Sequence[Dict[str, Any]]) -> Dict[str, str]:
     """
     alias: Dict[str, str] = {}
     for ev in events:
-        if ev.get('event') != 'topology':
+        if ev.get('type') != 'topology':
             continue
         for node in ev.get('graph', {}).get('nodes', []):
             if node.get('kind') == 'iot' and node.get('ip'):

@@ -51,7 +51,7 @@ def topology_event(servers, iots=()):
          'attack': a, 'attack_start_s': s}
         for i, (n, a, s) in enumerate(iots)
     ]
-    return {'t': T0, 'event': 'topology', 'graph': {'nodes': nodes, 'links': []}}
+    return {'ts': T0, 'type': 'topology', 'graph': {'nodes': nodes, 'links': []}}
 
 
 class TestGroundTruth(unittest.TestCase):
@@ -77,17 +77,17 @@ class TestGroundTruth(unittest.TestCase):
         self.assertEqual(subject_aliases(events), {'10.0.2.1': 'iot1'})
 
     def test_no_topology_event_yields_no_ground_truth(self):
-        self.assertEqual(ground_truth([{'t': T0, 'event': 'route'}]), {})
+        self.assertEqual(ground_truth([{'ts': T0, 'type': 'route'}]), {})
 
 
 class TestCycleReconstruction(unittest.TestCase):
     def test_node_status_supplies_the_clean_cycles(self):
         events = [
-            {'t': T0 + 0.1, 'event': 'anomaly', 'node': 'srv1',
+            {'ts': T0 + 0.1, 'type': 'anomaly', 'node': 'srv1',
              'reasons': ['x'], 'signals': {SIG_LATENCY_TELL: 6.0}},
-            {'t': T0 + 0.5, 'event': 'node_status', 'nodes': {}},
-            {'t': T0 + 1.5, 'event': 'node_status', 'nodes': {}},
-            {'t': T0 + 2.5, 'event': 'node_status', 'nodes': {}},
+            {'ts': T0 + 0.5, 'type': 'node_status', 'nodes': {}},
+            {'ts': T0 + 1.5, 'type': 'node_status', 'nodes': {}},
+            {'ts': T0 + 2.5, 'type': 'node_status', 'nodes': {}},
         ]
         windows = node_cycles(events, ['srv1'])
         self.assertEqual(len(windows['srv1']), 3)
@@ -99,10 +99,10 @@ class TestCycleReconstruction(unittest.TestCase):
 
     def test_signals_do_not_leak_across_cycles(self):
         events = [
-            {'t': T0, 'event': 'anomaly', 'node': 'srv1', 'reasons': [],
+            {'ts': T0, 'type': 'anomaly', 'node': 'srv1', 'reasons': [],
              'signals': {SIG_PACKET_DROP: 1.0}},
-            {'t': T0 + 0.5, 'event': 'node_status', 'nodes': {}},
-            {'t': T0 + 1.5, 'event': 'node_status', 'nodes': {}},
+            {'ts': T0 + 0.5, 'type': 'node_status', 'nodes': {}},
+            {'ts': T0 + 1.5, 'type': 'node_status', 'nodes': {}},
         ]
         windows = node_cycles(events, ['srv1'])
         self.assertEqual(windows['srv1'][1].signals, {})
@@ -112,18 +112,18 @@ class TestCycleReconstruction(unittest.TestCase):
         # detections silently downgraded to clean cycles -- that is the one
         # direction of error this report must never make quietly.
         events = [
-            {'t': T0, 'event': 'anomaly', 'node': 'srv1', 'reasons': ['prose only']},
-            {'t': T0 + 0.5, 'event': 'node_status', 'nodes': {}},
+            {'ts': T0, 'type': 'anomaly', 'node': 'srv1', 'reasons': ['prose only']},
+            {'ts': T0 + 0.5, 'type': 'node_status', 'nodes': {}},
         ]
         windows = node_cycles(events, ['srv1'])
         self.assertTrue(windows['srv1'][0].signals)
 
     def test_client_observations_split_by_signal_kind(self):
         events = [
-            {'t': T0, 'event': 'flood', 'client_ip': '10.0.2.1', 'ratio': 40.0},
-            {'t': T0 + 1, 'event': 'auth_denied', 'device_id': 'iot2',
+            {'ts': T0, 'type': 'flood', 'client_ip': '10.0.2.1', 'ratio': 40.0},
+            {'ts': T0 + 1, 'type': 'auth_denied', 'device_id': 'iot2',
              'source_ip': '10.0.2.9', 'kind': AUTH_KIND_IP_PIN},
-            {'t': T0 + 2, 'event': 'auth_denied', 'device_id': 'iot3',
+            {'ts': T0 + 2, 'type': 'auth_denied', 'device_id': 'iot3',
              'source_ip': '10.0.2.3', 'kind': AUTH_KIND_BAD_RESPONSE},
         ]
         obs = client_observations(events)
@@ -151,21 +151,21 @@ def _build_recording():
         [('srv1', 'sybil', 5.0), ('srv2', 'drop', 5.0), ('srv3', 'none', 0.0)],
         [('iot1', 'flood', 5.0), ('iot2', 'spoof', 2.0), ('iot3', 'none', 0.0)],
     )]
-    events.append({'t': T0 + 2.2, 'event': 'auth_denied', 'device_id': 'iot2',
+    events.append({'ts': T0 + 2.2, 'type': 'auth_denied', 'device_id': 'iot2',
                    'source_ip': '10.0.2.9', 'kind': AUTH_KIND_IP_PIN,
                    'reason': 'pinned elsewhere'})
-    events.append({'t': T0 + 6.0, 'event': 'flood', 'client_ip': '10.0.2.1',
+    events.append({'ts': T0 + 6.0, 'type': 'flood', 'client_ip': '10.0.2.1',
                    'ratio': 40.0, 'rate_hz': 40.0})
     for c in range(40):
         t = T0 + c
         if c >= 5:
-            events.append({'t': t, 'event': 'anomaly', 'node': 'srv1',
+            events.append({'ts': t, 'type': 'anomaly', 'node': 'srv1',
                            'reasons': ['latency tell'],
                            'signals': {SIG_LATENCY_TELL: 6.0}})
-            events.append({'t': t, 'event': 'anomaly', 'node': 'srv2',
+            events.append({'ts': t, 'type': 'anomaly', 'node': 'srv2',
                            'reasons': ['packet-drop tell'],
                            'signals': {SIG_PACKET_DROP: 1.0}})
-        events.append({'t': t + 0.5, 'event': 'node_status', 'nodes': {}})
+        events.append({'ts': t + 0.5, 'type': 'node_status', 'nodes': {}})
     return events
 
 
@@ -217,10 +217,10 @@ class TestScoreRun(unittest.TestCase):
         for c, bad in enumerate(pattern):
             t = T0 + c
             if bad:
-                events.append({'t': t, 'event': 'anomaly', 'node': 'srv1',
+                events.append({'ts': t, 'type': 'anomaly', 'node': 'srv1',
                                'reasons': ['latency tell'],
                                'signals': {SIG_LATENCY_TELL: 6.0}})
-            events.append({'t': t + 0.5, 'event': 'node_status', 'nodes': {}})
+            events.append({'ts': t + 0.5, 'type': 'node_status', 'nodes': {}})
         # Window sized between the two constraints: wide enough to span a full
         # 12-cycle on-off period (below ~2x the period it degrades to a sybil
         # verdict -- see DEFAULT_WINDOW_CYCLES and the test below), but
@@ -253,10 +253,10 @@ class TestOnOffWindowConstraint(unittest.TestCase):
         for c, bad in enumerate(([True] * 6 + [False] * 6) * 6):
             t = T0 + c
             if bad:
-                events.append({'t': t, 'event': 'anomaly', 'node': 'srv1',
+                events.append({'ts': t, 'type': 'anomaly', 'node': 'srv1',
                                'reasons': ['latency tell'],
                                'signals': {SIG_LATENCY_TELL: 6.0}})
-            events.append({'t': t + 0.5, 'event': 'node_status', 'nodes': {}})
+            events.append({'ts': t + 0.5, 'type': 'node_status', 'nodes': {}})
         return score_run(events, window_cycles=window_cycles)[0].predicted
 
     def test_window_spanning_the_period_recovers_onoff(self):
@@ -336,7 +336,7 @@ class TestCli(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'events.jsonl'
-            path.write_text(json.dumps({'t': T0, 'event': 'route'}) + '\n')
+            path.write_text(json.dumps({'ts': T0, 'type': 'route'}) + '\n')
             self.assertEqual(main([str(path)]), 1)
 
 
@@ -389,7 +389,7 @@ class TestTopologyGroundTruthPlumbing(unittest.TestCase):
             self.skipTest('os-ken not installed')
 
     def test_edge_node_attacks_and_onsets_reach_the_scorer(self):
-        events = [{'t': T0, 'event': 'topology', 'graph': self._graph()}]
+        events = [{'ts': T0, 'type': 'topology', 'graph': self._graph()}]
         truth = ground_truth(events)
         self.assertEqual(truth['srv1'], ('node', ATTACK_SYBIL))
         self.assertEqual(truth['srv2'], ('node', ATTACK_BLACKHOLE))
@@ -409,7 +409,7 @@ class TestTopologyGroundTruthPlumbing(unittest.TestCase):
             },
             security_extra={'malicious_iot_devices': ['iot4']},
         )
-        events = [{'t': T0, 'event': 'topology', 'graph': graph}]
+        events = [{'ts': T0, 'type': 'topology', 'graph': graph}]
         truth = ground_truth(events)
         self.assertEqual(truth['iot1'], ('client', ATTACK_FLOOD))
         self.assertEqual(truth['iot2'], ('client', ATTACK_SPOOF))
@@ -425,14 +425,14 @@ class TestTopologyGroundTruthPlumbing(unittest.TestCase):
             'malicious_flood_devices': [{'device': 'iot1'}],
             'malicious_spoof_devices': [{'device': 'iot1', 'target': 'iot2'}],
         })
-        truth = ground_truth([{'t': T0, 'event': 'topology', 'graph': graph}])
+        truth = ground_truth([{'ts': T0, 'type': 'topology', 'graph': graph}])
         self.assertEqual(truth['iot1'], ('client', ATTACK_SPOOF))
 
     def test_iot_ips_are_present_so_flood_evidence_can_be_folded(self):
         graph = self._graph(sim_extra={
             'malicious_flood_devices': [{'device': 'iot1'}],
         })
-        alias = subject_aliases([{'t': T0, 'event': 'topology', 'graph': graph}])
+        alias = subject_aliases([{'ts': T0, 'type': 'topology', 'graph': graph}])
         self.assertIn('iot1', alias.values())
 
 
@@ -500,3 +500,81 @@ class TestShippedConfigsAreInternallyConsistent(unittest.TestCase):
                     good, ONOFF_MIN_GOOD_PHASE_S,
                     msg=f'{path}: {m["node"]} good phase {good}s would classify as sybil',
                 )
+
+
+class TestRealEventBusFormat(unittest.TestCase):
+    """Pin the field names against what the REAL EventBus writes.
+
+    This exists because the reports were first written against `event`/`t`
+    while controller/event_bus.py records `type`/`ts`. Every hand-built test
+    fixture agreed with the mistake, so the whole suite passed while the tools
+    would have found precisely nothing in a real recording -- the worst kind of
+    green. Reading a file the real bus produced is the only check that cannot
+    make that mistake with it.
+    """
+
+    def _record(self, publish):
+        from controller.event_bus import EventBus
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'events.jsonl'
+            bus = EventBus(record_path=str(path))
+            publish(bus)
+            bus.close() if hasattr(bus, 'close') else None
+            return [json.loads(line) for line in
+                    path.read_text().strip().splitlines()]
+
+    def test_ground_truth_reads_a_real_recording(self):
+        graph = {'nodes': [
+            {'id': 'srv1', 'kind': 'server', 'ip': '10.0.1.1',
+             'attack': 'sybil', 'attack_start_s': 12.0},
+            {'id': 'iot1', 'kind': 'iot', 'ip': '10.0.2.1',
+             'attack': 'flood', 'attack_start_s': 5.0},
+        ], 'links': []}
+        events = self._record(lambda bus: bus.publish('topology', graph=graph))
+
+        truth = ground_truth(events)
+        self.assertEqual(truth['srv1'], ('node', ATTACK_SYBIL))
+        self.assertEqual(truth['iot1'], ('client', ATTACK_FLOOD))
+        self.assertEqual(onset_times(events)['srv1'], 12.0)
+        self.assertEqual(subject_aliases(events), {'10.0.2.1': 'iot1'})
+
+    def test_anomaly_and_node_status_rebuild_cycles_from_a_real_recording(self):
+        def publish(bus):
+            bus.publish('anomaly', node='srv1', reasons=['latency tell'],
+                        signals={SIG_LATENCY_TELL: 6.0}, anomaly=0.9, gate=0.5)
+            bus.publish('node_status', nodes={})
+            bus.publish('node_status', nodes={})
+
+        windows = node_cycles(self._record(publish), ['srv1'])
+        self.assertEqual(len(windows['srv1']), 2)
+        self.assertTrue(windows['srv1'][0].signals)
+        self.assertEqual(windows['srv1'][1].signals, {})
+
+    def test_client_evidence_reads_a_real_recording(self):
+        def publish(bus):
+            bus.publish('flood', client_ip='10.0.2.1', rate_hz=40.0, ratio=40.0)
+            bus.publish('auth_denied', device_id='iot2', source_ip='10.0.2.9',
+                        kind=AUTH_KIND_IP_PIN, reason='pinned elsewhere')
+
+        obs = client_observations(self._record(publish))
+        self.assertIn('10.0.2.1', obs)
+        self.assertIn('iot2', obs)
+
+    def test_availability_reads_a_real_recording(self):
+        from evaluation.availability_report import compute
+
+        graph = {'nodes': [
+            {'id': 'srv1', 'kind': 'server', 'ip': '10.0.1.1',
+             'attack': 'none', 'attack_start_s': 0.0},
+        ], 'links': []}
+
+        def publish(bus):
+            bus.publish('topology', graph=graph)
+            bus.publish('quarantine', node='srv1', trust=0.2, anomaly=0.9)
+            bus.publish('recovered', node='srv1', trust=0.6, anomaly=0.0)
+
+        report = compute(self._record(publish))
+        self.assertEqual(len(report.nodes), 1)
+        self.assertEqual(report.nodes[0].episodes, 1)
+        self.assertEqual(report.nodes[0].recoveries, 1)

@@ -102,6 +102,58 @@
   .quarantineX { stroke: var(--bad); stroke-width: 3; stroke-linecap: round; }
   .routePulseLabel { font-size: 10px; fill: var(--accent); font-weight: 600; }
 
+  /* ---------- time-series charts ----------
+     Series colors are the validated categorical slots 1 and 2, stepped for a
+     dark surface and checked against THIS panel's surface (#161b22), not the
+     palette's default one: lightness band, chroma floor, adjacent CVD
+     separation, normal-vision separation and 3:1 contrast all pass. Never more
+     than two series on one plot here, so only two slots are ever needed.
+
+     Deliberately NOT the --accent/--vip topology colors: those already mean
+     "request" and "reply" on the map above, and reusing them would say two
+     different things with one hue on the same screen. */
+  .wide { padding: 0 12px 12px; }
+  .charts {
+    display: grid; gap: 14px 18px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  .chart { min-width: 0; }
+  .chart .ct { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 1px; }
+  .chart .cs { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  /* Solid hairlines, one step off the surface -- never dashed: dashing reads
+     as "threshold" or "projection" when it is only a grid. */
+  .gridline { stroke: #2c313a; stroke-width: 1; }
+  .axisline { stroke: #3a4048; stroke-width: 1; }
+  .tick { fill: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+  .tick.x { text-anchor: middle; }
+  .tick.y { text-anchor: end; }
+  /* 2px, round join/cap. */
+  .sline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  /* End marker: r>=4 with a 2px ring in the SURFACE colour so it stays legible
+     where it crosses a line -- a ring, never a border drawn to separate marks. */
+  .sdot { stroke: var(--panel); stroke-width: 2; }
+  /* Endpoint value only. Never a number on every point. Text wears a text
+     token, never the series colour -- identity comes from the dot beside it. */
+  .endlab { font-size: 10px; fill: var(--text); font-variant-numeric: tabular-nums; }
+  .attackBand { fill: var(--bad); opacity: .07; }
+  .attackEdge { stroke: var(--bad); stroke-width: 1; opacity: .45; }
+  .attackLab { font-size: 8px; fill: var(--bad); opacity: .85; text-anchor: start; }
+  .clegend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 5px; font-size: 10px; color: var(--muted); }
+  .clegend span { display: inline-flex; align-items: center; gap: 5px; }
+  .ckey { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
+  .crosshair { stroke: var(--muted); stroke-width: 1; opacity: .6; }
+  .chart .hit { fill: transparent; }
+  .ctip {
+    position: fixed; z-index: 40; pointer-events: none;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 9px; font-size: 11px; color: var(--text);
+    box-shadow: 0 4px 14px rgba(0,0,0,.5); display: none; white-space: nowrap;
+  }
+  .ctip b { font-weight: 600; }
+  .ctip .row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+  .ctip .val { font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 12px; }
+
   /* ---------- trust panel ---------- */
   .srv { padding: 9px 0; border-bottom: 1px solid var(--border); }
   .srv:last-child { border-bottom: 0; }
@@ -268,6 +320,20 @@
     <div class="panel">
       <h2>Events</h2>
       <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<div class="wide">
+  <div class="panel">
+    <h2>Metrics over time
+      <span class="note">— 10s buckets, binned live with the same rules as
+        <code>evaluation/interval_report.py</code>; shaded bands mark configured attack onsets</span>
+    </h2>
+    <div class="body">
+      <div class="charts" id="charts">
+        <div class="empty">waiting for the first bucket to close…</div>
+      </div>
     </div>
   </div>
 </div>
@@ -943,6 +1009,12 @@ function log(ev) {
 
 // --------------------------------------------------------------- events ----
 function handle(ev) {
+  // Time-series binning runs on every event, before the per-panel switch --
+  // it consumes several types the panels below ignore ('report' in
+  // particular, which is where PDR and task delay come from).
+  chartIngest(ev);
+  scheduleChartRender();
+
   switch (ev.type) {
     case 'switch_up':
       S.seenSwitches.add(ev.dpid);
@@ -1015,6 +1087,334 @@ function handle(ev) {
       break;
   }
   log(ev);
+}
+
+// ------------------------------------------------------- time series ----
+// plan_adv.md Phase 5. The dashboard had no time-series at all before this --
+// only live snapshots and one-shot animations -- so an attack's effect on
+// throughput/PDR/delay was invisible while it was happening.
+//
+// Binned in the browser from the SAME live event stream, using the SAME rules
+// as evaluation/interval_report.py (10s buckets; route/route_denied -> offered,
+// route -> served, report -> PDR and delay, flow_stats VIP non-drop rules ->
+// throughput as a sum of latest per-rule bps, flow_stats drop rules ->
+// OpenFlow drops as a diff of cumulative packet counters). The two must agree,
+// so the bucket width and the metric definitions are pinned against
+// interval_report.py by tests/test_dashboard_charts.py.
+//
+// Why bin here rather than serve it from the controller: the offline report is
+// the authority for a finished run, but this panel has to draw while the run is
+// still going, from events already arriving over SSE. Recomputing server-side
+// would mean a second pass over the recording on every poll for a number the
+// browser can accumulate incrementally.
+const BUCKET_S = 10;              // interval_report.DEFAULT_BUCKET_S
+const MAX_BUCKETS = 60;           // 10 minutes of history, then it scrolls
+// controller/trust_balancer.py's PRIO_QUARANTINE_DROP. Same constant
+// interval_report.py duplicates, pinned by the same kind of test, so the
+// three cannot drift apart silently.
+const PRIO_QUARANTINE_DROP = 400;
+
+const CH = {
+  t0: null,
+  buckets: [],                    // {i, offered, served, taskTotal, success,
+                                  //  timeout, failure, lat[], dropPkts, bps}
+  vipBps: {},                     // rule key -> latest bps  (sum at read time)
+  prevDropPkts: {},               // rule key -> last cumulative packet count
+  lastBps: 0,
+};
+
+function bucketFor(ts) {
+  if (CH.t0 === null) CH.t0 = ts;
+  const idx = Math.max(0, Math.floor((ts - CH.t0) / BUCKET_S));
+  while (CH.buckets.length <= idx) {
+    CH.buckets.push({
+      i: CH.buckets.length, offered: 0, served: 0, taskTotal: 0,
+      success: 0, timeout: 0, failure: 0, lat: [], dropPkts: 0,
+      // Throughput and quarantine state forward-fill: a quiet bucket is not a
+      // zero-throughput bucket, which is how a live dashboard reads too.
+      bps: CH.lastBps, share: {},
+    });
+  }
+  if (CH.buckets.length > MAX_BUCKETS) {
+    CH.buckets.splice(0, CH.buckets.length - MAX_BUCKETS);
+  }
+  return CH.buckets[CH.buckets.length - 1].i === idx
+    ? CH.buckets[CH.buckets.length - 1]
+    : CH.buckets.find(b => b.i === idx) || CH.buckets[CH.buckets.length - 1];
+}
+
+function chartIngest(ev) {
+  const ts = ev.ts;
+  if (typeof ts !== 'number') return;
+  const b = bucketFor(ts);
+
+  switch (ev.type) {
+    case 'route':
+      b.offered++; b.served++;
+      if (ev.chosen) b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
+      break;
+    case 'route_denied':
+      b.offered++;
+      break;
+    case 'report':
+      b.taskTotal++;
+      if (ev.status === 'success') {
+        b.success++;
+        if (typeof ev.latency_ms === 'number') b.lat.push(ev.latency_ms);
+      } else if (ev.status === 'timeout') b.timeout++;
+      else b.failure++;
+      break;
+    case 'flow_stats':
+      for (const r of ev.rules || []) {
+        if (!r.is_vip) continue;
+        const key = [r.dpid, r.table, r.priority, r.cookie, r.match].join('|');
+        if (r.priority === PRIO_QUARANTINE_DROP) {
+          // Cumulative counter -> diff between sightings, so the bucket shows
+          // ITS OWN traffic rather than a running total.
+          const pkts = r.packets || 0;
+          const prev = key in CH.prevDropPkts ? CH.prevDropPkts[key] : pkts;
+          b.dropPkts += Math.max(0, pkts - prev);
+          CH.prevDropPkts[key] = pkts;
+        } else {
+          // bps is already a rate (FlowStatsPoller diffs it), so keep the
+          // latest per rule and sum at read time -- never accumulate.
+          CH.vipBps[key] = r.bps || 0;
+        }
+      }
+      CH.lastBps = Object.values(CH.vipBps).reduce((a, v) => a + v, 0);
+      break;
+    default:
+      return;
+  }
+  b.bps = CH.lastBps;
+}
+
+function pct(xs, p) {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const i = Math.min(s.length - 1, Math.max(0, Math.ceil(p / 100 * s.length) - 1));
+  return s[i];
+}
+
+// Jain's Fairness Index (Jain, Chiu & Hawe 1984), over the FULL server roster
+// -- a node starved for the whole run must still count against fairness rather
+// than silently not appearing. Same rule as interval_report.jain_fairness_index.
+function jain(shareMap) {
+  const roster = (S.topo?.nodes || []).filter(n => n.kind === 'server');
+  if (!roster.length) return null;
+  const xs = roster.map(n => shareMap[n.id] || 0);
+  const total = xs.reduce((a, v) => a + v, 0);
+  if (total <= 0) return null;
+  const sq = xs.reduce((a, v) => a + v * v, 0);
+  return sq > 0 ? (total * total) / (xs.length * sq) : null;
+}
+
+// Ground-truth attack onsets, for the shaded bands. Comes off the topology
+// event (trust_balancer.topology_graph), which carries attack/attack_start_s
+// for post-hoc marking. Shading marks when an attack was CONFIGURED to arm --
+// it is not a claim that the controller had detected anything by then.
+function attackOnsets() {
+  return (S.topo?.nodes || [])
+    .filter(n => n.attack && n.attack !== 'none')
+    .map(n => ({ id: n.id, attack: n.attack, at: n.attack_start_s || 0 }))
+    .sort((a, b) => a.at - b.at);
+}
+
+const SERIES_1 = '#3987e5';   // validated categorical slot 1 (blue)
+const SERIES_2 = '#d95926';   // validated categorical slot 2 (orange)
+
+const CHART_DEFS = [
+  { key: 'thr', title: 'Throughput', sub: 'VIP-serving flow rules, real OFPFlowStats bytes',
+    unit: 'kbps', series: [{ name: 'throughput', color: SERIES_1,
+      f: b => b.bps / 1000 }] },
+  { key: 'del', title: 'Task delay', sub: 'end-to-end, successful tasks',
+    unit: 'ms', series: [
+      { name: 'mean', color: SERIES_1, f: b => b.lat.length ? b.lat.reduce((a, v) => a + v, 0) / b.lat.length : null },
+      { name: 'p95', color: SERIES_2, f: b => pct(b.lat, 95) }] },
+  { key: 'pdr', title: 'Packet delivery ratio', sub: 'tasks completed / tasks reported',
+    unit: '%', max: 100, series: [{ name: 'PDR', color: SERIES_1,
+      f: b => b.taskTotal ? 100 * b.success / b.taskTotal : null }] },
+  { key: 'jain', title: 'Load balancing', sub: "Jain's fairness over the full server roster",
+    unit: '', max: 1, series: [{ name: 'fairness', color: SERIES_1, f: b => jain(b.share) }] },
+  { key: 'load', title: 'Traffic load', sub: 'requests offered vs. actually routed',
+    unit: '/s', series: [
+      { name: 'offered', color: SERIES_1, f: b => b.offered / BUCKET_S },
+      { name: 'served', color: SERIES_2, f: b => b.served / BUCKET_S }] },
+  // Two genuinely different things, kept as separate series on purpose: task
+  // loss is work that did not get done, OpenFlow drops are zero-trust
+  // enforcement working as intended. Never sum them into one "drops" line.
+  { key: 'drop', title: 'Packet drop', sub: 'task loss vs. quarantine drop-rule hits',
+    unit: '', series: [
+      { name: 'tasks lost', color: SERIES_1, f: b => b.timeout + b.failure },
+      { name: 'quarantine drops', color: SERIES_2, f: b => b.dropPkts }] },
+];
+
+function niceCeil(v) {
+  if (!(v > 0)) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (v <= m * mag) return m * mag;
+  return 10 * mag;
+}
+
+function fmt(v, unit) {
+  if (v === null || v === undefined) return '—';
+  const a = Math.abs(v);
+  const s = a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toFixed(2);
+  return s + (unit === '%' ? '%' : unit ? ' ' + unit : '');
+}
+
+// Axis ticks take their decimal places from the axis TOP, not from each tick's
+// own magnitude -- otherwise one axis reads "0.00 / 50.0 / 100", three
+// different precisions for three numbers on the same scale.
+function fmtTick(v, top) {
+  const d = top >= 10 ? 0 : top >= 1 ? 1 : 2;
+  return v.toFixed(d);
+}
+
+// Redraw at most twice a second. flow_stats/port_stats arrive every poll and
+// route/report far faster than that under load; rebuilding six SVGs per event
+// would make the attack traffic slow the dashboard down, which is both a bad
+// demo and a small self-inflicted DoS.
+let _chartTimer = null;
+function scheduleChartRender() {
+  if (_chartTimer !== null) return;
+  _chartTimer = setTimeout(() => { _chartTimer = null; renderCharts(); }, 500);
+}
+
+function renderCharts() {
+  const host = document.getElementById('charts');
+  if (!CH.buckets.length) return;
+
+  // PR is wide enough for the endpoint value label to sit INSIDE the viewBox.
+  // At PR=30 a label like "85.0%" started at x=337 and ran past the 360-wide
+  // box, overhanging the next chart in the grid.
+  const W = 360, H = 118, PL = 42, PR = 56, PT = 8, PB = 18;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const bs = CH.buckets;
+  const lastI = bs[bs.length - 1].i, firstI = bs[0].i;
+  const span = Math.max(1, lastI - firstI);
+  const x = i => PL + (i - firstI) / span * iw;
+  const onsets = attackOnsets();
+
+  host.innerHTML = CHART_DEFS.map(def => {
+    const cols = def.series.map(s => bs.map(b => {
+      const v = s.f(b);
+      return (v === null || v === undefined || !isFinite(v)) ? null : v;
+    }));
+    const flat = cols.flat().filter(v => v !== null);
+    if (!flat.length) return '';
+    const top = def.max !== undefined ? def.max : niceCeil(Math.max(...flat) * 1.1);
+    const y = v => PT + ih - (Math.min(v, top) / top) * ih;
+
+    // Attack onset bands: from the configured arming time to the end of the
+    // window, so the reader can see what the curve did after it armed.
+    const bands = onsets.map(o => {
+      const bi = o.at / BUCKET_S;
+      if (bi < firstI || bi > lastI) return '';
+      const bx = x(bi);
+      return `<rect class="attackBand" x="${bx.toFixed(1)}" y="${PT}" `
+           + `width="${(PL + iw - bx).toFixed(1)}" height="${ih}"></rect>`
+           + `<line class="attackEdge" x1="${bx.toFixed(1)}" y1="${PT}" `
+           + `x2="${bx.toFixed(1)}" y2="${PT + ih}"></line>`;
+    }).join('');
+    const bandLab = onsets.filter(o => o.at / BUCKET_S >= firstI && o.at / BUCKET_S <= lastI)
+      .map((o, k) => `<text class="attackLab" x="${(x(o.at / BUCKET_S) + 3).toFixed(1)}" `
+        + `y="${PT + 9 + k * 9}">${o.id} ${o.attack}</text>`).join('');
+
+    const grid = [0, 0.5, 1].map(f => {
+      const gy = (PT + ih - f * ih).toFixed(1);
+      return `<line class="gridline" x1="${PL}" y1="${gy}" x2="${PL + iw}" y2="${gy}"></line>`
+           + `<text class="tick y" x="${PL - 6}" y="${(+gy + 3).toFixed(1)}">${fmtTick(top * f, top)}</text>`;
+    }).join('');
+
+    const paths = def.series.map((s, si) => {
+      const pts = [];
+      cols[si].forEach((v, k) => { if (v !== null) pts.push([x(bs[k].i), y(v)]); });
+      if (!pts.length) return '';
+      const d = pts.map((p, k) => (k ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+      const last = pts[pts.length - 1];
+      const lastV = cols[si].filter(v => v !== null).pop();
+      return `<path class="sline" d="${d}" stroke="${s.color}"></path>`
+        // Endpoint marker + value only -- selective direct labelling.
+        + `<circle class="sdot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="${s.color}"></circle>`
+        + (si === 0
+            ? `<text class="endlab" x="${(last[0] + 7).toFixed(1)}" y="${(last[1] + 3).toFixed(1)}">${fmt(lastV, def.unit)}</text>`
+            : '');
+    }).join('');
+
+    // A legend for two or more series; a single-series chart needs none --
+    // the title already says what is plotted.
+    const legend = def.series.length > 1
+      ? `<div class="clegend">` + def.series.map(s =>
+          `<span><i class="ckey" style="background:${s.color}"></i>${s.name}</span>`).join('') + `</div>`
+      : '';
+
+    return `<div class="chart" data-key="${def.key}">
+      <div class="ct">${def.title}${def.unit ? ` <span class="cs" style="display:inline">(${def.unit})</span>` : ''}</div>
+      <div class="cs">${def.sub}</div>
+      <!-- Uniform scaling (the default xMidYMid meet). preserveAspectRatio
+           ="none" stretched the box to the grid cell and with it the stroke
+           geometry: 2px lines stopped being 2px and the end dots rendered as
+           ellipses. -->
+      <svg viewBox="0 0 ${W} ${H}" role="img"
+           aria-label="${def.title} over time">
+        ${bands}${grid}
+        <line class="axisline" x1="${PL}" y1="${PT + ih}" x2="${PL + iw}" y2="${PT + ih}"></line>
+        ${paths}${bandLab}
+        <text class="tick x" x="${PL}" y="${H - 5}">${firstI * BUCKET_S}s</text>
+        <text class="tick x" x="${PL + iw}" y="${H - 5}">${lastI * BUCKET_S}s</text>
+        <rect class="hit" x="${PL}" y="${PT}" width="${iw}" height="${ih}"></rect>
+        <line class="crosshair" style="display:none"></line>
+      </svg>
+      ${legend}
+    </div>`;
+  }).join('');
+
+  wireChartHover(x, firstI, span, PL, iw, PT, ih);
+}
+
+// Hover layer: crosshair + tooltip, shipped by default on a line chart. The
+// hit rect spans the whole plot so the target is far bigger than the 2px line.
+function wireChartHover(x, firstI, span, PL, iw, PT, ih) {
+  let tip = document.getElementById('ctip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'ctip'; tip.className = 'ctip';
+    document.body.appendChild(tip);
+  }
+  for (const el of document.querySelectorAll('.chart')) {
+    const def = CHART_DEFS.find(d => d.key === el.dataset.key);
+    const svg = el.querySelector('svg');
+    const hit = el.querySelector('.hit');
+    const cross = el.querySelector('.crosshair');
+    if (!def || !hit) continue;
+
+    hit.addEventListener('mousemove', e => {
+      const r = svg.getBoundingClientRect();
+      const fx = (e.clientX - r.left) / r.width * 360;
+      const k = Math.round((fx - PL) / iw * span);
+      const b = CH.buckets.find(bb => bb.i === firstI + k);
+      if (!b) return;
+      const cx = x(b.i);
+      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx);
+      cross.setAttribute('y1', PT); cross.setAttribute('y2', PT + ih);
+      cross.style.display = '';
+      tip.innerHTML = `<b>t = ${b.i * BUCKET_S}–${(b.i + 1) * BUCKET_S}s</b>`
+        + def.series.map(s => {
+            const v = s.f(b);
+            return `<div class="row"><i class="ckey" style="background:${s.color}"></i>`
+              + `${s.name}<span class="val">${fmt(
+                  (v === null || v === undefined || !isFinite(v)) ? null : v, def.unit)}</span></div>`;
+          }).join('');
+      tip.style.display = 'block';
+      tip.style.left = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px';
+      tip.style.top = (e.clientY + 14) + 'px';
+    });
+    hit.addEventListener('mouseleave', () => {
+      tip.style.display = 'none';
+      cross.style.display = 'none';
+    });
+  }
 }
 
 // ----------------------------------------------------------------- boot ----

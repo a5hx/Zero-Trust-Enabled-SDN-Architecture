@@ -174,8 +174,8 @@ class AvailabilityReport:
 
 def _run_window(events: Sequence[Dict[str, Any]]) -> Tuple[float, float]:
     times = [
-        float(e['t']) for e in events
-        if isinstance(e.get('t'), (int, float))
+        float(e['ts']) for e in events
+        if isinstance(e.get('ts'), (int, float))
     ]
     return (min(times), max(times)) if times else (0.0, 0.0)
 
@@ -230,13 +230,13 @@ def compute(
             report.time_to_below_quorum_s = prev_t - t0
 
     for ev in events:
-        etype = ev.get('event')
+        etype = ev.get('type')
         if etype not in ('quarantine', 'recovered'):
             continue
         node = ev.get('node')
         if node not in rows:
             continue
-        t = float(ev.get('t', t0))
+        t = float(ev.get('ts', t0))
 
         close_segment(t)
         prev_t = t

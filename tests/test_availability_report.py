@@ -33,11 +33,11 @@ def recording(servers, events=(), end_s=100.0):
          'attack': a, 'attack_start_s': s}
         for i, (n, a, s) in enumerate(servers)
     ]
-    out = [{'t': T0, 'event': 'topology', 'graph': {'nodes': nodes, 'links': []}}]
+    out = [{'ts': T0, 'type': 'topology', 'graph': {'nodes': nodes, 'links': []}}]
     for t_rel, etype, node in events:
-        out.append({'t': T0 + t_rel, 'event': etype, 'node': node,
+        out.append({'ts': T0 + t_rel, 'type': etype, 'node': node,
                     'trust': 0.2, 'anomaly': 0.9})
-    out.append({'t': T0 + end_s, 'event': 'node_status', 'nodes': {}})
+    out.append({'ts': T0 + end_s, 'type': 'node_status', 'nodes': {}})
     return out
 
 
@@ -278,11 +278,11 @@ class TestReportingAndCli(unittest.TestCase):
             self.assertEqual(main([str(good)]), 0)
 
             bad = Path(d) / 'bad.jsonl'
-            bad.write_text(json.dumps({'t': T0, 'event': 'route'}) + '\n')
+            bad.write_text(json.dumps({'ts': T0, 'type': 'route'}) + '\n')
             self.assertEqual(main([str(bad)]), 1)
 
     def test_empty_roster_does_not_divide_by_zero(self):
-        report = compute([{'t': T0, 'event': 'topology',
+        report = compute([{'ts': T0, 'type': 'topology',
                            'graph': {'nodes': [], 'links': []}}])
         self.assertIsNone(report.honest_availability)
         self.assertEqual(report.nodes, [])

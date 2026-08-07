@@ -62,8 +62,14 @@ VIP_PORT = 9000
 # one node). Kept <= 0.35 so |claimed - observed| never trips the gate while a
 # node completes tasks promptly. srv3's honest baseline is used before it lies.
 HONEST_CPU = {'srv1': 0.15, 'srv2': 0.30, 'srv3': 0.20, 'srv4': 0.25}
-VIP_COOKIE = {f'srv{i}': 0x5100_0000_0000_0000 | i for i in range(1, NUM_EDGE + 1)}
-DROP_COOKIE = {f'srv{i}': 0x5A00_0000_0000_0000 | i for i in range(1, NUM_EDGE + 1)}
+# ONE cookie per node, 0x5A base, covering that node's serving AND drop rules --
+# exactly TrustBalancerApp._cookie_for(). The single shared cookie is the whole
+# mechanism behind quarantine deleting every rule for a node with one
+# cookie-matched OFPFC_DELETE, and 0x5A is what flow_stats._is_vip_cookie()
+# tests for. The two used to be different bases (0x51 serving / 0x5A drop),
+# which no real run ever produces.
+VIP_COOKIE = {f'srv{i}': 0x5A00_0000_0000_0000 | i for i in range(1, NUM_EDGE + 1)}
+DROP_COOKIE = VIP_COOKIE
 SRV_MAC = {f'srv{i}': f'00:00:00:00:01:0{i}' for i in range(1, NUM_EDGE + 1)}
 
 # The AI weight optimizer (online UCB1 bandit) tuning the EdgeScore weights live,
@@ -271,7 +277,18 @@ class Sim:
                 jn = int(iot.replace('iot', ''))
                 s_ip = f'10.0.1.{i}'
                 rules.append({
-                    'dpid': dpid, 'table': 0, 'priority': 400, 'cookie': VIP_COOKIE[node],
+                    # PRIO_CONNECTION, the priority TrustBalancerApp actually
+                    # installs a per-connection VIP rewrite at
+                    # (_install_vip_pair). This used to say 400, which is
+                    # PRIO_QUARANTINE_DROP -- so this SERVING rule advertised
+                    # itself at the drop priority. Anything that tells serving
+                    # traffic from dropped traffic by priority (the dashboard's
+                    # throughput chart, evaluation/interval_report.py) then read
+                    # it exactly backwards: its bps was discarded, so throughput
+                    # was a flat zero, and its packet counter was tallied as
+                    # quarantine drops.
+                    'dpid': dpid, 'table': 0, 'priority': 300,
+                    'cookie': VIP_COOKIE[node],
                     'node': node,
                     'match': f'ipv4_src=10.0.0.{jn},tcp_src={self._client_port},'
                              f'ipv4_dst={VIP},tcp_dst={VIP_PORT}',
@@ -290,7 +307,12 @@ class Sim:
                     'match': f'eth_src={SRV_MAC[node]}',
                     'actions': 'drop',
                     'packets': self._dropped[node], 'bytes': self._dropped[node] * 64,
-                    'pps': 0.0, 'bps': 0.0, 'is_vip': False,
+                    # is_vip TRUE: a quarantine drop rule carries the node's own
+                    # 0x5A cookie, so flow_stats._is_vip_cookie() marks it VIP in
+                    # a real run. It said False here, and since every consumer
+                    # filters on is_vip first, the OpenFlow-drop series was
+                    # unreachable -- flat zero even while a node sat quarantined.
+                    'pps': 0.0, 'bps': 0.0, 'is_vip': True,
                 })
             self.bus.publish('flow_stats', dpid=dpid, rules=rules)
 
@@ -300,8 +322,18 @@ class Sim:
         links: List[Dict[str, Any]] = []
         for i in range(1, NUM_EDGE + 1):
             nodes.append({'id': f's{i}', 'kind': 'edge_switch', 'dpid': i + 1, 'label': f's{i}'})
-            nodes.append({'id': f'srv{i}', 'kind': 'server', 'ip': f'10.0.1.{i}',
-                          'label': f'srv{i}', 'attack': 'sybil' if f'srv{i}' == SYBIL_NODE else 'none'})
+            is_sybil = f'srv{i}' == SYBIL_NODE
+            nodes.append({
+                'id': f'srv{i}', 'kind': 'server', 'ip': f'10.0.1.{i}',
+                'label': f'srv{i}',
+                'attack': 'sybil' if is_sybil else 'none',
+                # Ground-truth onset, matching what the live controller's
+                # topology_graph() emits (plan_adv.md Phase 2). Without it
+                # evaluation/attack_report.py can say the attack was classified
+                # correctly but not how long that took, and the dashboard has
+                # no onset to shade the metric charts from.
+                'attack_start_s': SYBIL_START_S if is_sybil else 0.0,
+            })
             links.append({'a': f's{i}', 'b': f'srv{i}', 'kind': 'server_link'})
             links.append({'a': 's0', 'b': f's{i}', 'kind': 'core_link'})
         for j in range(1, NUM_IOT + 1):

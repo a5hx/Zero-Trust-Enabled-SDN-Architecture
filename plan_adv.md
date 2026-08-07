@@ -487,9 +487,89 @@ attribution would give a plausible wrong number rather than a crash). All four
 analysis tools now documented together in `SETUP.md`.
 
 ### Phase 5 — Dashboard time-series charts
-Wire Phase 0's binned data into real line charts (currently the dashboard has
-zero time-series — only live snapshots and one-shot animations). `dataviz`
-skill territory when reached.
+- [x] **Six small-multiple line charts in a "Metrics over time" panel
+      (2026-08-07)**, covering exactly the advisor's list: throughput, task
+      delay (mean + p95), PDR, Jain fairness, traffic load (offered vs served),
+      and packet drop. Before this the dashboard had **no** time-series at all,
+      so an attack's effect on throughput/PDR/delay was invisible while it was
+      happening. Attack onsets are shaded from ground truth
+      (`attack_start_s` on the `topology` event), which is the "attack windows
+      shaded" shape §4 asked for — labelled as *configured arming time*, not as
+      a claim about when the controller detected anything.
+- [x] **Binned in the browser with the same rules as `interval_report.py`.**
+      They cannot share code (JS in a browser vs. Python that must run without
+      the controller installed), so the coupling is pinned instead:
+      `tests/test_dashboard_charts.py` asserts the bucket width against
+      `DEFAULT_BUCKET_S` and the drop-rule priority across all three copies
+      (dashboard → interval_report → `trust_balancer.PRIO_QUARANTINE_DROP`).
+      Server-side recomputation was rejected: the panel has to draw *while the
+      run is going*, from events already arriving over SSE, and the browser can
+      accumulate that incrementally.
+- [x] **`dataviz` skill followed, colour computed rather than eyeballed.**
+      Series use validated categorical slots 1–2, run through the palette
+      validator against **this panel's** surface (`#161b22`, not the palette's
+      default) — lightness band, chroma floor, adjacent CVD separation,
+      normal-vision separation and 3:1 contrast all PASS. No chart carries more
+      than two series, which is all that was validated. Deliberately *not* the
+      topology map's `--accent`/`--vip`, which already mean "request"/"reply"
+      on the same screen. Also: solid hairline grid (never dashed), 2px round
+      lines, ≥8px end markers with a 2px **surface ring**, legend only for ≥2
+      series, endpoint-only direct labels, axis text in text tokens never the
+      series colour, and a crosshair+tooltip hover layer. 18 tests pin these
+      as anti-pattern guards.
+- [x] **Task loss and OpenFlow quarantine drops stay separate series**, the
+      packet-drop discipline carried into chart form — never summed into one
+      "drops" line.
+- [x] Redraw throttled to 2 Hz: a sustained flood is hundreds of events/sec and
+      rebuilding six SVGs per event would let the attack traffic slow the
+      dashboard down, which is both a bad demo and a small self-inflicted DoS.
+
+**Verification, and its limit.** The chart code was executed headlessly in
+`node` against a DOM stub with realistic event traffic, and the computed series
+checked against hand-derived values (PDR 100%→85.7% at 1-in-7 timeouts,
+throughput 800→600 kbps, drop counters correctly *diffed* rather than summed).
+Inspecting the generated markup caught three real defects that the palette
+validator cannot see: y-ticks formatted at three different precisions on one
+axis (`0.00 / 50.0 / 100`), the endpoint label overflowing the viewBox and
+overhanging the next chart in the grid, and `preserveAspectRatio="none"`
+stretching the box non-uniformly so 2px strokes stopped being 2px and end dots
+rendered as ellipses. **It has not been looked at in a browser**: `chromium` is
+present but is a snap and cannot launch under WSL2 (snapd mount-namespace
+failure, `--no-sandbox` does not help). To see it:
+`python3 -m dashboard.generate_demo_recording --out data/events.jsonl` then
+`python3 -m dashboard.replay data/events.jsonl --speed 8 --loop` and open
+`localhost:8082`.
+
+**Three demo-recording fidelity bugs found by actually looking at the charts
+(2026-08-07).** A flat throughput line on screen was the only visible symptom;
+underneath, `dashboard/generate_demo_recording.py` hand-writes the flow_stats
+rules a real run gets from `OFPFlowStats`, and three of its fields did not match
+what the controller actually emits. Each produced a plausible-looking wrong
+chart rather than an error:
+  1. the **serving** VIP rule was emitted at `priority: 400` — which is
+     `PRIO_QUARANTINE_DROP`. Every consumer that tells serving traffic from
+     dropped traffic by priority therefore read it backwards: its bps was
+     discarded (**throughput a flat zero**) and its packet counter was tallied
+     as quarantine drops. Real serving rules use `PRIO_CONNECTION = 300`.
+  2. the **drop** rule was marked `is_vip: False`. Every consumer filters on
+     `is_vip` first, so the **OpenFlow-drop series was unreachable** — flat zero
+     even while a node sat quarantined. In a real run those rules carry the
+     node's own `0x5A` cookie and `flow_stats._is_vip_cookie()` marks them VIP.
+  3. serving and drop rules used **different cookie bases** (`0x51` / `0x5A`),
+     which no real run produces: one cookie per node is the mechanism quarantine
+     relies on to delete all of a node's rules with a single cookie-matched
+     `OFPFC_DELETE`.
+
+This also means **`evaluation/interval_report.py` was reporting zero throughput
+and zero OpenFlow drops for this recording** — the charts did not introduce the
+fault, they made an existing one visible. Fixed, and pinned by four tests in
+`tests/test_demo_recording.py`; the strongest asserts the hand-set `is_vip` flag
+equals what the real `FlowStatsPoller._is_vip_cookie()` derives from the rule's
+own cookie, so the generator cannot drift from the controller again.
+
+**Phase 5 status: done (2026-08-07). 521 → 543 tests green** (18 in
+`tests/test_dashboard_charts.py`, 4 in `tests/test_demo_recording.py`).
+Confirmed rendering correctly in a browser by the user.
 
 ### Phase 6 — Fresh full live run
 Produce the real panel-facing numbers/plots on current code; likely also what
