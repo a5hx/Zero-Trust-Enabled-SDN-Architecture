@@ -439,8 +439,52 @@ with extra columns and report perfect scaling for everything). Live Mininet
 scalability remains out of scope and hardware-capped, per §4.
 
 ### Phase 4 — Service-availability metric
-Derived from existing quarantine/isolation event history; no new
-instrumentation needed.
+- [x] **`evaluation/availability_report.py` (2026-08-07).** No new
+      instrumentation, as planned: everything is derived from the `quarantine`
+      / `recovered` events the controller already publishes plus Phase 2's
+      ground truth. The WSN metric maps over cleanly with **isolation standing
+      in for death** — time to first node death → time to first isolation;
+      time to 50% dead → time below a serving quorum; network lifetime → time
+      the fleet stayed above it; per-node lifetime → per-node eligible fraction.
+      No energy model was invented; for mains-powered edge servers a battery
+      curve would be a fabricated number dressed as a measurement.
+- [x] **The attacker/honest split is the point of the module, not a
+      presentation choice.** Quarantine downtime means *opposite* things for
+      the two groups: an isolated attacker is zero-trust enforcement working,
+      and counting it as lost availability penalises the defence for
+      defending; an isolated honest node is the system's real cost, and this
+      project has twice shipped a defect whose entire signature was honest
+      nodes wrongly quarantined (`[[live-run-cascading-quarantine]]`,
+      `[[quarantine-absorbing-state]]`). A single fleet-wide "availability:
+      94%" would be an average over two quantities that should move in
+      opposite directions, so the headline number counts **honest nodes
+      only**, attacker downtime is reported separately as *containment*, and
+      `format_report` never prints a combined figure. Absent groups report
+      `None`, not `0.0` — "no attackers configured" must not read as "total
+      enforcement failure".
+- [x] **Two failure modes this project has actually shipped are surfaced
+      explicitly**, because both are invisible in an availability average:
+      - **Stranded honest nodes** (`never_recovered`): entered quarantine and
+        never left. That is the absorbing-state defect exactly, and a fleet
+        full of them can still average 90% uptime. Called out by name with a
+        pointer to probation.
+      - **Teardown misread as collapse**: a recording whose final seconds show
+        most of the fleet quarantining is almost certainly capturing agents
+        being killed while the controller still polls. Detected and **warned
+        about, never silently trimmed** — a knob that discards inconvenient
+        tail data is a knob that will eventually be used to flatter a result.
+        The tail still counts as real downtime; the reader is told why it is
+        probably an artifact and pointed at `POST /monitor/pause`.
+- [x] Also reports containment latency per attacker (configured onset → first
+      isolation), which complements Phase 2's detection latency: Phase 2
+      measures how fast the attack was *named*, this measures how fast it was
+      *stopped*. Same stated upper-bound caveat.
+
+**Phase 4 status: done (2026-08-07). 490 → 517 tests green** (27 new in
+`tests/test_availability_report.py`, arithmetic checked against hand-computed
+timelines — every figure here is a time integral, so an off-by-one in segment
+attribution would give a plausible wrong number rather than a crash). All four
+analysis tools now documented together in `SETUP.md`.
 
 ### Phase 5 — Dashboard time-series charts
 Wire Phase 0's binned data into real line charts (currently the dashboard has

@@ -179,6 +179,24 @@ python3 -m evaluation.scalability_sweep --load-factors 0.1,0.6     # both failur
 Sweep the offered load as well as N: argmax *starves* nodes at low load and *loses
 tasks* at high load, and either end alone tells only half the story.
 
+## Analysing a finished run
+
+All four read the same `data/events.jsonl` a live run writes, and none of them
+needs the controller stack installed:
+
+```bash
+python3 -m evaluation.nfr_report          data/events.jsonl   # NFR pass/fail, whole run
+python3 -m evaluation.interval_report     data/events.jsonl   # every metric vs time (10s buckets)
+python3 -m evaluation.attack_report       data/events.jsonl   # attack classification + confusion matrix
+python3 -m evaluation.availability_report data/events.jsonl   # service availability / "network lifetime"
+```
+
+`attack_report` and `availability_report` both score against the ground truth
+carried on the run's `topology` event, so they need a recording that includes
+the start of the run. Both split their figures by attacker vs. honest node:
+an isolated attacker is enforcement working, an isolated honest node is service
+lost, and averaging the two together would hide whichever one matters.
+
 **See it live:** run the 3b demo, then from the Mininet CLI watch every healthy
 server carry load (non-zero `inflight`) rather than just two:
 ```
