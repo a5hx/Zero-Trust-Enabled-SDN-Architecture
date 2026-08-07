@@ -169,6 +169,16 @@ python3 -m evaluation.starvation_sweep          # table: argmax vs p2c vs p2c+ε
 python3 -m evaluation.starvation_sweep --csv out.csv
 ```
 
+**Full-system scalability** (throughput / PDR / delay / Jain / decision cost vs N),
+same approach but with real per-node queueing and task timeouts, so delay and loss
+are measured rather than assumed away:
+```bash
+python3 -m evaluation.scalability_sweep                            # N = 4..64
+python3 -m evaluation.scalability_sweep --load-factors 0.1,0.6     # both failure modes
+```
+Sweep the offered load as well as N: argmax *starves* nodes at low load and *loses
+tasks* at high load, and either end alone tells only half the story.
+
 **See it live:** run the 3b demo, then from the Mininet CLI watch every healthy
 server carry load (non-zero `inflight`) rather than just two:
 ```

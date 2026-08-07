@@ -374,8 +374,69 @@ through the CLI against a hand-built JSONL. **Not yet run against real live
 telemetry — the numbers are only meaningful after Phase 6.**
 
 ### Phase 3 — Scalability sweep
-Extend `starvation_sweep.py`'s pattern from fan-out-only to full metrics,
-N=4..64+.
+- [x] **`evaluation/scalability_sweep.py` (2026-08-07).** Same *pattern* as
+      `starvation_sweep.py` — discrete-event harness driving the **real**
+      `select_edge_node` — but a **new module, not an extension**, for a
+      reason found by reading the old one: `starvation_sweep.py` models an
+      **infinite-server** farm (an arrival is served immediately at
+      `now + service`, `inflight` may exceed `concurrency` without bound,
+      nothing ever times out). That is exactly right for "who does the
+      selector pick?", and it is why its published tables in
+      `docs/LOAD_BALANCING_STARVATION.md` are trustworthy — but it makes delay
+      flat in N *by construction*, PDR 1.0 *by construction*, and throughput
+      equal to the offered rate. Extending it in place would also have
+      silently invalidated those tables. New model: **M/M/c per node** with an
+      unbounded FIFO and real task timeouts. A timed-out task is counted as
+      loss but deliberately **not** removed from the node — the client
+      abandoned it, the node has no idea, and the worker stays occupied. That
+      wasted capacity is what makes an overloaded fleet degrade instead of
+      gracefully shedding load.
+- [x] **Trust is composed, not equated with reliability.** `starvation_sweep.py`
+      can treat trust *as* the reliability EMA because there trust only ever
+      rises and only the ordering matters. Here it decides **eligibility**
+      (`select_edge_node` drops anything under `isolation_threshold` 0.30), so
+      collapsing T to R alone put an honest-but-overloaded node at 0.075 after
+      a single timeout and quarantined the whole fleet — a modelling artifact,
+      since a merely-slow node still scores full marks on behaviour and
+      honesty. Modelling `T = αR + β + γ` floors honest trust at 0.50 and keeps
+      saturation showing up where it genuinely does: in latency and PDR.
+      Pinned by a test asserting zero route denials under 200% load.
+
+**Results (seed 1, 120s cells, N=4..64).**
+1. **p2c scales linearly; argmax saturates.** Offered load rises with N, so
+   keeping up means linear throughput and flat delay/PDR. At 60% load p2c gives
+   **48/95/192/382/762 tasks/s** for N=4/8/16/32/64 — a clean doubling per
+   doubling — at PDR 99.7–99.8% and ~266 ms mean delay throughout. argmax
+   saturates at ~85 tasks/s from N=8 and its PDR falls **99.2% → 91.7% →
+   45.8% → 21.3% → 10.5%**, delay pinned at the ~2 s timeout ceiling.
+2. **argmax fails in two different ways at the two ends of offered load**,
+   which is why load became a sweep axis rather than a fixed setting. At **10%**
+   it starves (13/16 nodes idle, Jain 0.176; 23/32 at N=32) — the same effect
+   as `docs/LOAD_BALANCING_STARVATION.md` and the starved-for-2238 s live node.
+   At **60%** almost nothing is starved (Jain 0.75–0.85) because queues finally
+   push the CPU term away from the favoured nodes — the fleet ends up balanced
+   *and* broken. Reporting either end alone makes argmax look merely unfair, or
+   merely slow, instead of both. The crossover is visible in a single row:
+   argmax at 10% load and N=64 offers 128 tasks/s against the ~40 tasks/s two
+   favoured nodes can serve, so it tips out of starvation (0/64) into loss
+   (PDR 73.5%).
+3. **p2c does not make decisions cheaper** — and this is worth saying because
+   it is the intuitive claim to make and it is wrong here. Both strategies cost
+   the same and both grow ~linearly with N (3/5/9/16/30 µs at N=4/8/16/32/64).
+   `select_edge_node` scores and sorts **every** eligible node regardless of
+   strategy, because that ranking is returned as the *explanation* of the
+   decision (`trust_balancer.py` publishes it as `ranked`). p2c's O(d) sampling
+   rides on an O(N log N) base rather than replacing it. A deliberate trade —
+   explicability bought with CPU that is nowhere near a bottleneck at these
+   sizes — and **not** to be "optimised" away without consciously giving up the
+   ranking. The p2c win is real in fairness, throughput and delay; it is not a
+   CPU win.
+
+**Phase 3 status: done (2026-08-07). 472 → 490 tests green** (18 new in
+`tests/test_scalability_sweep.py`, including guards on the queueing invariant
+itself — if that broke, this harness would quietly become `starvation_sweep.py`
+with extra columns and report perfect scaling for everything). Live Mininet
+scalability remains out of scope and hardware-capped, per §4.
 
 ### Phase 4 — Service-availability metric
 Derived from existing quarantine/isolation event history; no new
