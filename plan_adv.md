@@ -166,10 +166,212 @@ Ready for Phase 1.
 Grayhole → On-off → DDoS/flooding → Spoofing/replay (cost order; spoofing can
 run in parallel with the others since it's a separate subsystem).
 
+- [x] **Grayhole (2026-08-06).** `node_agent.py --malicious grayhole
+      --grayhole-drop-rate`: same "accept and never respond" behavior as
+      blackhole/drop, but only for a random fraction of tasks. Self-reports
+      CPU honestly (the tell is purely the timeout rate, same signal as
+      blackhole, just weaker per-sample) — this is what lets Phase 2 test
+      whether the existing threshold catches a partial dropper or only an
+      always-dropper.
+- [x] **On-off / intermittent trust manipulation (2026-08-06).**
+      `node_agent.py --malicious onoff --onoff-period-s --onoff-duty`: a
+      dedicated toggle thread alternates BAD (sybil-style CPU lie, real
+      background burners) and GOOD (fully honest, burners stopped) phases.
+      Deliberately targets the trust EMA's memory rather than any one
+      telemetry check — see module docstring for why this is the sharpest
+      available test of the anomaly-gate-vs-trust-alone claim. The lie's
+      synthetic `busy_seconds` is measured from the *current bad phase's*
+      start, not from when the attack armed, so it can't claim duty cycle
+      for earlier good phases (or earlier bad ones) it wasn't lying through.
+      6 new tests total (3 grayhole, 3 onoff) in `tests/test_node_agent.py`.
+      `topology.py` wired to pass both new attacks' parameters through from
+      `malicious_edge_nodes[]` config entries, defaults matching on both
+      sides so omitting them is always safe. **369/369 tests green.**
+- [x] **DDoS / flooding (2026-08-06).** Different attack surface from the
+      other four -- request-rate abuse of the fleet's/controller's capacity,
+      not any one edge node's honesty -- so it needed a genuinely new
+      detector, not just a new node_agent.py mode:
+      - Attacker: `iot_client.py --malicious flood` (new
+        `--flood-concurrency` parallel workers, `--flood-interval-s`
+        pacing, default 0.0 = unpaced). Same delayed-onset design as
+        node_agent.py, same reason. The honest single-worker path is
+        byte-for-byte untouched -- the new complexity lives entirely in a
+        separate `_run_flood` helper, only entered when `--malicious flood`
+        is set, to keep risk to the non-malicious common case at zero.
+      - Detector: `controller/flood_detector.py`'s `evaluate_flood_tell`,
+        same leaky-bucket persistence shape as `evaluate_latency_tell`.
+        Keyed on the requesting **client**, never on whichever edge node
+        the flood happens to land on — see the module's docstring for why
+        blaming the node would repeat a mistake this project has already
+        made twice (memory/edgescore-fanout-starvation,
+        memory/live-run-cascading-quarantine). `TrustState` gained
+        `record_client_request`/`client_request_rate` (per-client-IP
+        timestamp tracking, mirroring how it already owns dispatch/occupancy
+        bookkeeping); `trust_balancer.py._check_flood` calls it on every VIP
+        PacketIn and publishes a `'flood'` event **only on the rising edge**
+        (crossing into `flood_persist` strikes), not every packet — a
+        sustained flood is itself hundreds of PacketIns/sec, and publishing
+        one dashboard event per packet would let the attack DoS the event
+        bus too.
+      - **Enforcement deliberately deferred.** This ships detection +
+        classification-ready signal only; auto-throttling/dropping a
+        flooding client's traffic would need a new per-client-IP OpenFlow
+        rule path (today's `rate_limit`/quarantine machinery is all
+        per-edge-node), which is real additional scope. Documented here as
+        a known limitation rather than half-building it under time pressure.
+      - 17 new tests (9 `test_flood_detector.py` pure-function, 5
+        `test_trust_state.py::TestClientRequestRate`, 3
+        `test_iot_client_flood.py`, real-server style like
+        `test_node_agent.py`). `topology.py` wired via a new
+        `malicious_flood_devices[]` config list (parallel to
+        `malicious_edge_nodes[]`, but IoT-side). **386/386 tests green.**
+- [x] **Identity spoofing / replay (2026-08-06).** Fact-check before
+      building anything: a literal *replay* of a captured (device_id,
+      response) pair was already structurally impossible --
+      `verify_response` pops the nonce on first use regardless of outcome,
+      so resubmitting it hits "no outstanding challenge". Building a fake
+      version of an attack the system already defeats would have been
+      dishonest. The **real** gap, found by reading
+      `security/authenticator.py` closely: the shared key is **fleet-wide**
+      (`topology.py` hands every legitimate device the identical
+      `shared_key_hex`), so PRESENT-80/HMAC on their own authenticate
+      *possession of the key*, not *the device* — anyone holding the key can
+      compute a correct response for any device_id string. `/report`
+      already binds identity to the request's own socket
+      (`self.client_address[0]`, never the JSON body — see its own
+      docstring); `/auth/challenge` and `/auth/verify` didn't have that.
+      - Fix: **source-IP pinning**. `Authenticator.verify_response` gained
+        an optional `source_ip` param; the first successful auth for a
+        device_id pins it to that IP (all three implementations —
+        `NullAuthenticator`, `Present80Authenticator`, `HmacAuthenticator`).
+        A later request with a cryptographically *correct* response for
+        that device_id from a *different* IP is refused. Safe in this
+        closed topology specifically because every real device's IP is
+        static for the whole run (`simulation/addressing.py`) — no
+        legitimate roaming to accommodate. `northbound_api.py` passes
+        `self.client_address[0]` through, mirroring `/report`'s existing
+        discipline.
+      - Attacker: `iot_client.py --malicious spoof
+        --spoof-target-device-id`. Waits `malicious_start_s` (long enough
+        for the real target to have already authenticated — default 5.0s),
+        then attempts to authenticate AS the target from its own host. On
+        denial (expected/correct outcome), logs and sends nothing; on
+        success (the bug case, defence failed), sends real task traffic
+        under the stolen identity. `run()`'s new spoof branch sits *before*
+        normal admission, since a spoofer never authenticates as itself.
+      - This is enforcement, not just detection-and-log like the DDoS
+        case — cheap and safe to deny outright here because the closed
+        topology makes false positives structurally impossible (no
+        legitimate reason for a device_id's IP to change mid-run).
+      - 9 new tests: 5 in `tests/test_authenticator.py::TestSourceIpPinning`
+        (the real crypto/pinning logic), 4 in `tests/test_iot_client_spoof.py`
+        (iot_client.py's control flow against a canned fake server — denial
+        stops traffic, success sends it, delayed onset waits, missing
+        `--spoof-target-device-id` is rejected at the CLI). `topology.py`
+        wired via a new `malicious_spoof_devices[]` config list (`device`,
+        `target`, optional `start_s`). **395/395 tests green.**
+
+**Phase 1 status: all 6 attacks (2 pre-existing + 4 new) done (2026-08-06).**
+Sybil, blackhole, grayhole, on-off, DDoS/flooding, identity spoofing — one
+more than mam's "5". Ready for Phase 2 (classification).
+
 ### Phase 2 — Classification
-Turn detector `reasons` (+ Phase 1's new signals) into a discrete
-`attack_type` label; score against `topology.py`'s ground truth for a real
-confusion matrix. This is the concrete "proof" behind the classification ask.
+- [x] **Three plumbing gaps closed first (2026-08-07).** Fact-check before
+      building the classifier found that a confusion matrix built on the
+      then-current event stream could not have been honest:
+      - **Auth denials were never published.** `/auth/verify` returned 403 and
+        told nobody — the controller did the right thing and forgot it, so a
+        spoofing attempt left no trace in the JSONL and was structurally
+        invisible to any scorer. `AuthError` gained a structured `kind`
+        (`ip_pin` / `bad_response` / `no_challenge` / `nonce_expired`) and
+        `northbound_api.py` now publishes `auth_denied`. The kind is what
+        separates *identity spoofing* (correct key, wrong source) from *a
+        device that never held the key* — two different attacks distinguished
+        by nothing but the reason the denial fired.
+      - **Ground truth was edge-node-only.** The `topology` event carried
+        `attack` for servers but nothing for the IoT side, so 2 of the 6
+        attacks (flooding, spoofing) had no confusion-matrix row and would
+        have vanished rather than been scored. Added `attack` +
+        `attack_start_s` to both server and IoT nodes, with the same
+        spoof-beats-flood precedence `topology.py` itself uses.
+      - **Signals were free-text prose.** Classifying by regexing sentences
+        written for a dashboard is fragile, so `anomaly` now carries a
+        parallel machine-readable `signals` dict. `reasons` is untouched.
+- [x] **`controller/attack_classifier.py` (2026-08-07)** — pure functions over
+      an evidence *window*, no I/O, shared by the live controller and the
+      offline scorer (same one-implementation discipline as
+      `evaluate_latency_tell`). A window rather than a single cycle because
+      **two of the six pairs are not separable from one cycle's signals**:
+      blackhole vs. grayhole fire the *same* signal and differ only in
+      magnitude; sybil vs. on-off fire the *same* signals and differ only in
+      intermittency. Rules: lying signals (CPU honesty / latency tell) beat
+      drop signals, because a CPU-burning liar really is slow and so raises the
+      drop tell too while a pure dropper never raises a lying signal —
+      asymmetric evidence, so the more specific one wins. Blackhole vs grayhole
+      splits on the **median** timeout rate over flagged cycles, not the max: a
+      grayhole's rate is a binomial sample over a 10-deep window and *will*
+      touch 1.0 by chance, which a max-based rule would relabel on one unlucky
+      draw. `node_down` is kept strictly separate from the six attacks (this
+      project's blackhole answers `/status` fine and drops only `/task`, so
+      "silent" is a liveness failure — folding it in would inflate exactly the
+      numbers this module exists to measure honestly). Abstains on stale or
+      absent evidence, per `[[quarantine-absorbing-state]]`; auth verdicts
+      latch and load/traffic verdicts do not, because "presented another
+      device's identity at t=5" is a historical fact while "is currently slow"
+      is a condition.
+- [x] **Live wiring (2026-08-07).** `flow_monitor.py` records every cycle
+      (including clean ones — an off phase is only visible because the quiet
+      cycles were recorded) and publishes `classification` on **label change
+      only**; `trust_balancer.py` does the same for clients from the flood
+      tell and auth denials, in a separate subject namespace so a flooding
+      client can never be scored against the node it overwhelmed. A test
+      caught a real bug here: a healthy node published a spurious empty
+      verdict on its first poll.
+- [x] **`evaluation/attack_report.py` (2026-08-07)** — confusion matrix,
+      per-class precision/recall/F1, and detection latency. **Replays rather
+      than tallies:** the live `classification` events record label *changes*,
+      so counting them would weight a subject that flapped once the same as one
+      that held a verdict all run. Instead it rebuilds the per-cycle evidence
+      (using `node_status` as the heartbeat that supplies the clean cycles
+      `anomaly` alone cannot) and re-runs the same classifier, which also makes
+      the offline number unable to silently disagree with the live one. The run
+      verdict is the **modal** label, not the final one — an on-off attacker is
+      correctly abstained on mid-good-phase, so the last label says more about
+      where the recording was cut than about what the system concluded.
+      `NO_ATTACK` is scored as a real class, because it is the one that catches
+      false accusation of honest nodes — this project's historically dangerous
+      failure mode (`[[live-run-cascading-quarantine]]`).
+
+**Two resolution limits found and documented rather than tuned away.**
+Classifying on-off *as* on-off requires observing a quiet stretch, so:
+  1. the attacker's good phase must outlast the detector's own reaction time
+     (`ONOFF_MIN_GOOD_PHASE_S` ≈ 4 s: the latency tell's leaky bucket keeps
+     flagging ~1 poll after the switch, then needs 3 clean polls); and
+  2. the evidence window must span a whole on-off *period*, or it mostly holds
+     one phase at a time and reports sybil — measured, not assumed: a 10-cycle
+     window over a 12-cycle period yields sybil for most of a run.
+In both cases the attacker is **still caught and quarantined** — only the label
+degrades. `topology.py`'s on-off default was raised 8 s → 20 s to clear limit
+(1) with margin, and both limits are pinned by tests so a future "shrink the
+window" change fails loudly instead of silently turning every on-off result
+into a sybil result. A deliberately faster attacker is now a valid experiment
+to *measure* against, not something to hide.
+
+**Config:** `params_trust_full.yaml` now carries all six attacks + wrong-key
+devices in one run, so the matrix is exercisable end to end. 4 of 8 edge nodes
+are malicious, which looks like it threatens the latency tell's fleet-median
+(honest-majority) assumption and does not — only the 2 CPU-burning attacks make
+a node slow to answer `/status`; blackhole and grayhole answer at full speed.
+That reasoning is written into the config, because a third CPU-burner *would*
+break it. Config self-consistency is pinned by tests (a spoofer accidentally
+listed as a wrong-key device would be denied at admission and silently remove
+an attack from the run).
+
+**Phase 2 status: done (2026-08-07). 395 → 472 tests green** (77 new:
+`test_attack_classifier.py` 32, `test_attack_report.py` 33, +7 in
+`test_authenticator.py`, +5 in `test_flow_monitor.py`). Smoke-tested end to end
+through the CLI against a hand-built JSONL. **Not yet run against real live
+telemetry — the numbers are only meaningful after Phase 6.**
 
 ### Phase 3 — Scalability sweep
 Extend `starvation_sweep.py`'s pattern from fan-out-only to full metrics,

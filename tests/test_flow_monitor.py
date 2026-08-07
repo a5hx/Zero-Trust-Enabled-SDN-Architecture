@@ -279,3 +279,123 @@ def test_poll_calls_flush_if_stale():
     fm, _ = _make_monitor(state, {'srv1': {'cpu_load': 0.2, 'latency_ms': 10, 'concurrency': 4}})
     fm._poll_once()
     assert state.commit_backend.chain_length() == 2  # genesis + the flushed block
+
+
+# --------------------------------------------------------------------------- #
+# plan_adv.md Phase 2: structured signals + live classification.
+# --------------------------------------------------------------------------- #
+
+class _RecordingBus:
+    """Minimal bus stand-in that keeps every published event."""
+
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event_type, **fields):
+        self.events.append((event_type, fields))
+
+    def of(self, event_type):
+        return [f for t, f in self.events if t == event_type]
+
+
+def _lying_monitor(bus, threshold=0.40):
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    state.set_concurrency('srv1', 4)
+    for port in range(6000, 6004):
+        state.register_dispatch('10.0.0.5', port, 'srv1')
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=threshold, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.05, 'latency_ms': 10, 'concurrency': 4}
+    )
+    return fm
+
+
+def test_anomaly_event_carries_structured_signals_beside_the_prose():
+    from controller.attack_classifier import SIG_CPU_HONESTY
+
+    bus = _RecordingBus()
+    _lying_monitor(bus)._poll_once()
+
+    anomaly = bus.of('anomaly')[0]
+    # The human-readable reasons are unchanged -- the dashboard still renders
+    # them -- and the machine-readable twin sits alongside.
+    assert anomaly['reasons']
+    assert SIG_CPU_HONESTY in anomaly['signals']
+    assert anomaly['signals'][SIG_CPU_HONESTY] > 0.40
+
+
+def test_sustained_lying_is_classified_as_sybil_on_the_bus():
+    from controller.attack_classifier import ATTACK_SYBIL
+
+    bus = _RecordingBus()
+    fm = _lying_monitor(bus)
+    for _ in range(6):
+        fm._poll_once()
+
+    labels = [c['attack_type'] for c in bus.of('classification')]
+    assert ATTACK_SYBIL in labels
+
+
+def test_classification_is_published_on_change_not_every_cycle():
+    """A sustained attack must not emit one event per node per second for the
+    whole run -- same rising-edge discipline as quarantine/recovered."""
+    bus = _RecordingBus()
+    fm = _lying_monitor(bus)
+    for _ in range(12):
+        fm._poll_once()
+
+    # 12 cycles, but the label only ever changed once (None -> sybil).
+    assert len(bus.of('classification')) == 1
+    assert len(bus.of('anomaly')) == 12
+
+
+def test_clean_node_publishes_no_classification():
+    state = TrustState(node_ids=['srv1'])
+    state.set_concurrency('srv1', 4)
+    bus = _RecordingBus()
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.1, 'latency_ms': 40, 'concurrency': 4}
+    )
+    for _ in range(5):
+        fm._poll_once()
+    # Abstention is the correct verdict for a healthy node, and abstention
+    # publishes nothing until it has something to retract.
+    assert bus.of('classification') == []
+
+
+def test_unreachable_node_is_classified_node_down_not_an_attack():
+    from controller.attack_classifier import NODE_DOWN
+
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5)
+    state.set_concurrency('srv1', 4)
+    bus = _RecordingBus()
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    seen = {'n': 0}
+
+    def probe(_node_id):
+        seen['n'] += 1
+        # Answer once so the node is 'ever seen', then go dark. A node that
+        # was never seen is UNKNOWN, not anomalous (Sprint 1 finding).
+        if seen['n'] == 1:
+            return _as_probe({'cpu_load': 0.1, 'latency_ms': 40, 'concurrency': 4})
+        return _as_probe(None)
+
+    fm._fetch_status = probe
+    for _ in range(5):
+        fm._poll_once()
+
+    labels = [c['attack_type'] for c in bus.of('classification')]
+    assert NODE_DOWN in labels

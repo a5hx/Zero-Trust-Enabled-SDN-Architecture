@@ -204,7 +204,10 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     each entry's optional start_s (delayed onset -- the node behaves
     honestly until t+start_s, then arms; see node_agent.py's
     --malicious-start-s). Omitted or 0 arms immediately, matching the old
-    behavior."""
+    behavior. grayhole_drop_rate / onoff_period_s / onoff_duty are likewise
+    optional per-entry overrides for the matching --malicious kind; both
+    sides default identically (node_agent.py's argparse defaults) so leaving
+    them out of the config is always safe."""
     Path('logs').mkdir(exist_ok=True)
 
     n_edge = cfg['simulation']['num_edge_nodes']
@@ -224,10 +227,25 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         mal = mal_by_node.get(node_id)
         attack = mal['attack'] if mal else 'none'
         start_s = float(mal.get('start_s', 0.0)) if mal else 0.0
+        grayhole_rate = float(mal.get('grayhole_drop_rate', 0.5)) if mal else 0.5
+        # 20s (10s good phase at the 0.5 duty below) rather than the 8s the
+        # agent's own argparse defaults to. Reason: separating on-off from
+        # sybil needs the good phase to outlast the detector's reaction time
+        # -- see ONOFF_MIN_GOOD_PHASE_S in controller/attack_classifier.py,
+        # which puts that floor at ~4s. An 8s period leaves a 4s good phase
+        # sitting exactly ON the floor, so the attack is still caught but is
+        # classified as sybil about as often as not. This default clears the
+        # floor with margin so the distinction is demonstrable; a config that
+        # deliberately sets a faster period to probe the limit is a valid
+        # experiment and is still honoured.
+        onoff_period = float(mal.get('onoff_period_s', 20.0)) if mal else 20.0
+        onoff_duty = float(mal.get('onoff_duty', 0.5)) if mal else 0.5
         cmd = (
             f'python3 -u -m simulation.node_agent --node-id {node_id} '
             f'--port {agent_port} --work-ms {work_ms} --malicious {attack} '
             f'--malicious-start-s {start_s} '
+            f'--grayhole-drop-rate {grayhole_rate} '
+            f'--onoff-period-s {onoff_period} --onoff-duty {onoff_duty} '
             f'> logs/{node_id}_agent.log 2>&1 &'
         )
         srv.cmd(cmd)
@@ -248,6 +266,24 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         bytes(b ^ 0xFF for b in bytes.fromhex(good_key_hex)).hex()
         if good_key_hex else None
     )
+    # Flood/DDoS IoT devices (plan_adv.md Phase 1) -- a different mechanism
+    # from malicious_iot_devices above (wrong-key/denied-admission): a
+    # flooding device authenticates normally and is admitted, then hammers
+    # the VIP from many parallel workers. See iot_client.py's --malicious
+    # flood and controller/flood_detector.py.
+    flood_by_device = {
+        m['device']: m for m in cfg['simulation'].get('malicious_flood_devices', [])
+    }
+    # Identity-spoofing IoT devices (plan_adv.md Phase 1) -- an insider/
+    # compromised device that holds the fleet-wide shared key and uses it to
+    # impersonate a *different* device_id instead of sending traffic under
+    # its own. Requires the spoofing device_id to NOT also be listed in
+    # malicious_iot_devices above (which would give it the wrong key
+    # instead). See iot_client.py's --malicious spoof and
+    # security/authenticator.py's source-IP pinning.
+    spoof_by_device = {
+        m['device']: m for m in cfg['simulation'].get('malicious_spoof_devices', [])
+    }
 
     for j in range(1, n_iot + 1):
         device_id = f'iot{j}'
@@ -256,18 +292,36 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         if good_key_hex:
             key_hex = wrong_key_hex if device_id in malicious_iot else good_key_hex
             auth_args = f'--auth-scheme {auth_scheme} --auth-key-hex {key_hex} '
+        flood = flood_by_device.get(device_id)
+        spoof = spoof_by_device.get(device_id)
+        flood_args = ''
+        if spoof:
+            # Takes precedence over a flood entry for the same device --
+            # --malicious is a single choice, spoof is the more specific ask.
+            flood_args = (
+                f'--malicious spoof '
+                f'--malicious-start-s {float(spoof.get("start_s", 5.0))} '
+                f'--spoof-target-device-id {spoof["target"]} '
+            )
+        elif flood:
+            flood_args = (
+                f'--malicious flood '
+                f'--malicious-start-s {float(flood.get("start_s", 0.0))} '
+                f'--flood-concurrency {int(flood.get("concurrency", 20))} '
+                f'--flood-interval-s {float(flood.get("interval_s", 0.0))} '
+            )
         cmd = (
             f'python3 -u -m simulation.iot_client --device-id {device_id} '
             f'--vip {ctrl_cfg["vip"]} --vip-port {ctrl_cfg["vip_port"]} '
             f'--controller {CX_IP} --controller-port {ctrl_cfg["api_port"]} '
             f'--interval-s {report_interval} --timeout-s {task_timeout} '
-            f'{auth_args}'
+            f'{auth_args}{flood_args}'
             f'> logs/{device_id}_client.log 2>&1 &'
         )
         host.cmd(cmd)
     logger.info(
-        "Started iot_client on %d IoT host(s) (%d malicious/wrong-key)",
-        n_iot, len(malicious_iot),
+        "Started iot_client on %d IoT host(s) (%d malicious/wrong-key, %d flood, %d spoof)",
+        n_iot, len(malicious_iot), len(flood_by_device), len(spoof_by_device),
     )
 
 

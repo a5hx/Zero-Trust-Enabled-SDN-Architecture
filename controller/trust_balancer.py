@@ -43,7 +43,15 @@ from controller.edge_selector import (
     select_edge_node as _select_edge_node,
 )
 from trust_engine.ai_optimizer import build_optimizer
+from controller.attack_classifier import (
+    SIG_AUTH_BAD_RESPONSE,
+    SIG_AUTH_IP_PIN,
+    SIG_FLOOD,
+    AttackEvidence,
+)
 from controller.event_bus import EventBus, NullBus
+from controller.flood_detector import evaluate_flood_tell
+from security.authenticator import AUTH_DENY_BAD_RESPONSE, AUTH_DENY_IP_PIN
 from controller.trust_state import TrustState
 from security.authenticator import (
     HmacAuthenticator, NullAuthenticator, Present80Authenticator,
@@ -439,6 +447,32 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self.monitor_interval_s: float = ctrl_cfg['monitor_interval_s']
         self.honesty_deviation_threshold: float = ctrl_cfg['honesty_deviation_threshold']
 
+        # Flood/DDoS tell (controller/flood_detector.py) -- keyed on the
+        # requesting CLIENT, not on whichever edge node the request lands on
+        # (see that module's docstring). expected_rate_hz defaults from
+        # agents.report_interval_s: what one honestly-configured device sends.
+        report_interval_s = float(cfg.get('agents', {}).get('report_interval_s', 1.0))
+        default_expected_rate_hz = 1.0 / report_interval_s if report_interval_s > 0 else 1.0
+        self.flood_expected_rate_hz: float = float(
+            ctrl_cfg.get('flood_expected_rate_hz', default_expected_rate_hz)
+        )
+        self.flood_ratio: float = float(ctrl_cfg.get('flood_ratio', 5.0))
+        self.flood_floor_hz: float = float(ctrl_cfg.get('flood_floor_hz', 3.0))
+        self.flood_persist: int = int(ctrl_cfg.get('flood_persist', 3))
+        self.flood_window_s: float = float(ctrl_cfg.get('flood_window_s', 2.0))
+        # client_ip -> leaky-bucket strike count, mirroring FlowMonitor's
+        # self._latency_strikes (which is per-node; this is per-client).
+        self._flood_strikes: Dict[str, int] = {}
+        # Client-side attack classification (plan_adv.md Phase 2). Separate
+        # from FlowMonitor's node-side AttackEvidence on purpose: the subjects
+        # are different kinds of thing (a device vs. an edge node) and the two
+        # must never be merged into one namespace, or a flooding client would
+        # end up scored against the node it happened to overwhelm -- the exact
+        # misattribution controller/flood_detector.py's docstring exists to
+        # prevent.
+        self._client_evidence = AttackEvidence()
+        self._client_labels: Dict[str, Optional[str]] = {}
+
         self._datapaths: Dict[int, Any] = {}
         self._mac_to_port: Dict[int, Dict[str, int]] = {}
         self._cookie_base = 0x5A00000000000000
@@ -646,6 +680,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
         client_ip = ip_pkt.src
         client_port = tcp_pkt.src_port
 
+        self._check_flood(client_ip)
+
         chosen, probation = self.state.choose_edge_node_ex()
         if chosen is None:
             logger.warning(
@@ -682,6 +718,103 @@ class TrustBalancerApp(app_manager.OSKenApp):
             decision_ms=round(decision_ms, 2), dpid=dp.id,
             probation=probation,
         )
+
+    def _check_flood(self, client_ip: str) -> None:
+        """Flood/DDoS tell for one VIP request arrival (controller/flood_detector.py).
+
+        Publishes 'flood' only on the rising edge (strikes just reached
+        flood_persist), not on every PacketIn while it stays tripped -- a
+        sustained flood is itself hundreds of PacketIns per second, and
+        publishing one dashboard event per packet would let the attack DoS
+        the event bus/dashboard too. Mirrors 'quarantine'/'recovered' only
+        firing on the transition, not every poll.
+        """
+        prev_strikes = self._flood_strikes.get(client_ip, 0)
+        self.state.record_client_request(client_ip)
+        rate_hz = self.state.client_request_rate(client_ip, self.flood_window_s)
+        tell = evaluate_flood_tell(
+            rate_hz, self.flood_expected_rate_hz, strikes=prev_strikes,
+            flood_ratio=self.flood_ratio, flood_floor_hz=self.flood_floor_hz,
+            flood_persist=self.flood_persist,
+        )
+        self._flood_strikes[client_ip] = tell.strikes
+        if tell.tripped and prev_strikes < self.flood_persist:
+            logger.warning(
+                "%s: flood tell -- rate %.1f req/s is %.1fx expected %.1f req/s (sustained)",
+                client_ip, rate_hz, tell.ratio or 0.0, self.flood_expected_rate_hz,
+            )
+            self.bus.publish(
+                'flood', client_ip=client_ip, rate_hz=round(rate_hz, 2),
+                ratio=round(tell.ratio, 2) if tell.ratio is not None else None,
+                expected_rate_hz=round(self.flood_expected_rate_hz, 2),
+            )
+            # Feed classification on the same rising edge, for the same
+            # reason -- one observation per sustained flood, not one per
+            # packet.
+            self._record_client_signal(
+                client_ip, {SIG_FLOOD: round(tell.ratio, 4) if tell.ratio else 0.0},
+            )
+
+    def _record_client_signal(self, client: str, signals: Dict[str, float]) -> None:
+        """Record one client-side observation and publish a 'classification'
+        event if that changed the device's label.
+
+        Rising-edge only, same as FlowMonitor._publish_classification -- see
+        there for why restating an unchanged verdict every cycle is a bug and
+        not merely noise.
+        """
+        now = time.time()
+        self._client_evidence.record_client(client, now, signals)
+        result = self._client_evidence.classify_client(client, now=now)
+        label = result.attack_type if result is not None else None
+        # See FlowMonitor._publish_classification: .get()'s None default is
+        # also the "no opinion" label, so an unclassified subject that stays
+        # unclassified publishes nothing.
+        if self._client_labels.get(client) == label:
+            return
+        self._client_labels[client] = label
+
+        if result is None:
+            self.bus.publish(
+                'classification', subject=client, kind='client', attack_type=None,
+            )
+            return
+
+        logger.warning(
+            "%s CLASSIFIED as %s (confidence %.2f): %s",
+            client, result.attack_type, result.confidence, result.rationale,
+        )
+        self.bus.publish(
+            'classification', subject=client, kind='client',
+            attack_type=result.attack_type,
+            confidence=round(result.confidence, 3),
+            rationale=result.rationale,
+            evidence_cycles=result.evidence_cycles,
+            first_flagged_t=result.first_flagged_t,
+        )
+
+    def record_auth_denial(self, device_id: str, source_ip: str, kind: Optional[str]) -> None:
+        """Feed an auth denial into client classification.
+
+        Called by northbound_api.py's /auth/verify handler. The subject is the
+        DEVICE ID, not the source IP: a spoofer's whole method is to present
+        someone else's device_id, so keying on the IP would file the attempt
+        under the attacker's own honest identity and lose the connection to
+        the identity it tried to steal. The source IP travels in the signal's
+        event payload instead, where it is evidence rather than a key.
+        """
+        signal = {
+            AUTH_DENY_IP_PIN: SIG_AUTH_IP_PIN,
+            AUTH_DENY_BAD_RESPONSE: SIG_AUTH_BAD_RESPONSE,
+        }.get(kind or '')
+        if signal is None:
+            # 'no_challenge' / 'nonce_expired' are protocol-sequencing
+            # failures, not evidence of either modelled auth attack. Recording
+            # them as a clean observation still counts the cycle without
+            # accusing anyone.
+            self._record_client_signal(device_id, {})
+            return
+        self._record_client_signal(device_id, {signal: 1.0})
 
     def _send_arp_reply(self, dp, in_port, arp_pkt, eth) -> None:
         parser = dp.ofproto_parser
@@ -1281,6 +1414,43 @@ class TrustBalancerApp(app_manager.OSKenApp):
             m['node']: m.get('attack', 'none')
             for m in self.cfg['simulation'].get('malicious_edge_nodes', [])
         }
+        # Ground-truth ONSET, not just the attack kind. Without it,
+        # evaluation/attack_report.py can say an attack was classified
+        # correctly but not how long that took -- and inferring onset from the
+        # first anomaly instead would make every detector look infinitely fast
+        # by construction, which is precisely the kind of self-flattering
+        # measurement this project keeps finding and removing.
+        onset = {
+            m['node']: float(m.get('start_s', 0.0))
+            for m in self.cfg['simulation'].get('malicious_edge_nodes', [])
+        }
+        # IoT-side ground truth, same "surfaced for post-hoc marking only"
+        # contract as the server `attack` field below. Without this, the two
+        # attacks that live on the device side rather than the node side
+        # (plan_adv.md Phase 1's DDoS/flooding and identity spoofing) have no
+        # ground truth anywhere on the bus, so evaluation/attack_report.py
+        # could score four of the six attacks and would have to silently drop
+        # the other two -- a confusion matrix missing the rows it finds
+        # inconvenient is worse than no confusion matrix.
+        #
+        # Precedence matches simulation/topology.py's own wiring exactly: a
+        # spoof entry beats a flood entry for the same device (--malicious is
+        # a single choice and spoof is the more specific ask), and the
+        # wrong-key devices in security.malicious_iot_devices are a separate
+        # mechanism again (denied at admission, never admitted at all). If
+        # that precedence ever changes there, it must change here too, or
+        # ground truth and behaviour drift apart without anything failing.
+        iot_mal: Dict[str, str] = {
+            d: 'bad_credentials'
+            for d in self.cfg.get('security', {}).get('malicious_iot_devices', []) or []
+        }
+        iot_onset: Dict[str, float] = {}
+        for m in self.cfg['simulation'].get('malicious_flood_devices', []) or []:
+            iot_mal[m['device']] = 'flood'
+            iot_onset[m['device']] = float(m.get('start_s', 0.0))
+        for m in self.cfg['simulation'].get('malicious_spoof_devices', []) or []:
+            iot_mal[m['device']] = 'spoof'
+            iot_onset[m['device']] = float(m.get('start_s', 5.0))
 
         nodes: List[Dict[str, Any]] = [
             {'id': 's0', 'kind': 'core_switch', 'dpid': 1, 'label': 's0 (core)'},
@@ -1299,6 +1469,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 # the controller catches it -- never used to pre-emptively
                 # colour a node, which would give the detection away for free.
                 'attack': mal.get(f'srv{i}', 'none'),
+                'attack_start_s': onset.get(f'srv{i}', 0.0),
             })
             links.append({'a': f's{i}', 'b': f'srv{i}', 'kind': 'server_link'})
             links.append({'a': 's0', 'b': f's{i}', 'kind': 'core_link'})
@@ -1308,6 +1479,11 @@ class TrustBalancerApp(app_manager.OSKenApp):
             nodes.append({
                 'id': f'iot{j}', 'kind': 'iot', 'ip': iot_ip(j),
                 'label': f'iot{j}',
+                # Ground truth only -- see iot_mal above. Same rule as the
+                # server nodes: never used to colour a device before the
+                # controller has caught it on its own evidence.
+                'attack': iot_mal.get(f'iot{j}', 'none'),
+                'attack_start_s': iot_onset.get(f'iot{j}', 0.0),
             })
             links.append({'a': f'iot{j}', 'b': f's{sw_idx + 1}', 'kind': 'iot_link'})
 

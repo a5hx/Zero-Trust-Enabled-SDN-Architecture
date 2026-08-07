@@ -917,3 +917,44 @@ def test_busy_counter_going_backwards_resets_instead_of_going_negative():
 
     duty = state.claimed_load('srv1')
     assert duty >= 0.0, f'duty cycle went negative across an agent restart: {duty}'
+
+
+class TestClientRequestRate:
+    """TrustState.record_client_request / client_request_rate -- the raw
+    per-CLIENT counters controller/flood_detector.py's tell reads
+    (plan_adv.md Phase 1). Deliberately keyed on client_ip, not node_id."""
+
+    def test_no_requests_yet_is_zero(self):
+        state = _make_state()
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 0.0
+
+    def test_rate_counts_requests_within_the_window(self):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1'], time_source=clock)
+        for _ in range(4):
+            state.record_client_request('10.0.2.5')
+            clock.advance(0.5)  # 4 requests spread over the trailing 2s
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 2.0
+
+    def test_old_requests_age_out_of_the_window(self):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1'], time_source=clock)
+        state.record_client_request('10.0.2.5')
+        clock.advance(10.0)  # long silence
+        state.record_client_request('10.0.2.5')
+        # Only the second request is within a 2s trailing window now.
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 0.5
+
+    def test_clients_are_tracked_independently(self):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1'], time_source=clock)
+        for _ in range(10):
+            state.record_client_request('10.0.2.5')  # the flooder
+        state.record_client_request('10.0.2.6')       # one honest request
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 5.0
+        assert state.client_request_rate('10.0.2.6', window_s=2.0) == 0.5
+
+    def test_zero_window_is_zero_not_a_crash(self):
+        state = _make_state()
+        state.record_client_request('10.0.2.5')
+        assert state.client_request_rate('10.0.2.5', window_s=0.0) == 0.0

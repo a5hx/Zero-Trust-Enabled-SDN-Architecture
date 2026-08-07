@@ -46,6 +46,13 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Se
 
 from os_ken.lib import hub
 
+from controller.attack_classifier import (
+    SIG_CPU_HONESTY,
+    SIG_LATENCY_TELL,
+    SIG_PACKET_DROP,
+    SIG_UNREACHABLE,
+    AttackEvidence,
+)
 from controller.event_bus import NullBus
 from controller.trust_state import TrustState
 from simulation.addressing import srv_index, srv_ip
@@ -209,6 +216,14 @@ class FlowMonitor:
         self.idle_claim_threshold = idle_claim_threshold
         self.latency_liar_persist = latency_liar_persist
         self._latency_strikes: Dict[str, int] = {nid: 0 for nid in self.node_ids}
+        # Attack classification (plan_adv.md Phase 2). Fed EVERY cycle,
+        # including the clean ones -- an on-off attacker is only visible as
+        # such because its quiet phases were recorded, so skipping clean
+        # cycles here would silently collapse on-off into sybil. Only the
+        # label CHANGE is published, not the label every second: see
+        # _publish_classification.
+        self._evidence = AttackEvidence()
+        self._last_label: Dict[str, Optional[str]] = {}
         # Nodes that have answered /status at least once. Until a node is in
         # here it is UNKNOWN rather than anomalous -- see _poll_once for why an
         # unanswered poll from a node that has never been seen must not score.
@@ -246,6 +261,11 @@ class FlowMonitor:
         # TrustState.reap_stale_dispatches.
         self.state.reap_stale_dispatches()
 
+        # One timestamp for the whole cycle, so every node's observation this
+        # sweep shares an ordinate. Per-node time.time() calls would let two
+        # nodes polled in the same sweep land in different classifier windows.
+        cycle_t = time.time()
+
         results = dict(zip(
             self.node_ids,
             self._executor.map(self._fetch_status, self.node_ids),
@@ -263,6 +283,12 @@ class FlowMonitor:
             status = probe.payload
             anomaly_raw = 0.0
             reasons: List[str] = []
+            # Machine-readable twin of `reasons`. Same facts, but as
+            # {signal_key: magnitude} so controller/attack_classifier.py can
+            # tell the six attacks apart without regexing prose that was
+            # written to be read by a human on a dashboard. `reasons` is
+            # unchanged and stays the thing rendered on screen.
+            signals: Dict[str, float] = {}
 
             if status is not None:
                 # First contact: from here on, silence from this node is a
@@ -335,6 +361,7 @@ class FlowMonitor:
                         f'{reference:.2f}| = {deviation:.2f} > '
                         f'{self.honesty_deviation_threshold:.2f}'
                     )
+                    signals[SIG_CPU_HONESTY] = round(deviation, 4)
 
                 # Load-independent Sybil tell (see __init__): claims idle but is
                 # far slower to answer than the fleet median, and stays that way.
@@ -368,6 +395,8 @@ class FlowMonitor:
                         f'{measured_rtt:.0f}ms is {tell.ratio:.1f}x fleet median '
                         f'{latency_baseline:.0f}ms (sustained)'
                     )
+                    if tell.ratio is not None:
+                        signals[SIG_LATENCY_TELL] = round(tell.ratio, 4)
             elif node_id in self._ever_seen:
                 # Agent unreachable this cycle -- treat as suspicious rather
                 # than silently skipping, but don't crash the loop over it.
@@ -378,6 +407,7 @@ class FlowMonitor:
                 logger.warning("%s: /status poll failed this cycle", node_id)
                 anomaly_raw = 1.0
                 reasons.append('/status unreachable')
+                signals[SIG_UNREACHABLE] = 1.0
             else:
                 # Never successfully polled even once: this node is UNKNOWN, not
                 # anomalous. A node that has gone silent after being healthy is a
@@ -407,14 +437,21 @@ class FlowMonitor:
                     f'packet-drop tell: timeout rate {timeout_rate:.2f} > '
                     f'{self.honesty_deviation_threshold:.2f}'
                 )
+                signals[SIG_PACKET_DROP] = round(timeout_rate, 4)
 
             anomaly = self.state.set_anomaly_raw(node_id, anomaly_raw)
 
             if reasons:
                 self.bus.publish(
                     'anomaly', node=node_id, reasons=reasons,
+                    signals=dict(signals),
                     anomaly=round(anomaly, 4), gate=self.state.anomaly_gate,
                 )
+
+            # Record the cycle whether or not anything fired -- a clean cycle
+            # is evidence too (see AttackEvidence.record_node).
+            self._evidence.record_node(node_id, cycle_t, signals)
+            self._publish_classification(node_id, cycle_t)
 
         # One snapshot event per cycle rather than one per node: the dashboard
         # redraws the whole trust panel from it, and 4 separate events would
@@ -445,6 +482,47 @@ class FlowMonitor:
                 summary['prev_weights'], summary['next_weights'],
             )
             self.bus.publish('optimizer', **summary)
+
+    def _publish_classification(self, node_id: str, now: float) -> None:
+        """Classify this node and publish only when the LABEL CHANGES.
+
+        Not every cycle: the classifier has an opinion on every poll of every
+        misbehaving node, so publishing unconditionally would put one event per
+        node per second on the bus for the whole run and drown the dashboard's
+        event feed in restatements of a verdict nobody asked twice. Same
+        rising-edge discipline as 'quarantine'/'recovered' and the flood tell.
+
+        A transition INTO abstention (None) is published too, as
+        attack_type=None -- "the classifier no longer has an opinion" is a real
+        state change and hiding it would leave the last label standing on
+        screen forever, which is the stale-verdict failure that
+        memory/quarantine-absorbing-state is about.
+        """
+        result = self._evidence.classify_node(node_id, now=now)
+        label = result.attack_type if result is not None else None
+        # .get() defaults to None, which is also the "no opinion" label -- so a
+        # node that has never been classified and still isn't stays silent,
+        # rather than announcing an empty verdict on its first clean poll.
+        if self._last_label.get(node_id) == label:
+            return
+        self._last_label[node_id] = label
+
+        if result is None:
+            self.bus.publish('classification', subject=node_id, kind='node', attack_type=None)
+            return
+
+        logger.warning(
+            "%s CLASSIFIED as %s (confidence %.2f): %s",
+            node_id, result.attack_type, result.confidence, result.rationale,
+        )
+        self.bus.publish(
+            'classification', subject=node_id, kind='node',
+            attack_type=result.attack_type,
+            confidence=round(result.confidence, 3),
+            rationale=result.rationale,
+            evidence_cycles=result.evidence_cycles,
+            first_flagged_t=result.first_flagged_t,
+        )
 
     def _fetch_status(self, node_id: str) -> StatusProbe:
         host = srv_ip(srv_index(node_id))

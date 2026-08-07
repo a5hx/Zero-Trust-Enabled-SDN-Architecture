@@ -11,6 +11,7 @@ relying on import order or test order.
 import http.client
 import socket
 import threading
+import time
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -25,6 +26,18 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _wait_until(condition, timeout: float = 2.0, interval: float = 0.01) -> bool:
+    """Poll `condition` (a zero-arg callable) until it's true or timeout.
+    Returns the final truth value -- callers still assert on it, this just
+    avoids a hardcoded sleep racing a background thread's first tick."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(interval)
+    return condition()
+
+
 @pytest.fixture
 def agent_server():
     """Reset all node_agent process-wide state and serve a fresh AgentHandler
@@ -34,6 +47,7 @@ def agent_server():
     node_agent._busy_seconds_total = 0.0
     node_agent._recent_latencies_ms.clear()
     node_agent._attack_armed_at = None
+    node_agent._onoff_bad_phase_started_at = None
 
     AgentHandler.node_id = 'srvT'
     AgentHandler.concurrency = 4
@@ -41,6 +55,10 @@ def agent_server():
     AgentHandler.malicious = 'none'
     AgentHandler.claimed_cpu_lie = 0.1
     AgentHandler.armed = False
+    AgentHandler.grayhole_drop_rate = 0.5
+    AgentHandler.onoff_period_s = 8.0
+    AgentHandler.onoff_duty = 0.5
+    AgentHandler.onoff_bad = False
 
     port = _free_port()
     server = ThreadingHTTPServer(('127.0.0.1', port), AgentHandler)
@@ -151,3 +169,75 @@ class TestDelayedOnset:
         # controller/flow_monitor.py's timeout-rate tell depends on.
         with pytest.raises((TimeoutError, OSError)):
             _post_task(agent_server, timeout=0.3)
+
+
+class TestGrayhole:
+    def test_unarmed_grayhole_serves_normally(self, agent_server):
+        AgentHandler.malicious = 'grayhole'
+        resp = _post_task(agent_server, timeout=5.0)
+        assert resp.status == 200
+
+    def test_armed_grayhole_drops_when_the_roll_is_under_the_rate(
+        self, agent_server, monkeypatch,
+    ):
+        monkeypatch.setattr(node_agent, '_DROP_HANG_S', 1.0)
+        monkeypatch.setattr(node_agent.random, 'random', lambda: 0.1)
+        AgentHandler.malicious = 'grayhole'
+        AgentHandler.grayhole_drop_rate = 0.5
+        stop_event = threading.Event()
+        try:
+            node_agent._arm_malicious('srvT', 'grayhole', concurrency=1, stop_event=stop_event)
+            with pytest.raises((TimeoutError, OSError)):
+                _post_task(agent_server, timeout=0.3)
+        finally:
+            stop_event.set()
+
+    def test_armed_grayhole_serves_when_the_roll_is_over_the_rate(
+        self, agent_server, monkeypatch,
+    ):
+        monkeypatch.setattr(node_agent.random, 'random', lambda: 0.9)
+        AgentHandler.malicious = 'grayhole'
+        AgentHandler.grayhole_drop_rate = 0.5
+        stop_event = threading.Event()
+        try:
+            node_agent._arm_malicious('srvT', 'grayhole', concurrency=1, stop_event=stop_event)
+            resp = _post_task(agent_server, timeout=5.0)
+            assert resp.status == 200
+        finally:
+            stop_event.set()
+
+
+class TestOnOff:
+    def test_unarmed_onoff_is_honest(self, agent_server):
+        AgentHandler.malicious = 'onoff'
+        status = _get_status(agent_server)
+        assert status['cpu_load'] != 0.1
+
+    def test_bad_phase_lies_then_good_phase_is_honest_again(self, agent_server):
+        AgentHandler.malicious = 'onoff'
+        AgentHandler.claimed_cpu_lie = 0.1
+        AgentHandler.onoff_period_s = 0.3
+        AgentHandler.onoff_duty = 0.5  # bad=0.15s, good=0.15s
+        stop_event = threading.Event()
+        try:
+            node_agent._arm_malicious('srvT', 'onoff', concurrency=1, stop_event=stop_event)
+
+            assert _wait_until(lambda: AgentHandler.onoff_bad is True)
+            status = _get_status(agent_server)
+            assert status['cpu_load'] == 0.1
+
+            assert _wait_until(lambda: AgentHandler.onoff_bad is False, timeout=2.0)
+            status = _get_status(agent_server)
+            assert status['cpu_load'] != 0.1
+        finally:
+            stop_event.set()
+
+    def test_onoff_before_arming_ignores_onoff_bad_leftover_state(self, agent_server):
+        # Regression guard: onoff_bad is a separate flag from `armed`. A node
+        # must never lie just because onoff_bad happens to be True while
+        # still unarmed (e.g. leftover class state from a prior test/run).
+        AgentHandler.malicious = 'onoff'
+        AgentHandler.armed = False
+        AgentHandler.onoff_bad = True
+        status = _get_status(agent_server)
+        assert status['cpu_load'] != 0.1

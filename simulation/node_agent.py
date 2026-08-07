@@ -14,13 +14,34 @@ Endpoints:
     GET  /status  -> claimed telemetry: {"node_id","cpu_load","latency_ms",
                                           "active_tasks","concurrency"}
 
---malicious sybil: spawns `concurrency` background CPU-burning threads (real
-                   load) while /status always claims a low, fixed cpu_load —
-                   the lie flow_monitor's honesty check is built to catch.
---malicious drop:  accepts /task connections and never responds. The tell is
-                   NOT in this agent's own reporting (it can self-report CPU
-                   honestly) — it is in the client-observed timeout rate,
-                   which controller/flow_monitor.py watches separately.
+--malicious sybil:    spawns `concurrency` background CPU-burning threads
+                   (real load) while /status always claims a low, fixed
+                   cpu_load — the lie flow_monitor's honesty check is built
+                   to catch.
+--malicious drop:     accepts /task connections and never responds (100% of
+                   tasks). The tell is NOT in this agent's own reporting (it
+                   can self-report CPU honestly) — it is in the
+                   client-observed timeout rate, which
+                   controller/flow_monitor.py watches separately. Standard
+                   name for this in the routing-attack literature:
+                   blackhole.
+--malicious grayhole: like drop, but only for a *fraction* of tasks
+                   (--grayhole-drop-rate, default 0.5) — the rest get real
+                   work and a real reply. Same timeout-rate tell as drop,
+                   just weaker per-sample, which is the point: it exists to
+                   test whether that tell's threshold still catches a
+                   partial dropper, not just an always-dropper.
+--malicious onoff:    alternates between an honest phase and a sybil-style
+                   CPU lie every --onoff-period-s (split by --onoff-duty),
+                   instead of lying continuously. This targets the trust
+                   EMA directly (lambda_decay) rather than any one
+                   telemetry check: the classic "on-off"/intermittent
+                   reputation attack rebuilds trust during the honest phase
+                   and spends it during the bad phase. Stress-tests this
+                   project's own headline claim that an independent anomaly
+                   gate catches what a trust score alone cannot (README
+                   Finding 1) against an attacker built specifically to
+                   exploit the trust score's memory.
 
 --malicious-start-s: delay (seconds, default 0 = old behavior) before the
                    chosen --malicious mode ARMS. Before arming, the agent is
@@ -36,6 +57,7 @@ import argparse
 import hashlib
 import json
 import logging
+import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,6 +93,12 @@ _DROP_HANG_S = 3600.0
 # attack doesn't claim duty cycle for time it was actually behaving honestly.
 _attack_armed_at: 'float | None' = None
 
+# --malicious onoff only: when the CURRENT bad phase started (None during a
+# good phase). Its own timestamp, separate from _attack_armed_at, because the
+# lie must not claim duty cycle for earlier phases -- including earlier BAD
+# phases -- only the one running right now.
+_onoff_bad_phase_started_at: 'float | None' = None
+
 
 def _burn_cpu_for_ms(duration_ms: float) -> None:
     """Spend roughly duration_ms of real CPU time hashing. Not a sleep — the
@@ -83,10 +111,46 @@ def _burn_cpu_for_ms(duration_ms: float) -> None:
 
 
 def _sybil_burn_loop(stop_event: threading.Event) -> None:
-    """Background CPU consumer for --malicious sybil. Runs until stopped."""
+    """Background CPU consumer for --malicious sybil (and onoff's bad phase).
+    Runs until stopped."""
     buf = b'sybil-background-load'
     while not stop_event.is_set():
         buf = hashlib.sha256(buf).digest()
+
+
+def _onoff_toggle_loop(
+    node_id: str, period_s: float, duty: float, concurrency: int,
+    master_stop_event: threading.Event,
+) -> None:
+    """Daemon-thread target for --malicious onoff: alternate BAD/GOOD phases
+    forever, starting (and fully stopping) the sybil-style CPU burners at
+    each phase boundary so a GOOD phase is genuinely honest, not just
+    self-reporting honestly while secretly still burning cycles from the
+    previous BAD phase."""
+    global _onoff_bad_phase_started_at
+    bad_s = max(0.0, period_s * duty)
+    good_s = max(0.0, period_s * (1.0 - duty))
+    while not master_stop_event.is_set():
+        # BAD phase
+        _onoff_bad_phase_started_at = time.monotonic()
+        AgentHandler.onoff_bad = True
+        logger.warning("%s: onoff -> BAD phase (%.1fs)", node_id, bad_s)
+        phase_stop = threading.Event()
+        for _ in range(concurrency):
+            threading.Thread(
+                target=_sybil_burn_loop, args=(phase_stop,), daemon=True,
+            ).start()
+        if master_stop_event.wait(bad_s):
+            phase_stop.set()
+            return
+        phase_stop.set()
+
+        # GOOD phase
+        _onoff_bad_phase_started_at = None
+        AgentHandler.onoff_bad = False
+        logger.info("%s: onoff -> GOOD phase (%.1fs)", node_id, good_s)
+        if master_stop_event.wait(good_s):
+            return
 
 
 def _arm_malicious(
@@ -107,6 +171,13 @@ def _arm_malicious(
     if malicious_kind == 'sybil':
         for _ in range(concurrency):
             threading.Thread(target=_sybil_burn_loop, args=(stop_event,), daemon=True).start()
+    elif malicious_kind == 'onoff':
+        threading.Thread(
+            target=_onoff_toggle_loop,
+            args=(node_id, AgentHandler.onoff_period_s, AgentHandler.onoff_duty,
+                  concurrency, stop_event),
+            daemon=True,
+        ).start()
 
 
 def _arm_after_delay(
@@ -132,6 +203,14 @@ class AgentHandler(BaseHTTPRequestHandler):
     # the whole run when --malicious-start-s hasn't elapsed (or is 0 and
     # main() already armed synchronously before the server started).
     armed = False
+    # --malicious grayhole only: fraction of /task requests dropped.
+    grayhole_drop_rate = 0.5
+    # --malicious onoff only: cycle length and the fraction of it spent lying.
+    onoff_period_s = 8.0
+    onoff_duty = 0.5
+    # --malicious onoff only: True while the current phase is the bad one.
+    # Irrelevant for every other --malicious kind.
+    onoff_bad = False
 
     def log_message(self, fmt: str, *args) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)
@@ -158,7 +237,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if _recent_latencies_ms else self.work_ms
             )
 
-        if self.malicious == 'sybil' and self.armed:
+        onoff_lying = self.malicious == 'onoff' and self.armed and self.onoff_bad
+        if (self.malicious == 'sybil' and self.armed) or onoff_lying:
             cpu_load = self.claimed_cpu_lie  # the lie, regardless of real load
             # Lie *consistently*. A fabricated cpu_load next to a truthful
             # busy_seconds is an internal contradiction the controller could
@@ -168,11 +248,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             # node still has to be caught on evidence it does not control (the
             # latency tell, or busy-time-per-task against the fleet median).
             #
-            # Measured since _attack_armed_at, not _agent_started_at: with a
-            # delayed onset the node behaved honestly before arming, so the
-            # lie must not claim duty cycle for time it wasn't lying yet.
-            assert _attack_armed_at is not None  # armed implies this is set
-            uptime = time.monotonic() - _attack_armed_at
+            # Measured since the lie's own start, not process/arming start:
+            # sybil lies continuously once armed, so _attack_armed_at is the
+            # right basis; onoff only lies during its current bad phase, so
+            # it must use _onoff_bad_phase_started_at instead -- using
+            # _attack_armed_at there would claim duty cycle for earlier GOOD
+            # phases (and earlier bad ones) it wasn't lying through.
+            basis = _onoff_bad_phase_started_at if onoff_lying else _attack_armed_at
+            assert basis is not None  # armed/onoff_bad implies this is set
+            uptime = time.monotonic() - basis
             busy_seconds = uptime * cpu_load * max(1, self.concurrency)
 
         else:
@@ -205,6 +289,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             time.sleep(_DROP_HANG_S)
             return
 
+        if (
+            self.malicious == 'grayhole' and self.armed
+            and random.random() < self.grayhole_drop_rate
+        ):
+            # Same "accept and never respond" tell as drop, just probabilistic
+            # instead of universal -- deliberately weaker per-sample so it
+            # tests whether the timeout-rate tell's threshold still catches a
+            # partial dropper, not just an always-dropper.
+            time.sleep(_DROP_HANG_S)
+            return
+
         global _active_tasks, _busy_seconds_total
         with _state_lock:
             _active_tasks += 1
@@ -234,16 +329,34 @@ def main() -> None:
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--concurrency', type=int, default=4)
     parser.add_argument('--work-ms', type=float, default=40.0)
-    parser.add_argument('--malicious', choices=['none', 'sybil', 'drop'], default='none')
+    parser.add_argument(
+        '--malicious',
+        choices=['none', 'sybil', 'drop', 'grayhole', 'onoff'],
+        default='none',
+    )
     parser.add_argument(
         '--claimed-cpu-lie', type=float, default=0.1,
-        help='Fixed cpu_load reported by --malicious sybil, regardless of real load',
+        help='Fixed cpu_load reported by --malicious sybil/onoff (while lying), '
+             'regardless of real load',
     )
     parser.add_argument(
         '--malicious-start-s', type=float, default=0.0,
         help='Delay (s) after agent start before --malicious behavior arms. '
              '0 (default) arms immediately -- the pre-existing behavior. '
              'Before arming the agent is indistinguishable from --malicious none.',
+    )
+    parser.add_argument(
+        '--grayhole-drop-rate', type=float, default=0.5,
+        help='--malicious grayhole only: fraction of /task requests dropped '
+             '(never answered), the rest served normally.',
+    )
+    parser.add_argument(
+        '--onoff-period-s', type=float, default=8.0,
+        help='--malicious onoff only: length of one full bad+good cycle.',
+    )
+    parser.add_argument(
+        '--onoff-duty', type=float, default=0.5,
+        help='--malicious onoff only: fraction of --onoff-period-s spent lying.',
     )
     args = parser.parse_args()
 
@@ -257,6 +370,9 @@ def main() -> None:
     AgentHandler.work_ms = args.work_ms
     AgentHandler.malicious = args.malicious
     AgentHandler.claimed_cpu_lie = args.claimed_cpu_lie
+    AgentHandler.grayhole_drop_rate = args.grayhole_drop_rate
+    AgentHandler.onoff_period_s = args.onoff_period_s
+    AgentHandler.onoff_duty = args.onoff_duty
 
     stop_event = threading.Event()
     if args.malicious != 'none':

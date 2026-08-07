@@ -8,6 +8,9 @@ greenthread/OS thread, started by TrustBalancerApp.start().
 Endpoints:
     POST /auth/challenge  {device_id} -> {nonce: hex}
     POST /auth/verify     {device_id, response: hex} -> {token} | 403
+        A 403 also publishes an 'auth_denied' event carrying the structured
+        AuthError.kind, so a refused admission is visible to the event
+        recording rather than only to the device that got refused.
     GET  /trust/score     [?node_id=] -> {node_id: score} or {node_id: score, ...}
     POST /offload/request -> advisory only, installs nothing (see
         TrustBalancerApp.handle_offload_advisory -- the real routing decision
@@ -188,9 +191,40 @@ def _make_handler(app: Any, state: TrustState):
         def _handle_auth_verify(self, body: Dict[str, Any]) -> None:
             device_id = body['device_id']
             response = bytes.fromhex(body['response'])
+            # Same discipline as _handle_report below: identity comes from the
+            # request's own socket, never the JSON body, so a claim about
+            # who's asking can't be forged in the body -- this is what
+            # Authenticator's source-IP pinning checks against (see
+            # security/authenticator.py's spoofing defence).
+            source_ip = self.client_address[0]
             try:
-                token = state.authenticator.verify_response(device_id, response)
+                token = state.authenticator.verify_response(device_id, response, source_ip)
             except AuthError as exc:
+                # Publish the denial. Until this existed, a refused admission
+                # left no trace on the event bus at all -- the controller did
+                # the right thing and then forgot it, so the JSONL recording
+                # (and anything scoring it, e.g. evaluation/attack_report.py)
+                # could never see an identity-spoofing attempt. `kind` is the
+                # structured tag from security/authenticator.py, which is what
+                # separates a spoofer (correct key, wrong source -- 'ip_pin')
+                # from a device that never held the key ('bad_response').
+                #
+                # Safe to publish on every denial rather than only a rising
+                # edge, unlike the flood tell: a denied device authenticates
+                # once and then sends nothing (simulation/iot_client.py's
+                # admission path never retries), so this cannot become a
+                # bus-flooding event source.
+                kind = getattr(exc, 'kind', None)
+                app.bus.publish(
+                    'auth_denied', device_id=device_id, source_ip=source_ip,
+                    kind=kind, reason=str(exc),
+                )
+                # ...and into classification, which turns 'ip_pin' into the
+                # discrete label `spoof` and 'bad_response' into
+                # `bad_credentials` (plan_adv.md Phase 2).
+                record = getattr(app, 'record_auth_denial', None)
+                if record is not None:
+                    record(device_id, source_ip, kind)
                 self._write_json(403, {'error': str(exc)})
                 return
             self._write_json(200, {'token': token})

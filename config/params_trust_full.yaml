@@ -56,22 +56,66 @@ optimizer:
 simulation:
   num_edge_nodes: 8
   num_iot_devices: 40
-  num_malicious: 3
+  num_malicious: 4
   duration_s: 300
 
-  # 3 malicious edge servers, deliberately spread across the fleet (not
-  # adjacent node indices) so p2c/epsilon routing has to route around
-  # attackers scattered through its sampling pool, not clustered at one end.
+  # 4 malicious edge servers, one per node-side attack class, deliberately
+  # spread across the fleet (not adjacent node indices) so p2c/epsilon routing
+  # has to route around attackers scattered through its sampling pool rather
+  # than clustered at one end. Onsets are staggered so each attack has a clean
+  # baseline interval before it and the interval report shows its effect
+  # arriving (plan_adv.md Phase 0/2).
+  #
+  # 4 of 8 is exactly half the fleet, which would normally threaten the latency
+  # tell's fleet-MEDIAN baseline (it assumes an honest majority). It is safe
+  # here, and the reason is worth stating rather than assuming: only the two
+  # CPU-burning attacks make a node slow to answer /status. Blackhole and
+  # grayhole answer /status at full speed and misbehave only on /task, so at
+  # most 2 of 8 nodes are ever slow and the median stays firmly among the
+  # honest six. Adding a third CPU-burner would break that and must not be
+  # done without re-checking controller/flow_monitor.py's baseline assumption.
   malicious_edge_nodes:
     - node: srv3
       attack: sybil
       start_s: 20
     - node: srv6
-      attack: drop
+      attack: drop            # reported as 'blackhole' -- see attack_classifier
       start_s: 30
-    - node: srv8
-      attack: sybil
+    - node: srv1
+      attack: grayhole
       start_s: 40
+      grayhole_drop_rate: 0.5
+    - node: srv8
+      attack: onoff
+      start_s: 50
+      # 20s period / 0.5 duty = a 10s good phase. Must clear
+      # ONOFF_MIN_GOOD_PHASE_S (~4s) or the attack is still caught but is
+      # classified as sybil -- see controller/attack_classifier.py.
+      onoff_period_s: 20.0
+      onoff_duty: 0.5
+
+  # DDoS/flooding device (plan_adv.md Phase 1). Rate chosen against the
+  # detector, not for maximum damage: expected per-device rate is
+  # 1/report_interval_s = 0.5 Hz, and the tell needs >5x that and >=3 Hz. Three
+  # workers at 0.25s pacing is ~12 Hz, i.e. 24x expected -- unambiguous to the
+  # detector while adding only ~12 req/s on top of the fleet's ~20. Deliberately
+  # NOT the unpaced default: this box is 4 cores, and every previous collapse in
+  # this project's live runs traces to offered load, not to the architecture
+  # (see docs/LIVE_RUN_8_40_3.md).
+  malicious_flood_devices:
+    - device: iot37
+      start_s: 60
+      concurrency: 3
+      interval_s: 0.25
+
+  # Identity-spoofing device: holds the fleet-wide key (so it must NOT appear
+  # in security.malicious_iot_devices below, which hands out a wrong key) and
+  # uses it to authenticate as iot1. start_s is late enough that iot1 has
+  # certainly authenticated first, which is what arms the source-IP pin.
+  malicious_spoof_devices:
+    - device: iot38
+      target: iot1
+      start_s: 15
 
 security:
   auth_scheme: present80

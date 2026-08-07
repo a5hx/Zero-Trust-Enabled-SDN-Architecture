@@ -237,6 +237,16 @@ class TrustState:
         self.probation_interval_s = probation_interval_s
         self._last_probation: Dict[str, float] = {}
 
+        # Request arrival timestamps per CLIENT ip (not per edge node -- see
+        # controller/flood_detector.py's module docstring for why flood
+        # detection is keyed on the requester, not on whichever node the
+        # request lands on). Populated lazily since the client roster, unlike
+        # node_ids, is not known up front. maxlen is a hard safety cap against
+        # a pathological flood between reads, not the primary bound --
+        # client_request_rate() prunes by age on every call, and callers call
+        # it right after every record_client_request().
+        self._client_request_times: Dict[str, Deque[float]] = {}
+
         self._pending_updates: List[TrustUpdate] = []
         self._routing_decisions: List[Dict[str, Any]] = []
         # Nodes currently quarantined by the *previous* check, so callers (the
@@ -763,6 +773,34 @@ class TrustState:
             if self._now() - newest_at > self._timeout_evidence_max_age_s:
                 return None
             return sum(1 for _, s in history if s == 'timeout') / len(history)
+
+    def record_client_request(self, client_ip: str) -> None:
+        """Record one VIP request arrival from client_ip, for the flood/DDoS
+        tell (controller/flood_detector.py). Owned here alongside TrustState's
+        other request-facing counters (register_dispatch, occupancy) since
+        this is driven by every PacketIn, not the 1Hz poll loop that owns the
+        per-node health tells."""
+        with self._lock:
+            dq = self._client_request_times.setdefault(client_ip, deque(maxlen=1000))
+            dq.append(self._now())
+
+    def client_request_rate(self, client_ip: str, window_s: float) -> float:
+        """Requests/second from client_ip within the trailing window_s.
+
+        Unlike recent_timeout_rate, there is no "stale evidence, must
+        abstain" case here: an idle or never-seen client genuinely has a
+        rate of 0.0 right now, which is the correct answer, not a stand-in
+        for "no opinion" -- arrival events either happened inside the window
+        or they didn't.
+        """
+        with self._lock:
+            dq = self._client_request_times.get(client_ip)
+            if not dq or window_s <= 0:
+                return 0.0
+            cutoff = self._now() - window_s
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            return len(dq) / window_s
 
     def _flush_pending_locked(self) -> None:
         if self._pending_updates:
