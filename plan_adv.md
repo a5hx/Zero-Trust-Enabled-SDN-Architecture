@@ -785,9 +785,44 @@ stands at 46/48 on run 8 and 45/48 on run 9, with every remaining miss
 characterised: srv6 a magnitude the defence's own speed denies evidence for
 (§4.7), iot38 §5.13, iot40 §5.5, srv4 §6.9.
 
-**Next: §6.10 (close the spoofing race), then §6.9.** §6.10 goes first because
-it is the only open item where an attack actually succeeds rather than being
-contained-but-mislabelled.
+### Phase 8 — Closing the spoofing race (`panel_fix.md` §6.10)
+
+Done 2026-08-08, immediately after run 9 exposed it. Full write-up in
+`panel_fix.md` §3.16; three links in one chain, each individually minor:
+
+- [x] **Accept queue.** `NorthboundAPI` inherited the stdlib
+      `request_queue_size = 5` while all 48 hosts connect within milliseconds of
+      `net.start()`. Past 5 pending accepts the kernel resets — that is §5.5's
+      `Connection reset by peer`. Now 128, pinned against the configured fleet
+      size.
+- [x] **A reset is not a denial.** The client treated one transport failure as
+      refusal and sat out the whole run. Now retries transport failures (5
+      attempts, backoff) and never retries a 403.
+- [x] **Provisioned roster instead of trust-on-first-use.**
+      `security.IdentityBinding` takes a `device_id -> source IP` roster derived
+      from `simulation/addressing.py`; where an entry exists it is authoritative
+      whether or not the device ever authenticated. TOFU remains for identities
+      with no roster entry. The three duplicated pin checks are now one.
+- [x] **Unclaimed identities are reported.** A one-shot roster audit publishes
+      `identity_unclaimed`, so an eviction leaves a trace instead of looking
+      like a device that never started. Gates nothing.
+
+**Verified end-to-end over a real socket** against the real `/auth/verify`:
+the run-9 spoof now gets HTTP 403, the legitimate owner gets 200, and the
+denial reaches the bus tagged `ip_pin` (→ classified `spoof`, keyed on the
+attacker's source IP per §3.11).
+
+**Near-miss worth keeping:** the first `_device_roster` read `cfg['topology']`
+when the block is `simulation:`. It returned `{}` — a silent no-op fix, every
+identity back on TOFU, indistinguishable from success in a live run. The
+preflight test asserting the roster is *populated* caught it. **A fix with a
+silent fallback needs a test that it is in effect, not just that it is
+harmless.**
+
+**Phase 8 status: done (2026-08-08). 581 → 599 tests green.**
+
+**Next: live run 10** to confirm §3.16 in situ, then §6.9 (the re-dispatch
+attribution defect behind srv4).
 
 ---
 

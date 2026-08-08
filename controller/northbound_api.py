@@ -307,7 +307,30 @@ class NorthboundAPI(ThreadingHTTPServer):
     themselves. `app` is a TrustBalancerApp (duck-typed here -- not imported,
     to avoid a circular import with controller/trust_balancer.py)."""
 
+    #: Kernel accept backlog. The stdlib default is 5, and that is what evicted
+    #: a legitimate device in live run 9.
+    #:
+    #: ThreadingHTTPServer spawns a thread per connection, so the SERVING side
+    #: scales fine -- but threads are only spawned after accept(), and every
+    #: host in the topology comes up at once. 40 IoT clients and 8 edge agents
+    #: all open their first connection within milliseconds of net.start(), and
+    #: past 5 pending accepts the kernel starts refusing, which the client sees
+    #: as `Connection reset by peer`. Run 9: iot1 and iot40 were both reset
+    #: inside the same 20 ms window at t+0.4 s.
+    #:
+    #: That is not merely a lost request. iot1 treated the reset as a denial and
+    #: sat out the entire run, which left the identity "iot1" unclaimed -- and
+    #: the spoofer took it (panel_fix.md 5.13). A five-deep queue on a 48-host
+    #: fleet was the first link in that chain.
+    #:
+    #: 128 is well clear of any plausible fleet here and costs nothing: the
+    #: backlog is a queue bound, not a preallocation.
+    request_queue_size = 128
+
     def __init__(self, app: Any, state: TrustState, host: str, port: int) -> None:
         handler_cls = _make_handler(app, state)
         super().__init__((host, port), handler_cls)
-        logger.info("NorthboundAPI listening on %s:%d", host, port)
+        logger.info(
+            "NorthboundAPI listening on %s:%d (accept backlog %d)",
+            host, port, self.request_queue_size,
+        )

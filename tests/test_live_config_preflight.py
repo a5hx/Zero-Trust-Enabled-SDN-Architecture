@@ -267,3 +267,126 @@ class TestGroundTruthMatchesWhatIsLaunched(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --------------------------------------------------------------------- #
+# Live run 9 follow-up: the spoofing race (panel_fix.md 5.13 / 6.10)
+# --------------------------------------------------------------------- #
+
+class TestTransportFailureIsNotADenial:
+    """A reset is "the question never got asked", not "the answer was no".
+
+    Conflating them is what removed the real iot1 from live run 9 and left its
+    identity free for the spoofer. The client must retry a transport failure
+    and must NOT retry a 403.
+    """
+
+    def _client(self):
+        import simulation.iot_client as c
+        return c
+
+    def test_a_transport_failure_is_retried(self):
+        c = self._client()
+        calls = []
+
+        def flaky(*a, **k):
+            calls.append(1)
+            return c._TRANSPORT_FAILED if len(calls) < 3 else 'tok'
+
+        orig = c._authenticate_once
+        c._authenticate_once = flaky
+        try:
+            token = c._authenticate(
+                'h', 1, 'iot1', 'present80', b'k', 1.0, sleep=lambda _s: None,
+            )
+        finally:
+            c._authenticate_once = orig
+        assert token == 'tok'
+        assert len(calls) == 3, 'the handshake must be retried, not abandoned'
+
+    def test_a_403_is_final_and_never_retried(self):
+        c = self._client()
+        calls = []
+
+        def denied(*a, **k):
+            calls.append(1)
+            return None
+
+        orig = c._authenticate_once
+        c._authenticate_once = denied
+        try:
+            token = c._authenticate(
+                'h', 1, 'iot39', 'present80', b'k', 1.0, sleep=lambda _s: None,
+            )
+        finally:
+            c._authenticate_once = orig
+        assert token is None
+        assert len(calls) == 1, (
+            'a 403 is the controller\'s considered answer -- retrying it would '
+            'turn a bad-credentials device into a flood of auth attempts'
+        )
+
+    def test_it_gives_up_after_the_documented_number_of_attempts(self):
+        c = self._client()
+        calls = []
+
+        def always_reset(*a, **k):
+            calls.append(1)
+            return c._TRANSPORT_FAILED
+
+        orig = c._authenticate_once
+        c._authenticate_once = always_reset
+        try:
+            assert c._authenticate(
+                'h', 1, 'iot1', 'present80', b'k', 1.0, sleep=lambda _s: None,
+            ) is None
+        finally:
+            c._authenticate_once = orig
+        assert len(calls) == c._AUTH_MAX_ATTEMPTS
+
+
+class TestTheControllerAcceptQueueFitsTheFleet:
+    def test_backlog_exceeds_the_configured_host_count(self):
+        """The stdlib default of 5 is what reset iot1 and iot40 in run 9.
+
+        Every host opens its first connection within milliseconds of
+        net.start(), so the accept queue must hold the whole fleet at once --
+        threads are only spawned AFTER accept().
+        """
+        from controller.northbound_api import NorthboundAPI
+        cfg = load('config/params_trust_full.yaml')
+        hosts = (cfg['simulation']['num_iot_devices']
+                 + cfg['simulation']['num_edge_nodes'])
+        assert NorthboundAPI.request_queue_size >= hosts, (
+            f'accept backlog {NorthboundAPI.request_queue_size} is smaller than '
+            f'the {hosts}-host fleet that connects at once'
+        )
+
+
+class TestTheRosterMatchesTheTopologyItGuards:
+    def test_every_configured_device_has_a_provisioned_ip(self):
+        """The roster is derived from simulation/addressing.py rather than
+        configured separately, so it cannot drift from the addresses
+        topology.py actually assigns. This checks the derivation covers the
+        whole fleet -- a device missing from it silently falls back to TOFU,
+        which is the hole 6.10 exists to close."""
+        from controller.trust_balancer import _device_roster
+        from simulation.addressing import iot_ip
+
+        cfg = load('config/params_trust_full.yaml')
+        roster = _device_roster(cfg)
+        n = cfg['simulation']['num_iot_devices']
+        assert len(roster) == n
+        for j in range(1, n + 1):
+            assert roster[f'iot{j}'] == iot_ip(j)
+
+    def test_the_run_9_spoof_pair_is_covered(self):
+        from controller.trust_balancer import _device_roster
+        roster = _device_roster(load('config/params_trust_full.yaml'))
+        assert roster['iot1'] == '10.0.0.1'
+        assert roster['iot38'] == '10.0.0.38'
+
+    def test_an_unknown_population_still_gets_tofu(self):
+        from controller.trust_balancer import _device_roster
+        assert _device_roster({}) == {}
+        assert _device_roster({'simulation': {}}) == {}

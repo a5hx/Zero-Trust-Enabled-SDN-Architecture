@@ -98,16 +98,67 @@ def _compute_auth_response(scheme: str, key: bytes, device_id: str, nonce: bytes
     raise ValueError(f"unsupported auth scheme: {scheme!r}")
 
 
+#: Handshake attempts before a device gives up and sits out the run.
+#:
+#: A transport failure is NOT a denial, and conflating the two cost this
+#: project a successful identity spoof. In live run 9 the real iot1's very
+#: first handshake hit `Connection reset by peer` -- the controller's accept
+#: queue was full while 48 hosts started at once -- and iot1 logged
+#: "AUTH DENIED, sending no traffic" and never tried again. The identity "iot1"
+#: was then unclaimed for the rest of the run, and iot38 took it.
+#:
+#: A 403 is the controller's considered answer and is still final on the first
+#: reply. Only a network-level failure is retried, because only that one means
+#: the question never got asked. See panel_fix.md 5.13.
+_AUTH_MAX_ATTEMPTS = 5
+_AUTH_RETRY_BASE_S = 0.4
+
+
 def _authenticate(
     controller: str, controller_port: int, device_id: str,
     scheme: str, key: bytes, timeout_s: float,
+    max_attempts: int = _AUTH_MAX_ATTEMPTS,
+    sleep=time.sleep,
 ) -> Optional[str]:
-    """Run the challenge-response handshake with the controller.
+    """Run the challenge-response handshake, retrying transport failures.
 
-    Returns the session token on success, or None if the controller denied the
-    device (wrong key -> 403) or the handshake could not be completed. A None
-    return is the signal for the caller to not join the fleet.
+    Returns the session token on success, or None if the controller DENIED the
+    device (403) or every attempt failed at the network level. A None return is
+    the signal for the caller to not join the fleet.
     """
+    for attempt in range(1, max_attempts + 1):
+        outcome = _authenticate_once(
+            controller, controller_port, device_id, scheme, key, timeout_s,
+        )
+        if outcome is not _TRANSPORT_FAILED:
+            return outcome
+        if attempt < max_attempts:
+            backoff = _AUTH_RETRY_BASE_S * (2 ** (attempt - 1))
+            logger.warning(
+                "%s: auth handshake attempt %d/%d failed at the transport "
+                "layer -- retrying in %.1fs (a reset is not a denial)",
+                device_id, attempt, max_attempts, backoff,
+            )
+            sleep(backoff)
+    logger.error(
+        "%s: auth handshake failed at the transport layer %d times -- giving "
+        "up. This device is NOT refused; it never reached the controller, and "
+        "its identity is now unclaimed.",
+        device_id, max_attempts,
+    )
+    return None
+
+
+#: Sentinel: the handshake never got an answer, as opposed to being refused.
+_TRANSPORT_FAILED = object()
+
+
+def _authenticate_once(
+    controller: str, controller_port: int, device_id: str,
+    scheme: str, key: bytes, timeout_s: float,
+):
+    """One handshake attempt. Token on success, None on a 403, or
+    _TRANSPORT_FAILED when the exchange could not be completed at all."""
     try:
         conn = http.client.HTTPConnection(controller, controller_port, timeout=timeout_s)
         conn.request(
@@ -132,10 +183,10 @@ def _authenticate(
         conn.close()
         if resp.status == 200:
             return json.loads(body).get('token')
-        return None  # 403 -- denied admission
+        return None  # 403 -- denied admission, a real and final answer
     except OSError as exc:
         logger.warning("Auth handshake failed (network): %s", exc)
-        return None
+        return _TRANSPORT_FAILED
 
 
 def _report(

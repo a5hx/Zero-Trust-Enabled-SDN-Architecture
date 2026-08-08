@@ -19,7 +19,7 @@ import hmac
 import logging
 import secrets
 import time
-from typing import Dict, Optional, Protocol
+from typing import Dict, Optional, Protocol, Set
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,112 @@ class AuthError(Exception):
     def __init__(self, message: str, kind: str = AUTH_DENY_BAD_RESPONSE) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class IdentityBinding:
+    """Which source IP is entitled to a device_id, and how we know.
+
+    WHY THIS IS NOT TRUST-ON-FIRST-USE ANY MORE
+    --------------------------------------------
+    Live run 9 (2026-08-08) is the first run in this project where an attack
+    SUCCEEDED rather than being contained-but-mislabelled, and this class is
+    where it succeeded. The rule was "the first source IP to successfully
+    authenticate as a device_id is pinned to it", with the check skipped
+    entirely when no prior binding existed. That is TOFU, and TOFU gives the
+    identity to whoever gets there first:
+
+        08:04:24,194  iot1  handshake dies, Connection reset by peer
+        08:04:24,194  iot1  AUTH DENIED -- sending no traffic     <- victim out
+        08:04:40,578  iot38 authenticating AS iot1 from this host
+        08:04:40,681  iot38 SPOOFING SUCCEEDED -- 130 tasks as iot1
+
+    The real iot1 never claimed "iot1", so there was nothing for the pin to
+    compare against and the spoofer's response -- cryptographically correct,
+    because the PRESENT-80 key is fleet-wide -- was accepted. Normally the
+    legitimate device wins the race by 15 s and none of this shows.
+
+    So identity ownership must not be decided by a race. When the fleet roster
+    is known ahead of time -- and here it is, `simulation/addressing.py` assigns
+    `iot<N>` -> `10.0.0.<N>` and both topology.py and the controller already
+    depend on that being the single source of truth -- the binding is
+    PROVISIONED and an unclaimed identity is not up for grabs.
+
+    Semantics, deliberately narrow:
+      * device_id IS in the roster -> the provisioned IP is the only one
+        accepted, whether or not the device has ever authenticated.
+      * device_id is NOT in the roster -> fall back to TOFU, unchanged.
+        TOFU is the right default for a population you do not know in advance;
+        it is the wrong one for a population you do. Keeping both means this
+        can be adopted without requiring every deployment to enumerate devices.
+
+    The denial kind stays AUTH_DENY_IP_PIN either way: it is the same attack
+    and the classifier already maps ip_pin -> spoof, so a roster catch is
+    reported identically to a TOFU catch with no downstream change.
+    """
+
+    def __init__(self, expected_ips: Optional[Dict[str, str]] = None) -> None:
+        #: Provisioned device_id -> source IP. Authoritative where present.
+        self._expected_ips: Dict[str, str] = dict(expected_ips or {})
+        #: Observed device_id -> source IP, for identities with no roster entry.
+        self._session_ip: Dict[str, str] = {}
+        #: Every device_id that has completed a handshake at least once.
+        self._authenticated: Set[str] = set()
+
+    def check(self, device_id: str, source_ip: Optional[str]) -> None:
+        """Raise AuthError(AUTH_DENY_IP_PIN) if this host may not be device_id.
+
+        A caller that cannot supply source_ip (unit tests, non-socket
+        transports) gets no identity binding at all -- the same as before.
+        """
+        if source_ip is None:
+            return
+
+        provisioned = self._expected_ips.get(device_id)
+        if provisioned is not None:
+            if provisioned != source_ip:
+                raise AuthError(
+                    f"{device_id} is provisioned to {provisioned}, request came "
+                    f"from {source_ip} (identity spoofing -- correct key, wrong "
+                    f"host; the roster binding does not depend on {device_id} "
+                    f"ever having authenticated)",
+                    AUTH_DENY_IP_PIN,
+                )
+            return
+
+        pinned = self._session_ip.get(device_id)
+        if pinned is not None and pinned != source_ip:
+            raise AuthError(
+                f"{device_id} is pinned to {pinned}, request came from "
+                f"{source_ip} (possible identity spoofing -- correct key, "
+                f"wrong source)",
+                AUTH_DENY_IP_PIN,
+            )
+
+    def bind(self, device_id: str, source_ip: Optional[str]) -> None:
+        """Record the observed owner. A no-op for provisioned identities --
+        their binding is configuration, not observation."""
+        if source_ip is not None and device_id not in self._expected_ips:
+            self._session_ip[device_id] = source_ip
+
+    def owner(self, device_id: str) -> Optional[str]:
+        return self._expected_ips.get(device_id) or self._session_ip.get(device_id)
+
+    def roster(self) -> Dict[str, str]:
+        return dict(self._expected_ips)
+
+    def mark_authenticated(self, device_id: str) -> None:
+        self._authenticated.add(device_id)
+
+    def unclaimed(self) -> Dict[str, str]:
+        """Roster identities nobody has successfully authenticated as.
+
+        The controller previously could not tell "iot1 has not started yet"
+        from "iot1 was knocked off its socket and is out of the run" -- both
+        are silence. With a roster it can at least name which identities are
+        vacant, which is the precondition for noticing an eviction at all.
+        """
+        return {d: ip for d, ip in self._expected_ips.items()
+                if d not in self._authenticated}
 
 
 class Authenticator(Protocol):
@@ -92,10 +198,10 @@ class NullAuthenticator:
     drives the handshake.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, expected_ips: Optional[Dict[str, str]] = None) -> None:
         self._nonces: Dict[str, tuple[bytes, float]] = {}
         self._sessions: Dict[str, str] = {}
-        self._session_ip: Dict[str, str] = {}
+        self.binding = IdentityBinding(expected_ips)
         logger.warning(
             "NullAuthenticator active — all devices are accepted without "
             "verification. Replace with Present80Authenticator in Sprint 2."
@@ -125,18 +231,12 @@ class NullAuthenticator:
         # A real authenticator checks `response` here. This one does not --
         # so the IP-pinning check below is the only identity-spoofing defence
         # NullAuthenticator has.
-        pinned_ip = self._session_ip.get(device_id)
-        if pinned_ip is not None and source_ip is not None and pinned_ip != source_ip:
-            raise AuthError(
-                f"{device_id} is pinned to {pinned_ip}, request came from "
-                f"{source_ip} (possible identity spoofing)",
-                AUTH_DENY_IP_PIN,
-            )
+        self.binding.check(device_id, source_ip)
 
         token = secrets.token_hex(16)
         self._sessions[device_id] = token
-        if source_ip is not None:
-            self._session_ip[device_id] = source_ip
+        self.binding.bind(device_id, source_ip)
+        self.binding.mark_authenticated(device_id)
         return token
 
     def is_authenticated(self, device_id: str) -> bool:
@@ -179,7 +279,10 @@ class Present80Authenticator:
     /auth just didn't have it until now.
     """
 
-    def __init__(self, shared_key: bytes) -> None:
+    def __init__(
+        self, shared_key: bytes,
+        expected_ips: Optional[Dict[str, str]] = None,
+    ) -> None:
         if len(shared_key) != 10:
             raise ValueError(
                 f"PRESENT-80 key must be 10 bytes (80 bits), got {len(shared_key)}"
@@ -187,7 +290,7 @@ class Present80Authenticator:
         self._key = shared_key
         self._nonces: Dict[str, tuple[bytes, float]] = {}
         self._sessions: Dict[str, str] = {}
-        self._session_ip: Dict[str, str] = {}
+        self.binding = IdentityBinding(expected_ips)
 
     def issue_challenge(self, device_id: str) -> bytes:
         nonce = secrets.token_bytes(8)  # 64-bit, per the SRS
@@ -221,19 +324,12 @@ class Present80Authenticator:
                 f"Bad auth response from {device_id}", AUTH_DENY_BAD_RESPONSE,
             )
 
-        pinned_ip = self._session_ip.get(device_id)
-        if pinned_ip is not None and source_ip is not None and pinned_ip != source_ip:
-            raise AuthError(
-                f"{device_id} is pinned to {pinned_ip}, request came from "
-                f"{source_ip} (possible identity spoofing -- correct key, "
-                f"wrong source)",
-                AUTH_DENY_IP_PIN,
-            )
+        self.binding.check(device_id, source_ip)
 
         token = secrets.token_hex(16)
         self._sessions[device_id] = token
-        if source_ip is not None:
-            self._session_ip[device_id] = source_ip
+        self.binding.bind(device_id, source_ip)
+        self.binding.mark_authenticated(device_id)
         return token
 
     def is_authenticated(self, device_id: str) -> bool:
@@ -250,11 +346,14 @@ class HmacAuthenticator:
     for `Present80Authenticator` — callers only ever depend on `Authenticator`.
     """
 
-    def __init__(self, shared_key: bytes) -> None:
+    def __init__(
+        self, shared_key: bytes,
+        expected_ips: Optional[Dict[str, str]] = None,
+    ) -> None:
         self._key = shared_key
         self._nonces: Dict[str, tuple[bytes, float]] = {}
         self._sessions: Dict[str, str] = {}
-        self._session_ip: Dict[str, str] = {}
+        self.binding = IdentityBinding(expected_ips)
 
     def issue_challenge(self, device_id: str) -> bytes:
         nonce = secrets.token_bytes(8)
@@ -289,19 +388,12 @@ class HmacAuthenticator:
 
         # Same source-IP pinning as Present80Authenticator -- see its
         # docstring. The shared key here is fleet-wide too.
-        pinned_ip = self._session_ip.get(device_id)
-        if pinned_ip is not None and source_ip is not None and pinned_ip != source_ip:
-            raise AuthError(
-                f"{device_id} is pinned to {pinned_ip}, request came from "
-                f"{source_ip} (possible identity spoofing -- correct key, "
-                f"wrong source)",
-                AUTH_DENY_IP_PIN,
-            )
+        self.binding.check(device_id, source_ip)
 
         token = secrets.token_hex(16)
         self._sessions[device_id] = token
-        if source_ip is not None:
-            self._session_ip[device_id] = source_ip
+        self.binding.bind(device_id, source_ip)
+        self.binding.mark_authenticated(device_id)
         return token
 
     def is_authenticated(self, device_id: str) -> bool:

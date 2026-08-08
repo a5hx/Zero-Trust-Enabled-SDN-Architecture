@@ -15,6 +15,7 @@ from security.authenticator import (
     AUTH_DENY_NONCE_EXPIRED,
     NONCE_TTL_S,
     AuthError,
+    IdentityBinding,
     Present80Authenticator,
 )
 from security.present_cipher import encrypt_bytes
@@ -222,3 +223,97 @@ class TestAuthErrorKinds:
             AUTH_DENY_IP_PIN, AUTH_DENY_BAD_RESPONSE,
             AUTH_DENY_NO_CHALLENGE, AUTH_DENY_NONCE_EXPIRED,
         }
+
+
+class TestProvisionedRosterClosesTheSpoofingRace:
+    """LIVE RUN 9: the first run in this project where an attack SUCCEEDED.
+
+    iot38 authenticated AS iot1, was issued a session, and ran 130 tasks under
+    the stolen identity -- no denial, no anomaly, scored `none`. The pin was
+    trust-on-first-use, so it had nothing to compare against for an identity
+    that had never been claimed:
+
+        08:04:24,194  iot1  handshake dies, Connection reset by peer
+        08:04:24,194  iot1  AUTH DENIED -- sending no traffic
+        08:04:40,578  iot38 authenticating AS iot1 from this host
+        08:04:40,681  iot38 SPOOFING SUCCEEDED
+
+    A provisioned roster removes the race rather than narrowing it: ownership
+    is configuration, so it does not matter who gets there first.
+    """
+
+    ROSTER = {'iot1': '10.0.0.1', 'iot38': '10.0.0.38'}
+
+    def test_the_run_9_spoof_is_refused_even_though_the_victim_never_showed_up(self):
+        auth = Present80Authenticator(shared_key=_KEY, expected_ips=self.ROSTER)
+        # iot1 never authenticates -- it was reset off its socket at t+0.4s.
+        # iot38 then attempts the identity from its own host, with a
+        # cryptographically PERFECT response (the key is fleet-wide).
+        nonce = auth.issue_challenge('iot1')
+        with pytest.raises(AuthError, match='spoofing') as exc:
+            auth.verify_response(
+                'iot1', _legitimate_response(_KEY, nonce), source_ip='10.0.0.38',
+            )
+        assert exc.value.kind == AUTH_DENY_IP_PIN
+        assert not auth.is_authenticated('iot1')
+
+    def test_the_legitimate_owner_is_still_admitted_whenever_it_arrives(self):
+        # The point is to bind the identity, not to require punctuality: a
+        # device delayed past every other host must still get its own name.
+        auth = Present80Authenticator(shared_key=_KEY, expected_ips=self.ROSTER)
+        nonce = auth.issue_challenge('iot1')
+        assert auth.verify_response(
+            'iot1', _legitimate_response(_KEY, nonce), source_ip='10.0.0.1',
+        )
+
+    def test_a_device_not_in_the_roster_still_uses_first_use_pinning(self):
+        # TOFU is right when the population is unknown and wrong when it is
+        # known. Both must remain available, or adopting this would require
+        # every deployment to enumerate its devices up front.
+        auth = Present80Authenticator(shared_key=_KEY, expected_ips=self.ROSTER)
+        n1 = auth.issue_challenge('sensorX')
+        assert auth.verify_response(
+            'sensorX', _legitimate_response(_KEY, n1), source_ip='10.9.9.9',
+        )
+        n2 = auth.issue_challenge('sensorX')
+        with pytest.raises(AuthError, match='spoofing'):
+            auth.verify_response(
+                'sensorX', _legitimate_response(_KEY, n2), source_ip='10.9.9.10',
+            )
+
+    def test_a_roster_binding_is_not_overwritten_by_observation(self):
+        """The provisioned IP must not be replaceable by a successful auth.
+
+        Otherwise the roster is only advisory: whoever authenticates first
+        would still end up owning the binding, which is the bug.
+        """
+        binding = IdentityBinding({'iot1': '10.0.0.1'})
+        binding.bind('iot1', '10.0.0.1')
+        assert binding.owner('iot1') == '10.0.0.1'
+        assert binding.roster()['iot1'] == '10.0.0.1'
+        with pytest.raises(AuthError):
+            binding.check('iot1', '10.0.0.38')
+
+
+class TestUnclaimedIdentitiesAreVisible:
+    """The controller could not tell "not started yet" from "evicted" --
+    both are silence, and silence is what the spoofer exploited."""
+
+    def test_roster_identities_start_unclaimed_and_clear_when_claimed(self):
+        binding = IdentityBinding({'iot1': '10.0.0.1', 'iot2': '10.0.0.2'})
+        assert set(binding.unclaimed()) == {'iot1', 'iot2'}
+        binding.mark_authenticated('iot1')
+        assert set(binding.unclaimed()) == {'iot2'}
+
+    def test_a_refused_spoof_does_not_mark_the_victim_as_claimed(self):
+        # If it did, an eviction would be masked by the very attack that
+        # exploited it -- the report would say iot1 turned up fine.
+        auth = Present80Authenticator(
+            shared_key=_KEY, expected_ips={'iot1': '10.0.0.1'},
+        )
+        nonce = auth.issue_challenge('iot1')
+        with pytest.raises(AuthError):
+            auth.verify_response(
+                'iot1', _legitimate_response(_KEY, nonce), source_ip='10.0.0.38',
+            )
+        assert set(auth.binding.unclaimed()) == {'iot1'}

@@ -229,6 +229,9 @@ class FlowMonitor:
         # here it is UNKNOWN rather than anomalous -- see _poll_once for why an
         # unanswered poll from a node that has never been seen must not score.
         self._ever_seen: Set[str] = set()
+        # One-shot roster audit -- see _audit_unclaimed_identities.
+        self._roster_audited = False
+        self._started_at = time.time()
         # Optional so existing callers (run_demo.py, the unit tests) keep
         # working unchanged -- they never quarantine anything, so they have
         # nothing to undo.
@@ -512,6 +515,8 @@ class FlowMonitor:
         # make it render torn intermediate states.
         self.bus.publish('node_status', nodes=self.state.snapshot())
 
+        self._audit_unclaimed_identities(cycle_t)
+
         newly_quarantined, newly_recovered = self.state.poll_quarantine_transitions()
         for node_id in newly_quarantined:
             try:
@@ -536,6 +541,53 @@ class FlowMonitor:
                 summary['prev_weights'], summary['next_weights'],
             )
             self.bus.publish('optimizer', **summary)
+
+    #: How long after controller start to audit the device roster. Long enough
+    #: that every host has had time to come up and complete a handshake
+    #: (Mininet's build plus the client's own retry ladder), short enough to be
+    #: well inside a 300s run.
+    ROSTER_AUDIT_AFTER_S = 45.0
+
+    def _audit_unclaimed_identities(self, now: float) -> None:
+        """Publish, once, the provisioned identities nobody has authenticated as.
+
+        Live run 9's spoof turned on the controller being unable to tell "iot1
+        has not started yet" from "iot1 was knocked off its socket and is out of
+        the run" -- both are silence, and silence is what left the identity free
+        for iot38 to take (panel_fix.md 5.13). The roster makes the difference
+        expressible: a provisioned device that has never once authenticated,
+        long after everything else has, is a fact worth recording rather than an
+        absence of facts.
+
+        This is a REPORT, not a control action. It gates nothing and quarantines
+        nobody -- the spoofing race itself is closed in security.IdentityBinding,
+        by refusing a foreign host regardless of whether the owner showed up.
+        This exists so that when a device is evicted, something says so.
+
+        It lives in FlowMonitor because this is the controller's only periodic
+        loop, not because identity is its concern; hence one shot and out.
+        """
+        if self._roster_audited or (now - self._started_at) < self.ROSTER_AUDIT_AFTER_S:
+            return
+        self._roster_audited = True
+
+        binding = getattr(getattr(self.state, 'authenticator', None), 'binding', None)
+        if binding is None or not binding.roster():
+            return          # no provisioned roster -- nothing to audit against
+
+        unclaimed = binding.unclaimed()
+        if not unclaimed:
+            return
+        logger.warning(
+            "ROSTER AUDIT: %d provisioned identity(s) never authenticated: %s "
+            "-- each is either a device that failed to start or one that was "
+            "evicted before it could claim its name",
+            len(unclaimed), ', '.join(sorted(unclaimed)),
+        )
+        self.bus.publish(
+            'identity_unclaimed', devices=sorted(unclaimed),
+            expected_ips=unclaimed, after_s=round(now - self._started_at, 1),
+        )
 
     def _publish_classification(self, node_id: str, now: float) -> None:
         """Classify this node and publish only when the LABEL CHANGES.

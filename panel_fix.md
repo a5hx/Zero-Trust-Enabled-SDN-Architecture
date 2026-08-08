@@ -99,7 +99,26 @@ fault:
 - **iot40 `bad_credentials → none` — §5.5**, the transport-layer refusal,
   recurring (it also hit in run 7 and was absent in run 8).
 
-Test suite: **581 passing** (561 before this work).
+Test suite: **599 passing** (561 before this work).
+
+### After run 9: the spoofing race closed (§3.16)
+
+Run 9's two IoT misses were never classification failures — one attack was
+never refused (§5.13) and one denial never reached the bus (§5.5). Both are now
+fixed at the source, and the fix is verified end-to-end against the real
+`/auth/verify` endpoint over a real socket, replaying run 9's exact scenario:
+
+| | run 9 | after §3.16 |
+|---|---|---|
+| Spoof of an identity nobody claimed | **succeeded**, 130 tasks | **HTTP 403** |
+| Legitimate owner admitted | — | HTTP 200 |
+| Denial reaches the bus | no event at all | `auth_denied`, `kind=ip_pin` → `spoof` |
+| Controller accept backlog | 5 (stdlib default) | 128 |
+| A reset during the handshake | permanent self-eviction | retried, 5 attempts |
+| An identity nobody claimed | silent | `identity_unclaimed` event |
+
+**Live run 10 confirms this in situ.** Until then the honest claim is "refused
+in an end-to-end test of the real endpoint", not "refused in a live run".
 
 ---
 
@@ -326,6 +345,66 @@ load-bearing:
 all 7/8 → 8/8**, right family 7/8 → 8/8; exact label stays 7/8. See §4.7 for why
 the magnitude does not follow, and §5.11 for the validation status.
 
+### 3.16 The spoofing race, closed *(2026-08-08 — closes §5.13, §5.5)*
+
+Three defects in one chain, fixed at each link. The chain matters more than any
+single link: **each part was individually minor and the composition was not.**
+
+**(a) A five-deep accept queue evicted a legitimate device.**
+`NorthboundAPI` inherited the stdlib `request_queue_size = 5`.
+`ThreadingHTTPServer` spawns a thread per connection, so the *serving* side
+scales — but threads are only spawned after `accept()`, and all 48 hosts open
+their first connection within milliseconds of `net.start()`. Past 5 pending
+accepts the kernel resets, which is the `Connection reset by peer` of §5.5.
+Run 9 reset iot1 and iot40 inside the same 20 ms window. Now **128**, which is
+a queue bound rather than a preallocation and costs nothing. Pinned by a test
+asserting the backlog exceeds the configured host count.
+
+**(b) The client treated a reset as a denial.** One transport failure and iot1
+logged "AUTH DENIED, sending no traffic" and sat out the entire run. A reset
+means *the question never got asked*; a 403 means *the answer was no*. The
+client now retries transport failures (5 attempts, exponential backoff) and
+never retries a 403 — retrying a real denial would turn a bad-credentials
+device into an auth flood. Pinned in both directions.
+
+**(c) The pin was trust-on-first-use.** The actual security fix.
+`security.IdentityBinding` takes a **provisioned** `device_id -> source IP`
+roster; where an entry exists it is authoritative whether or not that device
+has ever authenticated, so an unclaimed identity is no longer up for grabs.
+Where no entry exists, TOFU is unchanged — right for an unknown population,
+wrong for a known one, and keeping both means this needs no deployment to
+enumerate its devices. The roster is **derived** from
+`simulation/addressing.py`, already the shared source of truth for addressing,
+rather than maintained separately in YAML where it could drift.
+
+The denial kind stays `ip_pin`, so a roster catch is reported exactly like a
+TOFU catch and the classifier maps it to `spoof` with no downstream change.
+The three duplicated copies of the pin check are now one.
+
+**Verified end-to-end over a real socket** (source IP from the kernel, not a
+test argument), replaying run 9 exactly — an identity nobody has claimed:
+
+```
+spoof of an identity NOBODY claimed -> HTTP 403      (run 9: succeeded)
+legitimate owner of iot1            -> HTTP 200
+auth_denied on bus: [('iot38', 'ip_pin', ...)]       -> classified `spoof`
+still unclaimed: ['iot38']
+```
+
+**(d) An unclaimed identity is now reported.** `FlowMonitor` audits the roster
+once, 45 s in, and publishes `identity_unclaimed` for provisioned devices that
+never authenticated. This gates nothing — the race is closed in (c); this
+exists so that an eviction leaves a trace instead of looking like a device that
+simply never started. A refused spoof deliberately does **not** mark the victim
+claimed, or the attack would mask the eviction it exploited.
+
+**A near-miss worth recording:** the first version of `_device_roster` read
+`cfg['topology']`, but the block is `simulation:`. It returned `{}` — every
+identity silently back on TOFU, a no-op fix shipped into a live run and
+indistinguishable from success. The preflight test that asserts the roster is
+*populated* for the real config caught it. **A fix with a silent fallback needs
+a test that the fix is actually in effect, not just that it does no harm.**
+
 ### 3.15 Two documentation defects
 - `config/params_attacks_demo.yaml` claimed `start_s` was "advisory only". It has
   been honoured since Phase 0.
@@ -523,10 +602,9 @@ no prior binding to compare against. What is missing is that **identity
 ownership is established by a race**, and nothing notices when the wrong party
 wins it.
 
-Fix direction in §6.10. Not attempted yet: it is a real design change to the
-admission path, and run 9's purpose was to validate §3.14.
+**FIXED 2026-08-08 — see §3.16.**
 
-### 5.5 A transport-layer refusal leaves no trace
+### 5.5 A transport-layer refusal leaves no trace — **CLOSED by §3.16**
 In run 7, iot40's handshake died with `Connection reset by peer` rather than a
 403, so no `auth_denied` was published and the device scored as undetected. It
 succeeded in run 8, so the behaviour is load-dependent and not yet understood.
@@ -692,7 +770,20 @@ refused below the HTTP layer still leaves a trace.
 thin evidence base. A longer run would firm up the on-off numbers; a larger live
 topology needs hardware this project does not have (§5.7).
 
-### 6.10 **Close the spoofing race** *(now the highest-value item — §5.13)*
+### 6.10 Close the spoofing race — **DONE 2026-08-08** (§3.16)
+All three parts landed: the accept-queue root cause, the client's
+reset-is-not-a-denial distinction, and provisioned roster pinning. Verified
+end-to-end over a real socket; **live run 10 is what confirms it in situ**, and
+until then the honest statement is "refused in an end-to-end test of the real
+endpoint", not "refused in a live run".
+
+The original plan text is kept below because part 3 was written as an
+alternative to part 2 ("if (2) is judged too rigid") and both were built —
+part 2 closes the race, part 3 makes the eviction that enabled it visible.
+They turned out to be complements, not alternatives.
+
+<details><summary>original plan text</summary>
+
 An identity that has never been claimed is free for the taking, and a
 transport-layer failure can vacate one. Three parts, in order:
 
@@ -711,9 +802,11 @@ transport-layer failure can vacate one. Three parts, in order:
    event and should reach the bus as one, rather than being indistinguishable
    from an ordinary registration.
 
+</details>
+
 Worth stating plainly for the panel: run 9 is the run where **an attack
 succeeded**. Every previous run's misses were labelling failures on attacks
-that were contained. This one got in.
+that were contained. This one got in — and it is now closed.
 
 ### 6.9 Do not charge a node for a re-steered task's spent budget
 Closes §5.12, the last honest-node mislabel. When `reassign_dispatches` moves an

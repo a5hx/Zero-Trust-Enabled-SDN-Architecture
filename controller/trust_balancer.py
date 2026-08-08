@@ -255,19 +255,51 @@ def _build_authenticator(cfg: Dict[str, Any]):
     if not sec:
         return HmacAuthenticator(shared_key=_DEMO_HMAC_KEY)
 
+    expected_ips = _device_roster(cfg)
     scheme = sec.get('auth_scheme', 'present80')
     if scheme == 'null':
-        return NullAuthenticator()
+        return NullAuthenticator(expected_ips=expected_ips)
     if scheme == 'hmac':
         key_hex = sec.get('shared_key_hex')
         key = bytes.fromhex(key_hex) if key_hex else _DEMO_HMAC_KEY
-        return HmacAuthenticator(shared_key=key)
+        return HmacAuthenticator(shared_key=key, expected_ips=expected_ips)
     if scheme == 'present80':
         key_hex = sec.get('shared_key_hex')
         if not key_hex:
             raise ValueError("security.auth_scheme=present80 requires shared_key_hex (10 bytes)")
-        return Present80Authenticator(shared_key=bytes.fromhex(key_hex))
+        return Present80Authenticator(
+            shared_key=bytes.fromhex(key_hex), expected_ips=expected_ips,
+        )
     raise ValueError(f"unknown security.auth_scheme: {scheme!r}")
+
+
+def _device_roster(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """device_id -> the source IP entitled to it, derived from the topology.
+
+    This is what turns the source-IP pin from trust-on-first-use into a
+    provisioned binding, closing the spoofing race live run 9 found (an
+    identity nobody has claimed yet is free for the taking -- see
+    security.IdentityBinding).
+
+    Derived rather than configured, from `simulation/addressing.py`, which is
+    already the single source of truth both topology.py and this module use to
+    assign addresses. A separately-maintained roster in YAML would be a second
+    place for the same fact to live and a new way for the two to disagree.
+
+    Returns {} when the config does not describe a device count, which leaves
+    every identity on the old TOFU path -- so this cannot break a deployment
+    whose population is genuinely not known ahead of time. That fallback is
+    also why this needs a test that the roster is actually POPULATED for the
+    live config: a mis-keyed lookup here does not fail, it silently reverts to
+    the behaviour 6.10 exists to remove. The first version of this function
+    read `cfg['topology']`, which does not exist -- the block is `simulation:`
+    -- and would have shipped a no-op fix into a live run.
+    """
+    sim = cfg.get('simulation') or {}
+    num_iot = sim.get('num_iot_devices')
+    if not num_iot:
+        return {}
+    return {f'iot{j}': iot_ip(j) for j in range(1, int(num_iot) + 1)}
 
 # Overridable so tests / alternate demo scales can point at a different file
 # without editing code.

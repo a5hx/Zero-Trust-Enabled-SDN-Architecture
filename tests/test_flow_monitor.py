@@ -4,6 +4,8 @@ _fetch_status is monkeypatched in every test here rather than hitting real
 HTTP, so these run with no Mininet/network dependency at all.
 """
 
+import time
+
 from controller.flow_monitor import FlowMonitor, StatusProbe
 from controller.trust_state import TrustState
 
@@ -561,3 +563,75 @@ def test_trust_rail_evidence_adds_no_isolation_power():
         'the event must carry the real anomaly score so no reader mistakes '
         'this for an anomaly-gate trip'
     )
+
+
+# --------------------------------------------------------------------- #
+# Roster audit (panel_fix.md 6.10 part 3)
+# --------------------------------------------------------------------- #
+
+def _monitor_with_roster(bus, roster, claimed=()):
+    from security.authenticator import NullAuthenticator
+
+    auth = NullAuthenticator(expected_ips=roster)
+    for d in claimed:
+        auth.binding.mark_authenticated(d)
+    state = TrustState(node_ids=['srv1'], authenticator=auth)
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.1, 'latency_ms': 30, 'concurrency': 4}
+    )
+    fm._started_at = 0.0          # the grace period has already elapsed
+    return state, fm
+
+
+def test_an_identity_nobody_claimed_is_reported():
+    """Live run 9's precondition, made visible: the controller could not tell
+    "iot1 has not started" from "iot1 was evicted" -- both are silence."""
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(
+        bus, {'iot1': '10.0.0.1', 'iot2': '10.0.0.2'}, claimed=['iot2'],
+    )
+    fm._poll_once()
+
+    events = bus.of('identity_unclaimed')
+    assert len(events) == 1
+    assert events[0]['devices'] == ['iot1']
+    assert events[0]['expected_ips'] == {'iot1': '10.0.0.1'}
+
+
+def test_the_audit_is_one_shot_not_every_cycle():
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {'iot1': '10.0.0.1'})
+    for _ in range(5):
+        fm._poll_once()
+    assert len(bus.of('identity_unclaimed')) == 1
+
+
+def test_a_fully_claimed_roster_reports_nothing():
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {'iot1': '10.0.0.1'}, claimed=['iot1'])
+    fm._poll_once()
+    assert bus.of('identity_unclaimed') == []
+
+
+def test_the_audit_waits_out_its_grace_period():
+    """Every device is unclaimed at t=0; firing then would report the whole
+    fleet as missing on the first poll of every run."""
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {'iot1': '10.0.0.1'})
+    fm._started_at = time.time()          # just started
+    fm._poll_once()
+    assert bus.of('identity_unclaimed') == []
+
+
+def test_no_roster_means_no_audit():
+    """Deployments with an unknown population must not be told their empty
+    roster is fully claimed, nor get a spurious event."""
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {})
+    fm._poll_once()
+    assert bus.of('identity_unclaimed') == []
