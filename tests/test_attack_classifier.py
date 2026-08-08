@@ -277,13 +277,27 @@ class TestSignalPrecedence(unittest.TestCase):
     def test_the_boundary_is_the_documented_share(self):
         drop_only = {SIG_PACKET_DROP: 0.55}
         both = {SIG_PACKET_DROP: 0.55, SIG_CPU_HONESTY: 0.9}
-        # Exactly at the share: the lying family takes it.
-        at = window([both] * 10 + [drop_only] * 10)
+        # Exactly at the share (6 of 24 family cycles): the lying family wins.
+        at = window([both] * 6 + [drop_only] * 18)
         self.assertEqual(classify_node(at).attack_type, ATTACK_SYBIL)
-        # One cycle under: it stays a dropper.
-        under = window([both] * 9 + [drop_only] * 11)
+        # One cycle under (5 of 24 = 0.21): it stays a dropper.
+        under = window([both] * 5 + [drop_only] * 19)
         self.assertEqual(classify_node(under).attack_type, ATTACK_GRAYHOLE)
-        self.assertEqual(DEFAULT_MIN_LYING_SHARE, 0.5)
+        self.assertEqual(DEFAULT_MIN_LYING_SHARE, 0.25)
+
+    def test_a_liar_that_also_drops_is_not_demoted_to_a_dropper(self):
+        """THE RUN-9 REGRESSION. The weighing rule must not overcorrect.
+
+        srv8 is a true on-off attacker whose CPU burn genuinely times tasks out,
+        so it raises the drop tell on its own account -- 30 cycles in live run 9
+        against 58 lying cycles. At a 0.50 bar its rolling window sat in the
+        drop family for the first 150 s and the run verdict came out `grayhole`.
+        The original precedence existed precisely to protect this case, and a
+        replacement that loses it is worse than what it replaced.
+        """
+        w = window([{SIG_PACKET_DROP: 0.5}] * 30
+                   + [{SIG_LATENCY_TELL: 6.0}] * 58)
+        self.assertEqual(classify_node(w).attack_type, ATTACK_SYBIL)
 
     def test_lying_with_no_drops_at_all_is_still_the_sybil_family(self):
         # The weighing rule must not create a hole for a liar that never times

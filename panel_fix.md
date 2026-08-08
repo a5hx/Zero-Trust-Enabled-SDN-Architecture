@@ -67,7 +67,39 @@ Remaining misses: **srv6** `blackhole` → `grayhole` (right family, magnitude
 unresolvable — §4.7) and **srv4** honest → `grayhole` (a re-dispatch attribution
 transient, not a classifier fault — §5.12).
 
-Test suite: **580 passing** (561 before this work).
+### Live run 9 (2026-08-08, 325 s, same config) — validation
+
+Run 9 exists to confirm §3.14 in real telemetry. **It did** — and it found two
+things the re-score could not.
+
+| Metric | Run 8 | Run 9 |
+|---|---|---|
+| Honest-node availability | 98.90% | **100.00%** |
+| Honest nodes never quarantined | 3 / 4 | **4 / 4** |
+| Honest subjects wrongly labelled | 1 / 40 | **0 / 40** |
+| Time at/above quorum | 100% | 100% |
+| Total outage | none | none |
+| Attackers contained | 4 / 4 | 4 / 4 |
+| All four NFRs | PASS | PASS |
+| Classification accuracy | 95.8% | 93.8% |
+| Attacks classified correctly | 7 / 8 | 5 / 8 |
+| Attacks in the right family | 8 / 8 (est.) | **6 / 8 (measured)** |
+
+**The defence got better; the classification numbers got worse, and the two are
+unrelated.** Both regressions are on the IoT side and neither is a Phase 7
+fault:
+
+- **srv6 `blackhole → grayhole  FAMILY` — §3.14 confirmed.** The replay
+  estimate held exactly (§5.11).
+- **srv8 `onoff → grayhole` — a real regression from §3.13**, caught and fixed:
+  the weighing threshold was too high (§5.14). Re-scored, srv8 is `onoff` again
+  and run 8 is unchanged.
+- **iot38 `spoof → none` — the spoof SUCCEEDED (§5.13).** Not a classification
+  failure: there was nothing to classify, because the attack was never refused.
+- **iot40 `bad_credentials → none` — §5.5**, the transport-layer refusal,
+  recurring (it also hit in run 7 and was absent in run 8).
+
+Test suite: **581 passing** (561 before this work).
 
 ---
 
@@ -451,6 +483,49 @@ Flooding is detected and classified, but not throttled. Auto-dropping a flooding
 client needs a per-client-IP OpenFlow rule path; today's rate-limit and
 quarantine machinery is all per-edge-node.
 
+### 5.13 **SECURITY: identity spoofing succeeds against an identity never claimed**
+*(found by live run 9, 2026-08-08 — the most important thing that run produced)*
+
+In run 9 **iot38's spoof succeeded outright.** It authenticated as iot1, was
+issued a session, and ran 130 tasks as iot1 for the rest of the run. No
+`auth_denied`, no anomaly, no classification — it scored `none` and so did its
+victim.
+
+The chain, from the logs:
+
+```
+08:04:23,779  iot1  starts, begins handshake
+08:04:24,194  iot1  Auth handshake failed (network): [Errno 104] Connection reset by peer
+08:04:24,194  iot1  AUTH DENIED -- refused admission, sending no traffic     <- victim is out
+08:04:40,578  iot38 attempting to authenticate AS iot1 from this host
+08:04:40,681  iot38 SPOOFING SUCCEEDED -- now sending traffic as iot1
+```
+
+**Root cause: the source-IP pin is trust-on-first-use.**
+`security/authenticator.py` pins "the *first* source IP to successfully
+authenticate as a device_id", and the check is skipped entirely when
+`self._session_ip.get(device_id)` is None. An identity that has never been
+claimed is free for the taking. Normally the legitimate device wins the race —
+it starts at t=0 while the spoofer waits until t+15 s — so this never showed.
+In run 9 the real iot1 was knocked out at t+0.4 s by §5.5's
+`Connection reset by peer`, leaving "iot1" unclaimed, and the spoofer's
+t+15 s attempt became the first success.
+
+**This reclassifies §5.5.** It was recorded as a *reporting* gap — "a device
+refused below the HTTP layer leaves no trace". It is also a **security** gap:
+the same transport-layer failure that hides a denial can evict a legitimate
+device, and eviction is what makes the spoof land. Two known-minor issues
+compose into a real one.
+
+**Neither defence was wrong on its own terms** — the same discipline as run 3's
+"the detectors were right". PRESENT-80 verified a correct response; the pin had
+no prior binding to compare against. What is missing is that **identity
+ownership is established by a race**, and nothing notices when the wrong party
+wins it.
+
+Fix direction in §6.10. Not attempted yet: it is a real design change to the
+admission path, and run 9's purpose was to validate §3.14.
+
 ### 5.5 A transport-layer refusal leaves no trace
 In run 7, iot40's handshake died with `Connection reset by peer` rather than a
 403, so no `auth_denied` was published and the device scored as undetected. It
@@ -480,6 +555,29 @@ Every live figure here comes from one run at one seed. No confidence intervals.
 `docs/study/trust-routing-study.html` still describes code that no longer ships
 (pre-p2c routing), and its PDF was printed from an even older version.
 
+### 5.14 The weighing rule was set too high, and live run 9 caught it
+`DEFAULT_MIN_LYING_SHARE` shipped at 0.50 — "the lying signal must dominate".
+Run 8 was indifferent to the value, so nothing objected. Run 9 was not: srv8, a
+true on-off attacker, raised the drop tell on 30 cycles that run (its CPU burn
+genuinely does time tasks out), the rolling window sat in the drop family for
+the first 150 s, and the run verdict came out **`grayhole`** — 121 grayhole
+cycles against 100 on-off. §3.13 had broken the very case the precedence it
+replaced existed to protect.
+
+**The error was treating two asymmetric claims as one.** "A pure dropper never
+raises a lying signal" is false (run 7). "A liar that burns CPU also raises the
+drop tell" is *true*, and srv8 is exactly it. A bar high enough to punish the
+first also demotes the second while it is still accumulating evidence.
+
+Swept against both runs, the safe band is **0.15–0.40**; 0.25 is now the
+default, ~0.15 clear on each side. Pinned by
+`test_a_liar_that_also_drops_is_not_demoted_to_a_dropper`. Fixed 2026-08-08.
+
+**A latent fix that changed nothing on the run it was written against was
+tuned on no evidence at all** — "no effect on run 8" was read as "safe", when
+it only meant "untested". §3.13's own write-up called it latent and that should
+have been the signal to withhold a threshold, not to pick a round one.
+
 ### 5.11 The trust-rail fix is a replay estimate, not live telemetry
 §3.12 and §3.13 are measured on run 8's **own recording** and need no caveat —
 the classifier is a pure function over recorded evidence, so re-running it over
@@ -487,8 +585,13 @@ the same events is the real result. §3.14 is different: run 8 predates the
 `trust_collapse` signal, so its effect is measured by synthesising the signal
 from the recorded trust series and task outcomes, replaying the exact rule
 `isolation_evidence()` implements. That estimate is sound rather than merely a
-lower bound (§4.6), but **live run 9 is still what confirms it**, and until then
-the headline should be quoted as 7/8 detected on measured telemetry.
+lower bound (§4.6), but live run 9 is what confirms it.
+
+**CONFIRMED by live run 9 (2026-08-08).** srv6 came out
+`blackhole → grayhole  FAMILY`, exactly as the replay predicted — the drop
+family established from trust-rail evidence, the magnitude correctly not
+claimed. The §4.6 reasoning held: an estimate for a change that cannot feed
+back into the traffic is not merely a lower bound.
 
 ### 5.12 One honest node is still mislabelled, and it is a re-dispatch transient
 srv4 (honest) → `grayhole`, the last honest-subject miss. Its root cause is not
@@ -516,6 +619,12 @@ fix belongs in outcome attribution, not in the classifier — see §6.9. It is
 *not* bundled with §3.12–3.14 deliberately: it would change quarantine
 behaviour, and mixing an unvalidated behaviour change into run 9 would muddy
 what that run measures.
+
+**Run 9 did not reproduce it**: 0/40 honest subjects mislabelled, 4/4 honest
+nodes never quarantined, 100.00% honest availability. That is *not* evidence
+the defect is gone — nothing was changed — only that the re-dispatch burst that
+triggers it did not line up this time. It is timing-dependent by nature, which
+is an argument for fixing it rather than for waiting to see it again.
 
 ---
 
@@ -583,7 +692,30 @@ refused below the HTTP layer still leaves a trace.
 thin evidence base. A longer run would firm up the on-off numbers; a larger live
 topology needs hardware this project does not have (§5.7).
 
-### 6.9 Do not charge a node for a re-steered task's spent budget *(next)*
+### 6.10 **Close the spoofing race** *(now the highest-value item — §5.13)*
+An identity that has never been claimed is free for the taking, and a
+transport-layer failure can vacate one. Three parts, in order:
+
+1. **Make transport-layer refusals impossible to confuse with absence.** This is
+   §6.7, promoted from a reporting nicety to a prerequisite: the controller
+   cannot tell "iot1 has not started yet" from "iot1 was knocked off the socket"
+   because both look like silence. Instrument the `Connection reset by peer`
+   path first — everything else depends on knowing which case you are in.
+2. **Pin identities from configuration, not from first contact.** The fleet
+   roster is known ahead of time (`topology.py` assigns `iot<N>` → `10.0.0.<N>`),
+   so device→IP can be a *provisioned* binding rather than trust-on-first-use.
+   That removes the race entirely rather than narrowing it. TOFU is the right
+   default when the population is unknown; here it is not unknown.
+3. **Alarm on a late first claim.** If (2) is judged too rigid, then at minimum
+   a device_id claimed for the first time well after fleet start is a suspicious
+   event and should reach the bus as one, rather than being indistinguishable
+   from an ordinary registration.
+
+Worth stating plainly for the panel: run 9 is the run where **an attack
+succeeded**. Every previous run's misses were labelling failures on attacks
+that were contained. This one got in.
+
+### 6.9 Do not charge a node for a re-steered task's spent budget
 Closes §5.12, the last honest-node mislabel. When `reassign_dispatches` moves an
 in-flight dispatch to a survivor, the receiving node inherits a task whose
 client-side deadline is already partly spent — and is then charged with the

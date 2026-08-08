@@ -755,11 +755,39 @@ recorded evidence, so this is a result, not a projection): accuracy
 both 0.500 → **1.000**. The §6.2 gain — detected-at-all and right-family both
 7/8 → **8/8** — is a replay estimate, since run 8 predates the signal.
 
-**Phase 7 status: done (2026-08-08). 561 → 580 tests green.** The two remaining
-misses are both characterised: srv6 is a magnitude the defence's own speed
-denies us the evidence for (§4.7), and srv4 is §6.9.
+### Live run 9 (2026-08-08) — §3.14 confirmed, two new findings
 
-**Next: live run 9** to confirm §3.14 in real telemetry, then §6.9.
+- [x] **§3.14 confirmed in live telemetry.** srv6 came out
+      `blackhole → grayhole  FAMILY`, exactly as the replay predicted. The
+      §4.6 reasoning held: an estimate for a change that cannot feed back into
+      the traffic is sound, not merely a lower bound.
+- [x] **Regression found and fixed: the weighing threshold was too high.**
+      `DEFAULT_MIN_LYING_SHARE` shipped at 0.50 and demoted srv8 — a true on-off
+      attacker whose CPU burn genuinely trips the drop tell — to `grayhole`.
+      Swept against both runs, the safe band is 0.15–0.40; now 0.25.
+      `panel_fix.md` §5.14. **The lesson: "no effect on run 8" meant untested,
+      not safe, and a latent fix should not have carried a tuned threshold.**
+- [x] **SECURITY finding: identity spoofing succeeded (`panel_fix.md` §5.13).**
+      The real iot1 was knocked off its handshake by §5.5's
+      `Connection reset by peer` at t+0.4 s; iot38 then authenticated *as* iot1
+      at t+15 s and ran 130 tasks under the stolen identity. The source-IP pin
+      is trust-on-first-use, so an identity nobody has claimed is free to take.
+      Two issues previously filed as minor compose into a real one. Fix
+      direction in §6.10, now the highest-value item.
+
+**Operationally run 9 is the best run yet**: honest availability **100.00%**,
+0/40 honest subjects mislabelled, 4/4 honest nodes never quarantined, all four
+attackers contained, 100% of the run above quorum, all four NFRs PASS. srv4's
+false grayhole did not recur — timing, not a fix (§5.12).
+
+**Phase 7 status: done (2026-08-08). 561 → 581 tests green.** Classification
+stands at 46/48 on run 8 and 45/48 on run 9, with every remaining miss
+characterised: srv6 a magnitude the defence's own speed denies evidence for
+(§4.7), iot38 §5.13, iot40 §5.5, srv4 §6.9.
+
+**Next: §6.10 (close the spoofing race), then §6.9.** §6.10 goes first because
+it is the only open item where an attack actually succeeds rather than being
+contained-but-mislabelled.
 
 ---
 

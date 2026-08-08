@@ -265,11 +265,40 @@ DEFAULT_WINDOW_CYCLES = 120
 #: qualifying off phase.
 DEFAULT_MIN_QUIET_FRACTION = 0.20
 
-#: Share of a subject's flagged cycles that must carry a lying signal before it
-#: is judged as a liar rather than as a dropper. See the weighing rule in
-#: classify_node -- this replaced an absolute precedence whose premise ("a pure
-#: dropper never raises a lying signal") live run 7 disproved.
-DEFAULT_MIN_LYING_SHARE = 0.5
+#: Share of a subject's family-bearing cycles that must carry a lying signal
+#: before it is judged as a liar rather than as a dropper. See the weighing rule
+#: in classify_node -- this replaced an absolute precedence whose premise ("a
+#: pure dropper never raises a lying signal") live run 7 disproved.
+#:
+#: SET FROM MEASUREMENT, AFTER GETTING IT WRONG ONCE. This started at 0.50 --
+#: "the lying signal must dominate" -- which looked safe because live run 8 was
+#: indifferent to it. Live run 9 was not: srv8, a true on-off attacker, raised
+#: the drop tell on 30 cycles that run (its CPU burn genuinely does time tasks
+#: out), and at 0.50 the rolling window sat in the drop family for the first
+#: 150 s and the run verdict came out `grayhole` -- 121 grayhole cycles against
+#: 100 on-off. The rule had broken the very case the original precedence
+#: existed to protect.
+#:
+#: The two directions are not symmetric and conflating them was the error:
+#:   * "a pure dropper never raises a lying signal" -- FALSE (run 7).
+#:   * "a liar that burns CPU also raises the drop tell" -- TRUE, and srv8 is
+#:     exactly it. That is what the precedence was for.
+#: So the bar must be low enough to let a genuine liar through while it is
+#: still accumulating evidence, and high enough that a few contaminated cycles
+#: cannot flip a dropper. Swept against both runs:
+#:
+#:     share | run 9 srv8 (onoff) | run-7 contamination shape (0.10 lying)
+#:      0.10 | onoff  ok          | sybil   -- WRONG, contamination wins
+#:      0.15 | onoff  ok          | grayhole ok
+#:      0.25 | onoff  ok          | grayhole ok      <- chosen, mid-band
+#:      0.40 | onoff  ok          | grayhole ok
+#:      0.50 | grayhole WRONG     | grayhole ok
+#:
+#: 0.25 sits ~0.15 clear on both sides. Read it as: tolerate up to a quarter of
+#: the family-bearing cycles being contaminated, which is far above any
+#: plausible detector false-positive rate and far below a real liar's share
+#: (run 9 srv8 0.67, run 8 srv3 0.95).
+DEFAULT_MIN_LYING_SHARE = 0.25
 
 
 class Observation(NamedTuple):
