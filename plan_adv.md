@@ -9,6 +9,11 @@ This supplements `plan.md` (which covers the original Sprint 1-3 roadmap, now
 closed). `plan.md` is not touched by this document; do not duplicate status
 tracking between the two.
 
+**See also `panel_fix.md`** — the defect and finding register. This file holds
+the *plan and its status*; `panel_fix.md` holds *what was actually wrong, how we
+knew, what the evidence says now*, the open limitations, and the future scope.
+Findings are written up there in full rather than duplicated here.
+
 ---
 
 ## 1. What was actually asked, decoded
@@ -574,6 +579,187 @@ Confirmed rendering correctly in a browser by the user.
 ### Phase 6 — Fresh full live run
 Produce the real panel-facing numbers/plots on current code; likely also what
 finally unsticks the stale study doc (`[[study-runs-and-data]]`).
+
+- [x] **Preflight, without root (2026-08-07).** A live run costs sudo, a few
+      minutes and a babysat terminal, and *every* live run in this project's
+      history has surfaced at least one defect — several of them pure
+      config/wiring mistakes that were knowable beforehand
+      (`[[live-run-cascading-quarantine]]`). `params_trust_full.yaml` had never
+      been run since Phase 2 put all six attacks in it, so
+      `tests/test_live_config_preflight.py` now drives the **real**
+      `_launch_trust_agents` against a stub Mininet `net` that records the
+      command it would run on each host, and feeds every recorded command to
+      the **real** argparse of the module it invokes. A typo'd flag, an attack
+      kind wired into the topology but missing from `--malicious`, or a config
+      key `topology.py` silently ignores now fails in milliseconds instead of
+      300 s into a sudo run. 12 checks, including: ground truth on the
+      `topology` event matches what is actually launched (kind *and* onset), a
+      spoofer really gets the fleet key rather than the wrong one, and all six
+      attacks plus bad-credentials are genuinely present.
+      - Required extracting `build_parser()` from `node_agent.main()` and
+        `build_parser()`/`parse_args()` from `iot_client.main()`, so the
+        preflight checks the real CLI rather than a copy of it. `iot_client`'s
+        cross-field rule (spoof requires a target) moved into `parse_args()`
+        so the preflight exercises that too.
+      - **Result: the config is sound.** The only failure was the preflight's
+        own wrong assumption (honest IoT clients are launched with the
+        `--malicious` flag *omitted*, not with `none`; only edge agents always
+        pass it explicitly).
+- [x] **Workload sized before running, not after.** Offered load is
+      20 req/s honest + 12 req/s from the flooding device = **0.48 cores of 4
+      (12%)**, fleet utilisation 1.5%, ~50 processes. Comfortably inside the
+      envelope the post-collapse retune established — the flood was
+      deliberately paced (3 workers @ 0.25 s) to be unambiguous to the detector
+      without re-creating run 1's overload.
+- [x] **Found `num_malicious` is vestigial** while checking it: `topology.py`
+      uses it only to mark the last N *IoT* hosts into a `malicious_ids` list
+      nothing reads, plus a log line; `run_demo.py` assigns it to a local it
+      never uses. It counts IoT devices, not edge servers, despite sitting with
+      the edge settings. Documented in the config rather than removed, since
+      both entry points still read the key.
+
+- [x] **Live run 7 executed (2026-08-07)** by the user — 316.8 s, 8/40, all six
+      attacks, `data/events.jsonl` (127 MB). Full write-up in
+      `[[live-run-7-honesty-fallback]]`.
+
+**What the run says.** All four edge attackers were contained in 7–13 s, every
+quarantined honest node recovered (51 recoveries / 55 quarantines — probation
+works), and classification came out at 83.3% with 5/8 attacks correct. But
+service degraded badly: 22.5% total outage, honest availability 48.05%, 28%
+route denial. Detection and recovery are sound; **false positives on honest
+nodes are what cost availability.**
+
+**The H-term fix works — its fallback was the defect.** `expected_duty_cycle()`
+was available in 70% of reports and is excellent where it engages (deviation
+0.0006 against a 0.40 gate) while `observed_load` reads ~17x higher on the same
+samples. But **175 of 175 CPU-honesty firings came from the fallback path** —
+every false quarantine, none from the fixed path — and it was self-reinforcing
+(quarantine → fewer completions → no fleet median → biased fallback → quarantine).
+Fixed by splitting the two causes of `None`: abstain when the *controller*
+lacks completions, keep the degraded comparison (labelled as degraded) only
+when the *node* withholds `busy_seconds`, since that is attacker-controlled.
+`TrustState.reports_busy_seconds()` is recency-based so reporting once then
+stopping cannot buy permanent abstention.
+
+**Measured impact, stated honestly: smaller than it looks.** Replaying run 7,
+attacker detection cycles go 377 → 311 with **all four still detected**, but
+honest-node anomaly cycles only go 212 → **174**. The dominant false-positive
+signal on honest nodes is `packet_drop`, not `cpu_honesty` — real timeouts
+under congestion, with the drop detector firing correctly on true evidence
+(the run-3 framing again). Honest-node quarantine is mostly a **congestion**
+problem; the honesty fallback was a second, independent one. This fix should
+correct the *classification* misses (srv6 → blackhole, srv1 → grayhole, since
+the spurious lying signals were what promoted them out of the drop family) but
+should not be expected to restore availability on its own.
+
+**Second defect, fixed: spoofing was blamed on the victim.** iot38 impersonated
+iot1, the source-IP pin correctly refused it — and the `spoof` label landed on
+**iot1**, with iot38 scoring clean. Auth denials were keyed on the *claimed*
+device_id. Now keyed on source IP, with the impersonated id kept as payload
+evidence and folded back via `subject_aliases`. Accuracy 79.2% → 83.3%.
+
+**Known gaps not yet addressed:** the classifier's "lying beats dropping"
+precedence (its premise — a pure dropper never raises a lying signal — is false
+against real telemetry); `onoff` acting as an absorbing label (precision 0.167,
+4 honest nodes); `iot40`'s denial never reaching the bus (its handshake died
+with `Connection reset by peer`, not a 403, so a transport-layer refusal leaves
+no trace); and one false-positive flood tell on honest `iot29`.
+
+### Live run 8 — validation, and a correction
+
+Re-run on the fixed code, same config, 311.7 s. **CPU-honesty fired zero times**
+(was 175/175 false), with no attacker escaping: srv3/srv8 are carried by the
+latency tell, srv1 by the drop tell, srv6 by the trust rail.
+
+| metric | run 7 | run 8 |
+|---|---|---|
+| route denial | 28.3% | **0.0%** |
+| honest availability | 48.05% | **98.90%** |
+| total outage | 71.3 s (22.5%) | **none** |
+| mean nodes serving | 2.74/8 | **5.30/8** |
+| time at/above quorum | 26.4% | **100%** |
+| classification accuracy | 83.3% | **93.8%** |
+| attacks classified correctly | 5/8 | **6/8** |
+| honest nodes mislabelled | 5/40 | **1/40** |
+| mean detection latency | 16.2 s | 11.1 s |
+
+**The Phase 6 prediction above was wrong, and why matters.** It said the fix
+"should not be expected to restore availability on its own", reading the
+`packet_drop` false positives as an independent congestion problem — because a
+static replay of run 7 showed honest anomaly cycles dropping only 212 → 174.
+They were not independent, they were **downstream**: false CPU-honesty →
+quarantine → re-dispatch onto fewer nodes → real timeouts → drop tell → more
+quarantine. Removing the first link collapsed the cascade. **Replaying a fixed
+recording measures only first-order effects** — the counterfactual run has
+different traffic, so a feedback loop is invisible to replay by construction.
+When the suspected defect sits inside a loop, a replay estimate is a lower
+bound and only a re-run settles it.
+
+All four IoT-side attacks now score correctly (flood, spoof, and both
+bad-credentials devices — iot40's denial reached the bus this time).
+
+**Three misses remain, of 48 subjects:**
+- srv3 sybil→onoff and srv4 honest→grayhole — both the classifier's on-off
+  eagerness, the known gap left unfixed by choice.
+- **srv6 blackhole→none, a newly identified gap.** It was quarantined at
+  t=39.7 s on the **trust rail** (trust 0.2085, anomaly **0.0**): only 3
+  timeouts had been reported, below `_MIN_TIMEOUT_SAMPLES = 4`, so the drop
+  tell never fired at all. The defence was perfect — contained in 9.7 s and
+  never released — but the classifier reads only anomaly signals, so it had no
+  evidence and correctly abstained. **An attacker isolated on the trust rail
+  faster than the anomaly rail reaches its minimum sample count is never
+  labelled**, and quarantine then starves any later evidence. That is the
+  absorbing-state shape again, applied to *labels* rather than trust. Not a
+  security failure — a reporting one.
+
+**Phase 6 status: done (2026-08-07). Two live runs, three defects found and two
+fixed, 561 tests green.** Panel-facing numbers now stand at 98.90% honest
+availability, zero route denial, 100% of the run above serving quorum, and
+93.8% classification accuracy with all four attackers contained in 8–15 s.
+
+---
+
+### Phase 7 — Closing the classification misses (`panel_fix.md` §6.1 / §6.2)
+
+Both future-scope items done 2026-08-08, working against run 8's archived
+telemetry (`data/events_run8.jsonl` — archived deliberately, since
+`run_demo.py --mode mininet` unlinks `data/events.jsonl` at startup). Full
+write-ups in `panel_fix.md` §3.12–§3.14 and §4.7; findings only summarised here.
+
+- [x] **§6.1 on-off eagerness.** srv3, a steady sybil, was reported `onoff`
+      because two of its single-poll clean runs happened to reach the floor.
+      Fixed by requiring intermittency to be *sustained* — qualifying off phases
+      must account for ≥20% of the active span, derived from the duty cycle of
+      an on-off attacker rather than fitted. Measured margin: srv3 2.4% vs srv8
+      64%. **The periodicity check proposed in §6.1 would not have worked** —
+      srv3's two gaps were the same length, so they are perfectly regular.
+- [x] **§6.1 lying-vs-dropping precedence.** Replaced with a weighing rule: the
+      lying signal must carry ≥50% of family-bearing cycles. Zero effect on run
+      8 (Phase 6's §3.10 fix had already removed the spurious signals) — a
+      latent robustness fix, pinned against run 7's failure shape.
+- [x] **§6.2 trust-rail evidence.** `TrustState.isolation_evidence()` +
+      `SIG_TRUST_COLLAPSE`. srv6 — a blackhole contained in 9.7 s with anomaly
+      0.0 and not one flagged cycle in 250 — is now labelled instead of
+      abstained on. **Adds no isolation power by construction**, which is both
+      the safety property and what makes its offline estimate sound.
+- [x] **Found and characterised, deliberately not fixed:** srv4's false
+      `grayhole` is a *re-dispatch attribution* transient, not the on-off
+      eagerness `panel_fix.md` §5.2 blamed. Five tasks re-steered off srv6 and
+      srv3 arrived at srv4 with their client deadlines mostly spent, timed out
+      at the ceiling, and were charged to srv4. Left for §6.9 because it changes
+      quarantine behaviour and would confound live run 9.
+
+**Measured on run 8's own recording** (the classifier is a pure function over
+recorded evidence, so this is a result, not a projection): accuracy
+93.8% → **95.8%**, attacks correct 6/8 → **7/8**, `sybil` and `onoff` precision
+both 0.500 → **1.000**. The §6.2 gain — detected-at-all and right-family both
+7/8 → **8/8** — is a replay estimate, since run 8 predates the signal.
+
+**Phase 7 status: done (2026-08-08). 561 → 580 tests green.** The two remaining
+misses are both characterised: srv6 is a magnitude the defence's own speed
+denies us the evidence for (§4.7), and srv4 is §6.9.
+
+**Next: live run 9** to confirm §3.14 in real telemetry, then §6.9.
 
 ---
 

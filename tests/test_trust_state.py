@@ -958,3 +958,116 @@ class TestClientRequestRate:
         state = _make_state()
         state.record_client_request('10.0.2.5')
         assert state.client_request_rate('10.0.2.5', window_s=0.0) == 0.0
+
+
+# --------------------------------------------------------------------- #
+# Trust-rail isolation evidence (plan_adv.md 6.2)
+# --------------------------------------------------------------------- #
+
+def _outcome(state, node_id, status, latency_ms=50.0, observed=0.0):
+    state.record_task_outcome(TrustUpdate(
+        device_id='iot1', edge_node_id=node_id, task_status=status,
+        cpu_usage=observed, reported_cpu=0.0, latency_ms=latency_ms,
+    ))
+
+
+def _collapsing_timeout(state, node_id) -> None:
+    """One task outcome shaped exactly like srv6's in live run 8.
+
+    A single timeout is NOT enough to cross the isolation threshold on its own
+    -- measured here, it leaves trust at 0.43. srv6 landed at 0.2085 because
+    the same event collapsed three terms at once: the timeout status crushes R,
+    the 4s latency (the client's task_timeout_s) zeroes B, and the node's
+    claimed 0.00 against an observed 1.00 zeroes H. Worth stating, because it
+    is why a blackhole reaches the trust rail before the anomaly rail has the
+    four samples its drop tell needs.
+    """
+    _outcome(state, node_id, 'timeout', latency_ms=4000.0, observed=1.0)
+
+
+class TestIsolationEvidence:
+    """The evidence the TRUST rail acted on, handed to the classifier.
+
+    Live run 8's srv6 was a blackhole quarantined 9.7s after onset on the trust
+    rail, with anomaly exactly 0.0 and not one flagged cycle in 250 -- only 3
+    timeouts were ever reported, below the drop tell's _MIN_TIMEOUT_SAMPLES of
+    4. The classifier reads anomaly signals, so a perfectly contained attack
+    went entirely unlabelled. These pin the way back in.
+    """
+
+    def test_a_healthy_node_offers_no_evidence(self):
+        state = _make_state(node_ids=['srv1'])
+        for _ in range(5):
+            _outcome(state, 'srv1', 'success')
+        assert state.isolation_evidence('srv1') is None, (
+            'this is only ever asked about a node the trust rail has already '
+            'condemned -- it must stay silent otherwise'
+        )
+
+    def test_counts_only_outcomes_since_the_collapse(self):
+        """srv6's exact shape: an honest life, then a collapse.
+
+        _recent_statuses is the last 10 outcomes regardless of era, so at the
+        moment srv6's trust collapsed it held nine pre-onset successes and one
+        timeout -- a 0.10 failure rate for a node that was by then dropping
+        everything. Counting from the collapse asks the right question.
+        """
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        for _ in range(9):
+            _outcome(state, 'srv1', 'success')
+            clock.advance(0.5)      # real outcomes arrive spaced apart
+        _collapsing_timeout(state, 'srv1')
+        assert state.trust_calc.get_score('srv1') < state.isolation_threshold
+
+        rate, samples = state.isolation_evidence('srv1')
+        assert (rate, samples) == (1.0, 1), (
+            'the nine successes predate the collapse and describe a node that '
+            'no longer exists'
+        )
+
+    def test_abstains_once_the_post_collapse_evidence_goes_stale(self):
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        _collapsing_timeout(state, 'srv1')
+        assert state.isolation_evidence('srv1') is not None
+
+        clock.advance(11.0)          # inside the 12s horizon
+        assert state.isolation_evidence('srv1') is not None
+        clock.advance(2.0)           # past it
+        assert state.isolation_evidence('srv1') is None, (
+            'quarantine starves a node of outcomes, so without this the last '
+            'reading would stand for the rest of the run'
+        )
+
+    def test_recovery_clears_the_collapse_marker(self):
+        """A node that earns its way back out starts a fresh episode, so its
+        next collapse is not scored against evidence from the previous one."""
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        _collapsing_timeout(state, 'srv1')
+        assert state.isolation_evidence('srv1') is not None
+
+        for _ in range(10):
+            _outcome(state, 'srv1', 'success')
+        assert state.trust_calc.get_score('srv1') >= state.isolation_threshold
+        assert state.isolation_evidence('srv1') is None
+        assert 'srv1' not in state._trust_collapsed_at
+
+    def test_probation_trials_are_the_evidence(self):
+        """Probation is the only thing generating outcomes for an isolated
+        node, so its trials are exactly what this reads -- and both of srv6's
+        trials in live run 8 timed out."""
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        _collapsing_timeout(state, 'srv1')
+        clock.advance(100.0)
+        assert state.isolation_evidence('srv1') is None   # stale
+
+        _collapsing_timeout(state, 'srv1')
+        rate, samples = state.isolation_evidence('srv1')
+        assert (rate, samples) == (1.0, 2)

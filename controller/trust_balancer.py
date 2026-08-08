@@ -797,24 +797,37 @@ class TrustBalancerApp(app_manager.OSKenApp):
         """Feed an auth denial into client classification.
 
         Called by northbound_api.py's /auth/verify handler. The subject is the
-        DEVICE ID, not the source IP: a spoofer's whole method is to present
-        someone else's device_id, so keying on the IP would file the attempt
-        under the attacker's own honest identity and lose the connection to
-        the identity it tried to steal. The source IP travels in the signal's
-        event payload instead, where it is evidence rather than a key.
+        SOURCE IP -- the host that actually sent the request -- never the
+        claimed device_id.
+
+        An earlier version keyed on device_id, reasoning that a spoofer's whole
+        method is to present someone else's identity so filing under the IP
+        would lose the connection to the identity it tried to steal. Live run 7
+        showed that gets it exactly backwards: iot38 impersonated iot1, the
+        defence correctly refused it, and the resulting `spoof` label landed on
+        **iot1 -- the victim** -- while iot38, the actual attacker, scored as
+        clean. A classifier that blames the impersonated party is worse than no
+        classifier, and the stolen identity does not need to be the key to be
+        preserved: it travels in the event payload as `device_id`, which is
+        evidence, exactly where the source IP used to sit.
+
+        The IP is folded back to a device id for reporting by
+        evaluation/attack_report.subject_aliases, the same way flood evidence
+        already is.
         """
         signal = {
             AUTH_DENY_IP_PIN: SIG_AUTH_IP_PIN,
             AUTH_DENY_BAD_RESPONSE: SIG_AUTH_BAD_RESPONSE,
         }.get(kind or '')
+        subject = source_ip or device_id
         if signal is None:
             # 'no_challenge' / 'nonce_expired' are protocol-sequencing
             # failures, not evidence of either modelled auth attack. Recording
             # them as a clean observation still counts the cycle without
             # accusing anyone.
-            self._record_client_signal(device_id, {})
+            self._record_client_signal(subject, {})
             return
-        self._record_client_signal(device_id, {signal: 1.0})
+        self._record_client_signal(subject, {signal: 1.0})
 
     def _send_arp_reply(self, dp, in_port, arp_pkt, eth) -> None:
         parser = dp.ofproto_parser

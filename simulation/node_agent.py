@@ -323,7 +323,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         self._write_json(200, {'ok': True, 'node_id': self.node_id})
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The agent's CLI, split out of main() so the launch path can be checked
+    without starting an agent -- tests/test_live_config_preflight.py feeds it the
+    exact command simulation/topology.py would run, which is what catches an
+    attack kind wired into the topology but never added to --malicious here."""
     parser = argparse.ArgumentParser(description='Zero Trust SDN edge-server agent')
     parser.add_argument('--node-id', required=True)
     parser.add_argument('--port', type=int, default=8000)
@@ -358,7 +362,11 @@ def main() -> None:
         '--onoff-duty', type=float, default=0.5,
         help='--malicious onoff only: fraction of --onoff-period-s spent lying.',
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     logging.basicConfig(
         level=logging.INFO,

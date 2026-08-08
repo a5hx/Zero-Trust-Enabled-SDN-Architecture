@@ -364,7 +364,10 @@ def run(
         time.sleep(interval_s)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The client's CLI, split out of main() -- see node_agent.build_parser for
+    why (tests/test_live_config_preflight.py checks the real launch commands
+    against it without starting a client)."""
     parser = argparse.ArgumentParser(description='Zero Trust SDN IoT client')
     parser.add_argument('--device-id', required=True)
     parser.add_argument('--vip', required=True)
@@ -404,10 +407,22 @@ def main() -> None:
         help='--malicious spoof only: device_id to impersonate. Requires '
              '--auth-key-hex (the attacker must hold the fleet-wide key).',
     )
-    args = parser.parse_args()
+    return parser
 
+
+def parse_args(argv=None):
+    """Parse and cross-validate. The spoof/target rule lives here rather than in
+    main() so the preflight exercises it too -- a spoof entry missing its target
+    is a config mistake worth catching before the run, not during it."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.malicious == 'spoof' and not args.spoof_target_device_id:
         parser.error('--malicious spoof requires --spoof-target-device-id')
+    return args
+
+
+def main() -> None:
+    args = parse_args()
 
     auth_key = bytes.fromhex(args.auth_key_hex) if args.auth_key_hex else None
 

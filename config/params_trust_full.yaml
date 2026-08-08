@@ -56,6 +56,15 @@ optimizer:
 simulation:
   num_edge_nodes: 8
   num_iot_devices: 40
+  # Vestigial -- kept because both entry points still read the key, but it
+  # drives no behaviour: topology.py uses it only to mark the last N IoT hosts
+  # into a `malicious_ids` list that nothing reads, plus a log line, and
+  # run_demo.py assigns it to a local it never uses. Note it counts IoT
+  # DEVICES, not edge servers, despite sitting next to the edge-node settings.
+  # What actually arms an attacker is malicious_edge_nodes /
+  # malicious_flood_devices / malicious_spoof_devices below and
+  # security.malicious_iot_devices. 4 happens to be right either way here:
+  # 4 malicious edge nodes, and 4 malicious IoT devices (iot37-iot40).
   num_malicious: 4
   duration_s: 300
 

@@ -79,6 +79,7 @@ SIG_UNREACHABLE = 'unreachable'      # value: 1.0 (presence is the signal)
 SIG_FLOOD = 'flood'                  # value: measured rate / expected rate
 SIG_AUTH_IP_PIN = 'auth_ip_pin'      # value: 1.0 -- correct key, wrong source
 SIG_AUTH_BAD_RESPONSE = 'auth_bad_response'   # value: 1.0 -- key not held
+SIG_TRUST_COLLAPSE = 'trust_collapse'  # value: post-collapse failure rate, 0..1
 
 # Signals that say "this subject is lying about its own load". A pure dropper
 # reports its CPU honestly and answers /status at fleet speed, so it never
@@ -86,6 +87,12 @@ SIG_AUTH_BAD_RESPONSE = 'auth_bad_response'   # value: 1.0 -- key not held
 # from the sybil family at all.
 _LYING_SIGNALS = (SIG_CPU_HONESTY, SIG_LATENCY_TELL)
 _AUTH_SIGNALS = (SIG_AUTH_IP_PIN, SIG_AUTH_BAD_RESPONSE)
+
+#: Signals that say "this subject loses the work it is given". Both put a
+#: subject in the drop family, but only SIG_PACKET_DROP carries a timeout rate
+#: measured over enough samples to split blackhole from grayhole --
+#: SIG_TRUST_COLLAPSE deliberately does not. See _split_drop_family.
+_DROP_SIGNALS = (SIG_PACKET_DROP, SIG_TRUST_COLLAPSE)
 
 # --------------------------------------------------------------------------- #
 # Labels
@@ -114,6 +121,32 @@ ALL_LABELS = (
     NODE_DOWN,
     NO_ATTACK,
 )
+
+#: Label -> family. Two of the six attacks are separable from their sibling
+#: only by MAGNITUDE (blackhole/grayhole) and two only by INTERMITTENCY
+#: (sybil/onoff), and both distinctions need evidence the defence sometimes
+#: prevents from ever accumulating -- see _split_drop_family and
+#: ONOFF_MIN_GOOD_PHASE_S. Scoring the family alongside the exact label
+#: separates "the system had no idea" from "the system knew what kind of attack
+#: this was but could not resolve which of the pair", which are very different
+#: results and were previously both reported as a plain miss.
+ATTACK_FAMILIES = {
+    ATTACK_SYBIL: 'load-dishonesty',
+    ATTACK_ONOFF: 'load-dishonesty',
+    ATTACK_BLACKHOLE: 'dropping',
+    ATTACK_GRAYHOLE: 'dropping',
+    ATTACK_FLOOD: 'flooding',
+    ATTACK_SPOOF: 'identity',
+    ATTACK_BAD_CREDENTIALS: 'identity',
+    NODE_DOWN: 'liveness',
+    NO_ATTACK: 'none',
+}
+
+
+def family_of(label: str) -> str:
+    """The family a label belongs to; unknown labels are their own family."""
+    return ATTACK_FAMILIES.get(label, label)
+
 
 #: The config `attack` strings used in simulation/*.yaml and surfaced as ground
 #: truth on the `topology` event, mapped to this module's labels. 'drop' is what
@@ -192,6 +225,52 @@ DEFAULT_EVIDENCE_MAX_AGE_S = 15.0
 #: simulation/topology.py's 20s onoff default -- comfortably clear.
 DEFAULT_WINDOW_CYCLES = 120
 
+#: Fraction of the subject's ACTIVE SPAN that must fall inside qualifying off
+#: phases before the on-off label is used.
+#:
+#: Live run 8 measured why counting off phases is not enough. srv3, a steady
+#: sybil, flagged on 198 of 250 cycles and its clean runs were almost all a
+#: single poll of jitter -- but two of them happened to reach exactly
+#: min_clean_run, so `off_phases >= 1` fired and a sustained liar was reported
+#: as intermittent for 165 of its 220 classified cycles. Requiring two off
+#: phases does not separate them either: srv3 had exactly two.
+#:
+#: What does separate them is how much of the span is actually quiet, and it is
+#: not a close call:
+#:
+#:     srv3 (true sybil): 6 quiet cycles / 250 span  =  2.4%
+#:     srv8 (true onoff): ~145 quiet cycles / 227 span = 64%
+#:
+#: The threshold is derived rather than fitted. An on-off attacker with duty
+#: cycle d is quiet for (1 - d) of its period, less the detector's own reaction
+#: lag -- the same (1 + min_clean_run) cycles that ONOFF_MIN_GOOD_PHASE_S is
+#: built from -- eaten off the front of every good phase:
+#:
+#:     quiet_fraction  ~=  (1 - d) - (1 + min_clean_run) / period_cycles
+#:
+#: At topology.py's defaults (d = 0.5, period 20 s, 1 Hz polling) that is
+#: 0.5 - 0.2 = 0.30. Setting the bar at 0.20 accepts attackers up to d ~= 0.6
+#: while sitting an order of magnitude above the incidental-gap case. A faster
+#: or busier on-off attacker falls back to `sybil`, which is the same honest
+#: degradation ONOFF_MIN_GOOD_PHASE_S already documents: the attacker is still
+#: caught and quarantined, only the label loses resolution.
+#:
+#: A minimum off-phase COUNT was tried alongside this and deliberately dropped.
+#: "Two gaps make a rhythm, one makes an interruption" sounds right, but srv3
+#: had exactly two, so it does not separate the measured cases -- and requiring
+#: two full off phases inside the window would raise the window constraint
+#: below from 2x the on-off period to 3x, and delay every on-off verdict by a
+#: phase, to buy nothing the quiet fraction was not already buying. One derived
+#: rule beats two, and `quiet_fraction >= x > 0` already implies at least one
+#: qualifying off phase.
+DEFAULT_MIN_QUIET_FRACTION = 0.20
+
+#: Share of a subject's flagged cycles that must carry a lying signal before it
+#: is judged as a liar rather than as a dropper. See the weighing rule in
+#: classify_node -- this replaced an absolute precedence whose premise ("a pure
+#: dropper never raises a lying signal") live run 7 disproved.
+DEFAULT_MIN_LYING_SHARE = 0.5
+
 
 class Observation(NamedTuple):
     """One detection cycle's evidence about one subject.
@@ -237,10 +316,28 @@ def _median(values: Sequence[float]) -> float:
     return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
-def _count_off_phases(
+class OffPhases(NamedTuple):
+    """How intermittent a subject's misbehaviour was, over its active span.
+
+    `count` alone is not enough to call something on-off -- see
+    DEFAULT_MIN_QUIET_FRACTION, where a steady sybil produced two qualifying
+    gaps out of 198 flagged cycles. `quiet_fraction` is what says whether the
+    quiet is the subject's normal condition or a couple of stray polls.
+    """
+
+    count: int
+    quiet_cycles: int
+    span_cycles: int
+
+    @property
+    def quiet_fraction(self) -> float:
+        return self.quiet_cycles / self.span_cycles if self.span_cycles else 0.0
+
+
+def _measure_off_phases(
     window: Sequence[Observation], min_clean_run: int,
-) -> int:
-    """How many times the subject went quiet for a real stretch and came back.
+) -> OffPhases:
+    """Measure the quiet stretches the subject took between misbehaving.
 
     Only the span from the first flagged cycle to the last is considered: clean
     cycles before a subject ever misbehaves are its honest pre-onset life (every
@@ -249,17 +346,24 @@ def _count_off_phases(
     "off phase" -- an off phase is bounded by misbehaviour on both sides, which
     is precisely the on-off signature and precisely what a steady sybil never
     produces.
+
+    Gaps shorter than min_clean_run are NOT counted toward `quiet_cycles`
+    either. They are the detector's own drain time and ordinary poll jitter, and
+    letting them accumulate would let a subject with a hundred single-poll gaps
+    reach the quiet-fraction bar without ever having gone genuinely quiet once.
     """
     indices = [i for i, o in enumerate(window) if o.signals]
     if len(indices) < 2:
-        return 0
+        return OffPhases(0, 0, len(indices))
 
-    off_phases = 0
+    count = 0
+    quiet = 0
     for a, b in zip(indices, indices[1:]):
         gap = b - a - 1          # clean cycles strictly between two flagged ones
         if gap >= min_clean_run:
-            off_phases += 1
-    return off_phases
+            count += 1
+            quiet += gap
+    return OffPhases(count, quiet, indices[-1] - indices[0] + 1)
 
 
 def classify_node(
@@ -268,6 +372,8 @@ def classify_node(
     blackhole_min_rate: float = DEFAULT_BLACKHOLE_MIN_RATE,
     min_clean_run: int = DEFAULT_MIN_CLEAN_RUN,
     evidence_max_age_s: float = DEFAULT_EVIDENCE_MAX_AGE_S,
+    min_quiet_fraction: float = DEFAULT_MIN_QUIET_FRACTION,
+    min_lying_share: float = DEFAULT_MIN_LYING_SHARE,
 ) -> Optional[Classification]:
     """Label an edge node from its recent detection cycles.
 
@@ -296,8 +402,20 @@ def classify_node(
     n_flagged = len(flagged)
 
     lying = [o for o in flagged if any(s in o.signals for s in _LYING_SIGNALS)]
-    dropping = [o for o in flagged if SIG_PACKET_DROP in o.signals]
+    dropping = [o for o in flagged if any(s in o.signals for s in _DROP_SIGNALS)]
     unreachable = [o for o in flagged if SIG_UNREACHABLE in o.signals]
+    # Only the packet-drop tell's rate is a rate: it is measured over at least
+    # _MIN_TIMEOUT_SAMPLES outcomes. See _split_drop_family.
+    rated = [float(o.signals[SIG_PACKET_DROP]) for o in flagged
+             if SIG_PACKET_DROP in o.signals]
+    # The weighing below is lying-vs-dropping, so it is measured over the cycles
+    # that carry one of those two families and no others. An unreachable-only
+    # cycle is evidence for neither and must not dilute either side.
+    n_family = sum(
+        1 for o in flagged
+        if any(s in o.signals for s in _LYING_SIGNALS)
+        or any(s in o.signals for s in _DROP_SIGNALS)
+    )
 
     # --- Liveness failure, checked first and never merged into an attack ---
     # Only when nothing else EVER fired in the window. A node that lied and
@@ -317,22 +435,40 @@ def classify_node(
         )
 
     # --- Sybil family: the subject lied about its own load -------------------
-    # Takes precedence over the drop family because a CPU-burning liar also
-    # times tasks out (it really is slow), so it raises the drop tell too --
-    # but a pure dropper never raises a lying signal, since it reports its load
-    # honestly and answers /status at fleet speed. Asymmetric evidence, so the
-    # lying signal is the more specific one and wins.
-    if lying:
-        off_phases = _count_off_phases(window, min_clean_run)
-        if off_phases >= 1:
+    # This used to be an outright precedence -- ANY lying signal promoted the
+    # subject out of the drop family -- justified by "a pure dropper never
+    # raises a lying signal, since it reports its load honestly and answers
+    # /status at fleet speed". Live run 7 disproved that premise against real
+    # telemetry: the honesty check's biased fallback fired on droppers, and the
+    # precedence turned srv1 (grayhole) into a sybil and srv6 (blackhole) into
+    # an on-off. One spurious cycle was enough to overrule dozens of true ones.
+    #
+    # The asymmetry the rule was built on is real and worth keeping -- a
+    # CPU-burning liar genuinely does time tasks out too, so it raises both
+    # families and must not be filed as a mere dropper. What was wrong was
+    # treating it as absolute rather than as evidence to be weighed. A real
+    # liar lies on essentially every cycle it is flagged on (live run 8: srv3
+    # 188/198 = 95%, srv8 55/57 = 96%); a dropper with contaminated telemetry
+    # lies on a minority. Requiring the lying signal to carry at least half the
+    # flagged cycles sits ~0.45 clear of both populations, so it is a wide gap
+    # rather than a fitted line.
+    lying_share = len(lying) / n_family if n_family else 0.0
+    if lying and (lying_share >= min_lying_share or not dropping):
+        off = _measure_off_phases(window, min_clean_run)
+        # Intermittency has to be SUSTAINED to name the attack on-off, not just
+        # present. See DEFAULT_MIN_QUIET_FRACTION: a steady sybil throws off a
+        # qualifying gap now and then by chance, and a single-gap rule read
+        # 165 of srv3's 220 classified cycles as on-off in live run 8.
+        if off.quiet_fraction >= min_quiet_fraction:
             return Classification(
                 attack_type=ATTACK_ONOFF,
-                confidence=min(1.0, 0.5 + 0.25 * off_phases),
+                confidence=min(1.0, 0.5 + 0.25 * off.count),
                 rationale=(
                     f'load-dishonesty signals on {len(lying)} cycle(s), '
-                    f'interrupted by {off_phases} clean run(s) of >= '
-                    f'{min_clean_run} cycles and resumed afterwards -- '
-                    f'intermittent, not sustained'
+                    f'interrupted by {off.count} clean run(s) of >= '
+                    f'{min_clean_run} cycles accounting for '
+                    f'{off.quiet_fraction:.0%} of its active span -- '
+                    f'sustained intermittency, not steady misbehaviour'
                 ),
                 evidence_cycles=n_flagged,
                 first_flagged_t=first_flagged_t,
@@ -341,8 +477,9 @@ def classify_node(
             attack_type=ATTACK_SYBIL,
             confidence=min(1.0, len(lying) / 10.0),
             rationale=(
-                f'load-dishonesty signals on {len(lying)} cycle(s) with no '
-                f'clean run of >= {min_clean_run} cycles in between -- '
+                f'load-dishonesty signals on {len(lying)} cycle(s), quiet for '
+                f'only {off.quiet_fraction:.0%} of its active span across '
+                f'{off.count} clean run(s) of >= {min_clean_run} cycles -- '
                 f'sustained misreporting of its own load'
             ),
             evidence_cycles=n_flagged,
@@ -351,29 +488,80 @@ def classify_node(
 
     # --- Drop family: honest about load, loses the work ----------------------
     if dropping:
-        rates = [float(o.signals[SIG_PACKET_DROP]) for o in dropping]
-        median_rate = _median(rates)
-        is_blackhole = median_rate >= blackhole_min_rate
-        # Confidence falls off as the measured rate approaches the threshold
-        # from either side -- a grayhole configured at 0.84 genuinely is a
-        # marginal call and should read as one rather than as a confident
-        # blackhole-or-not.
-        margin = abs(median_rate - blackhole_min_rate)
+        contested = (
+            '' if not lying else
+            f', against load-dishonesty on only {len(lying)} of '
+            f'{n_family} family cycle(s) ({lying_share:.0%}, under '
+            f'{min_lying_share:.0%}) -- too thin to outweigh the drops'
+        )
+        label, confidence, why = _split_drop_family(
+            dropping, rated, blackhole_min_rate,
+        )
         return Classification(
-            attack_type=ATTACK_BLACKHOLE if is_blackhole else ATTACK_GRAYHOLE,
-            confidence=min(1.0, 0.5 + margin * 2.0),
-            rationale=(
-                f'packet-drop tell on {len(dropping)} cycle(s), median timeout '
-                f'rate {median_rate:.2f} '
-                f'{">=" if is_blackhole else "<"} {blackhole_min_rate:.2f}, and '
-                f'no load-dishonesty signal -- drops work while reporting its '
-                f'load honestly'
-            ),
+            attack_type=label,
+            confidence=confidence,
+            rationale=why + contested + ' -- loses the work it is given',
             evidence_cycles=n_flagged,
             first_flagged_t=first_flagged_t,
         )
 
     return None
+
+
+def _split_drop_family(
+    dropping: Sequence[Observation],
+    rated: Sequence[float],
+    blackhole_min_rate: float,
+) -> tuple:
+    """Blackhole or grayhole -- and what to do when only one of those is knowable.
+
+    Blackhole and grayhole differ only in MAGNITUDE, so splitting them needs a
+    timeout RATE, and a rate needs samples. The packet-drop tell supplies one
+    measured over at least _MIN_TIMEOUT_SAMPLES outcomes. SIG_TRUST_COLLAPSE
+    does not, and must not be allowed to pretend otherwise.
+
+    Live run 8 measured why, and the result was the opposite of what
+    plan_adv.md predicted. Feeding the trust rail's own post-collapse failure
+    rate into this split does name srv6 (a true blackhole, 3 outcomes all run)
+    correctly -- but it also renames srv1 (a true grayhole) a blackhole, because
+    srv1's first two post-collapse outcomes were both timeouts and 2/2 is 1.00.
+    Every sample bar that keeps srv1 right excludes srv6 entirely. That is not
+    a tuning problem to be solved, it is the shape of the evidence:
+
+        A blackhole fails everything, so it is isolated fastest, so it yields
+        the fewest outcomes to characterise it. Containment quality and
+        magnitude evidence are in direct tension.
+
+    So the trust rail establishes the FAMILY and is not consulted on the
+    magnitude. With no rate available the call degrades to grayhole -- the
+    weaker of the two claims, understating the attack rather than the system's
+    knowledge of it, the same safe direction as reporting detection latency as
+    an upper bound. Confidence is floored to say the call is thin, and the
+    rationale names the reason so no reader mistakes it for a measurement.
+    """
+    if not rated:
+        return (
+            ATTACK_GRAYHOLE,
+            0.25,
+            f'trust-rail isolation on {len(dropping)} cycle(s) with no '
+            f'packet-drop tell to measure a timeout rate -- the drop family is '
+            f'established but its magnitude is not, so this reports the weaker '
+            f'of blackhole/grayhole',
+        )
+
+    median_rate = _median(rated)
+    is_blackhole = median_rate >= blackhole_min_rate
+    # Confidence falls off as the measured rate approaches the threshold from
+    # either side -- a grayhole configured at 0.84 genuinely is a marginal call
+    # and should read as one rather than as a confident blackhole-or-not.
+    margin = abs(median_rate - blackhole_min_rate)
+    return (
+        ATTACK_BLACKHOLE if is_blackhole else ATTACK_GRAYHOLE,
+        min(1.0, 0.5 + margin * 2.0),
+        f'packet-drop tell on {len(rated)} cycle(s), median timeout rate '
+        f'{median_rate:.2f} {">=" if is_blackhole else "<"} '
+        f'{blackhole_min_rate:.2f}',
+    )
 
 
 def classify_client(

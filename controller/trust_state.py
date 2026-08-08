@@ -232,6 +232,12 @@ class TrustState:
             2.0, task_timeout_s * DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR
         )
 
+        # When each node's trust most recently fell below isolation_threshold,
+        # cleared when it climbs back. Marks the boundary isolation_evidence()
+        # reads from: the outcomes that describe the node the trust rail
+        # condemned, rather than the honest life it had before.
+        self._trust_collapsed_at: Dict[str, float] = {}
+
         # Probation ("half-open"): the last time each node was offered a trial
         # task while quarantined. See _probation_candidate_locked().
         self.probation_interval_s = probation_interval_s
@@ -470,6 +476,31 @@ class TrustState:
         if len(vals) % 2:
             return vals[mid]
         return (vals[mid - 1] + vals[mid]) / 2.0
+
+    def reports_busy_seconds(self, node_id: str, max_age_s: Optional[float] = None) -> bool:
+        """Is this node currently supplying the `busy_seconds` counter?
+
+        Exists to tell apart the two very different reasons
+        expected_duty_cycle() can return None, which the honesty check used to
+        conflate (live run 7):
+
+          * the NODE withholds its counter -- attacker-controlled, so the check
+            must not simply go quiet or a liar could disable it by omission;
+          * the CONTROLLER has too few recent completions to build a fleet
+            median -- nothing to do with the node, and blaming it for our own
+            missing evidence is what produced 175 false quarantines.
+
+        Recency matters, so this is not merely "has ever reported": a node that
+        sent the counter early and then stopped must read as NOT reporting, or
+        stopping would become a way to buy permanent abstention. Defaults to
+        the same 2 x load_window_s horizon the history is pruned to.
+        """
+        horizon = 2 * self.load_window_s if max_age_s is None else max_age_s
+        with self._lock:
+            hist = self._busy_hist.get(node_id)
+            if not hist:
+                return False
+            return (self._now() - hist[-1][0]) <= horizon
 
     def expected_duty_cycle(self, node_id: str) -> Optional[float]:
         """What this node's duty cycle *should* be, in service-time units, from
@@ -728,6 +759,13 @@ class TrustState:
             self._recent_statuses.setdefault(
                 upd.edge_node_id, deque(maxlen=10)
             ).append((now_c, upd.task_status))
+            # Track the edge of trust-rail condemnation. Trust only moves on a
+            # task outcome, so this is the only place it can change, and doing
+            # it here keeps isolation_evidence() a pure read.
+            if score < self.isolation_threshold:
+                self._trust_collapsed_at.setdefault(upd.edge_node_id, now_c)
+            else:
+                self._trust_collapsed_at.pop(upd.edge_node_id, None)
             # Cumulative completions, counted by us. This is the denominator of
             # implied_service_time_s -- the half of the honesty comparison the
             # node cannot touch. Only successes count: a timeout means the node
@@ -773,6 +811,63 @@ class TrustState:
             if self._now() - newest_at > self._timeout_evidence_max_age_s:
                 return None
             return sum(1 for _, s in history if s == 'timeout') / len(history)
+
+    def isolation_evidence(self, node_id: str) -> Optional[Tuple[float, int]]:
+        """(failure rate, sample count) for a node the TRUST rail condemned.
+
+        Returns None -- no opinion -- unless all three hold: trust is currently
+        under isolation_threshold, at least one task outcome has been recorded
+        since it fell there, and the newest of those is fresh by the same rule
+        recent_timeout_rate() uses.
+
+        WHY THIS EXISTS, AND WHY IT IS NOT A DETECTOR
+        ----------------------------------------------
+        Live run 8's srv6 was a blackhole quarantined 9.7 s after onset, on the
+        trust rail, with anomaly exactly 0.0 -- only three timeouts were ever
+        reported against it, below the packet-drop tell's _MIN_TIMEOUT_SAMPLES
+        of 4, so the anomaly rail never fired once in 250 cycles. The classifier
+        reads anomaly signals, so it had nothing and correctly abstained, and
+        the attack went unlabelled despite being contained perfectly. An
+        attacker isolated faster than the anomaly rail reaches its minimum
+        sample count is invisible to reporting, and that blind spot grows as
+        detection gets BETTER.
+
+        This closes it by handing the classifier the evidence the trust rail
+        acted on. It deliberately adds NO isolation power: nothing here feeds
+        anomaly_raw, the gate, or any flow rule. A node is only ever asked
+        about after the trust rail has already condemned it, so the worst a
+        wrong answer costs is a wrong label in a report -- not an outage.
+
+        WHY THE OUTCOMES ARE COUNTED FROM THE COLLAPSE
+        -----------------------------------------------
+        _recent_statuses is the last 10 outcomes regardless of era, and for a
+        node isolated seconds after onset most of those are its honest life
+        before it turned. srv6's window at the moment of collapse held nine
+        pre-onset successes and one timeout -- a 0.10 rate for a node that was
+        by then dropping everything. Counting only from the collapse asks the
+        question that is actually being asked: not "how has this node behaved",
+        but "what has it done since we decided it was bad".
+        """
+        with self._lock:
+            if self.trust_calc.get_score(node_id) >= self.isolation_threshold:
+                return None
+            since = self._trust_collapsed_at.get(node_id)
+            if since is None:
+                return None
+            history = self._recent_statuses.get(node_id)
+            if not history:
+                return None
+            post = [(ts, s) for ts, s in history if ts >= since]
+            if not post:
+                return None
+            if self._now() - post[-1][0] > self._timeout_evidence_max_age_s:
+                # Stale: abstain rather than re-assert. Same rule as
+                # recent_timeout_rate, and for the same reason -- a quarantined
+                # node stops producing outcomes, so without this its last
+                # verdict would stand for the rest of the run.
+                return None
+            failures = sum(1 for _, s in post if s != 'success')
+            return failures / len(post), len(post)
 
     def record_client_request(self, client_ip: str) -> None:
         """Record one VIP request arrival from client_ip, for the flood/DDoS

@@ -50,6 +50,7 @@ from controller.attack_classifier import (
     SIG_CPU_HONESTY,
     SIG_LATENCY_TELL,
     SIG_PACKET_DROP,
+    SIG_TRUST_COLLAPSE,
     SIG_UNREACHABLE,
     AttackEvidence,
 )
@@ -341,15 +342,46 @@ class FlowMonitor:
                 # node that refuses to report busy time, which is a detection
                 # hole an attacker controls. Imperfect beats absent; the
                 # dimensionally-sound path is used whenever it is available.
-                reference = expected if expected is not None else observed
+                # Which reference to judge the claim against -- and, crucially,
+                # whether to judge it at all.
+                #
+                # This used to be `expected if expected is not None else
+                # observed`, an unconditional fallback justified as "imperfect
+                # beats absent". Live run 7 measured what that fallback
+                # actually costs: expected_duty was available 70% of the time
+                # and was excellent where it was (deviation 0.0006 against a
+                # 0.40 gate), while observed_load read ~17x higher on the same
+                # samples -- and 175 of 175 CPU-honesty firings came from the
+                # fallback path. Every false quarantine in the run, none from
+                # the fixed path. Worse, it was self-reinforcing: a quarantined
+                # node completes fewer tasks, which is exactly what makes
+                # expected_duty unavailable, which re-fires the check.
+                #
+                # The fallback conflated two different reasons for None. Split:
+                if expected is not None:
+                    reference, basis = expected, 'expected duty'
+                elif not self.state.reports_busy_seconds(node_id):
+                    # The NODE is withholding its busy-seconds counter. That is
+                    # attacker-controlled, so going quiet here would let a liar
+                    # switch the check off by omission. Keep the imperfect
+                    # comparison -- and say in the reason that it is the
+                    # degraded one, so a reader is never told a residence-time
+                    # number is a duty cycle.
+                    reference, basis = observed, 'observed (node sends no busy_seconds)'
+                else:
+                    # The node is reporting honestly; WE lack the completions to
+                    # build a fleet median. Our missing evidence is not the
+                    # node's misbehaviour -- abstain, per the same rule as
+                    # stale-evidence abstention (memory/quarantine-absorbing-state).
+                    reference, basis = None, None
                 # Only cross-check a figure the node actually sent. Falling back
                 # to 0.5 and then comparing against that accuses the node of
                 # lying about a value it never claimed -- and the invented 0.5
                 # against an idle observed 0.0 is itself a 0.50 deviation, over
                 # the threshold before the node has done anything at all.
-                deviation = abs(claimed_avg - reference) if has_claim else 0.0
-                if has_claim and deviation > self.honesty_deviation_threshold:
-                    basis = 'expected duty' if expected is not None else 'observed'
+                can_judge = has_claim and reference is not None
+                deviation = abs(claimed_avg - reference) if can_judge else 0.0
+                if can_judge and deviation > self.honesty_deviation_threshold:
                     logger.warning(
                         "%s: honesty deviation %.3f (claimed=%.3f %s=%.3f) > %.3f",
                         node_id, deviation, claimed_avg, basis, reference,
@@ -438,6 +470,28 @@ class FlowMonitor:
                     f'{self.honesty_deviation_threshold:.2f}'
                 )
                 signals[SIG_PACKET_DROP] = round(timeout_rate, 4)
+
+            # The trust rail can isolate a node before the anomaly rail has the
+            # _MIN_TIMEOUT_SAMPLES it needs to say anything -- live run 8's
+            # srv6 was a blackhole contained in 9.7s with anomaly exactly 0.0
+            # and not one flagged cycle in 250, so the classifier had no
+            # evidence and the attack went unlabelled. Record what the trust
+            # rail acted on so the label can exist.
+            #
+            # NOTE the deliberate omission: this does NOT set anomaly_raw. It
+            # is evidence for the CLASSIFIER only and adds no isolation power
+            # -- the node it describes has already been isolated by the trust
+            # rail, so the most a wrong answer here can cost is a wrong label
+            # in a report. Keep it that way.
+            collapse = self.state.isolation_evidence(node_id)
+            if collapse is not None:
+                fail_rate, samples = collapse
+                reasons.append(
+                    f'trust-rail isolation: {fail_rate:.0%} of the {samples} '
+                    f'task outcome(s) since trust collapsed did not succeed '
+                    f'(no anomaly signal -- this does not gate)'
+                )
+                signals[SIG_TRUST_COLLAPSE] = round(fail_rate, 4)
 
             anomaly = self.state.set_anomaly_raw(node_id, anomaly_raw)
 

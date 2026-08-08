@@ -73,6 +73,7 @@ from controller.attack_classifier import (
     Observation,
     classify_client,
     classify_node,
+    family_of,
 )
 from evaluation.nfr_report import load_events
 
@@ -112,6 +113,19 @@ class SubjectResult:
     @property
     def correct(self) -> bool:
         return self.predicted == self.truth
+
+    @property
+    def family_correct(self) -> bool:
+        """Right kind of attack, even if the exact label is wrong.
+
+        Reported alongside `correct` because the two sibling pairs are
+        separable only by evidence the defence can legitimately deny us -- a
+        blackhole contained in 9.7 s yields too few outcomes to prove it was
+        not a grayhole (see attack_classifier._split_drop_family). Collapsing
+        that into the same "MISS" as a total abstention would overstate the
+        failure; scoring only the family would understate it. Both are printed.
+        """
+        return family_of(self.predicted) == family_of(self.truth)
 
 
 def ground_truth(events: Sequence[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]:
@@ -228,16 +242,21 @@ def client_observations(
                 ratio = ev.get('ratio')
                 add(client, t, {SIG_FLOOD: float(ratio) if ratio else 0.0})
         elif etype == 'auth_denied':
-            device = ev.get('device_id')
-            if not device:
+            # Keyed by SOURCE IP -- the host that sent the request -- not by
+            # the device_id it claimed. Keying on the claim files a spoofing
+            # attempt under the impersonated victim: live run 7 labelled iot1
+            # a spoofer because iot38 had impersonated it. See
+            # trust_balancer.record_auth_denial.
+            subject = ev.get('source_ip') or ev.get('device_id')
+            if not subject:
                 continue
             kind = ev.get('kind')
             if kind == AUTH_KIND_IP_PIN:
-                add(device, t, {SIG_AUTH_IP_PIN: 1.0})
+                add(subject, t, {SIG_AUTH_IP_PIN: 1.0})
             elif kind == AUTH_KIND_BAD_RESPONSE:
-                add(device, t, {SIG_AUTH_BAD_RESPONSE: 1.0})
+                add(subject, t, {SIG_AUTH_BAD_RESPONSE: 1.0})
             else:
-                add(device, t, {})
+                add(subject, t, {})
 
     return windows
 
@@ -430,16 +449,17 @@ def format_report(
     add('-' * 78)
     add('PER-SUBJECT')
     add('-' * 78)
-    add(f'{"subject":<10} {"truth":<16} {"predicted":<16} {"hit":<4} '
+    add(f'{"subject":<10} {"truth":<16} {"predicted":<16} {"hit":<6} '
         f'{"cycles":<8} {"detect":<9}')
     for r in sorted(results, key=lambda x: (x.truth == NO_ATTACK, x.subject)):
         latency = (
             f'{r.detection_latency_s:+.1f}s' if r.detection_latency_s is not None
             else ('-' if r.truth == NO_ATTACK else 'n/a')
         )
+        # FAMILY = the exact label is wrong but the kind of attack is right.
+        hit = 'OK' if r.correct else ('FAMILY' if r.family_correct else 'MISS')
         add(f'{r.subject:<10} {r.truth:<16} {r.predicted:<16} '
-            f'{"OK" if r.correct else "MISS":<4} '
-            f'{r.total_cycles:<8} {latency:<9}')
+            f'{hit:<6} {r.total_cycles:<8} {latency:<9}')
     add('')
 
     add('-' * 78)
@@ -475,6 +495,8 @@ def format_report(
     if attacks:
         detected = [r for r in attacks if r.predicted != NO_ATTACK]
         add(f'Attacks detected at all (any label): {len(detected)}/{len(attacks)}')
+        add(f'Attacks placed in the right family:  '
+            f'{sum(1 for r in attacks if r.family_correct)}/{len(attacks)}')
         add(f'Attacks classified correctly:        '
             f'{sum(1 for r in attacks if r.correct)}/{len(attacks)}')
         latencies = [

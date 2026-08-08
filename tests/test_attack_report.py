@@ -122,14 +122,17 @@ class TestCycleReconstruction(unittest.TestCase):
         events = [
             {'ts': T0, 'type': 'flood', 'client_ip': '10.0.2.1', 'ratio': 40.0},
             {'ts': T0 + 1, 'type': 'auth_denied', 'device_id': 'iot2',
-             'source_ip': '10.0.2.9', 'kind': AUTH_KIND_IP_PIN},
+             'source_ip': '10.0.2.2', 'kind': AUTH_KIND_IP_PIN},
             {'ts': T0 + 2, 'type': 'auth_denied', 'device_id': 'iot3',
              'source_ip': '10.0.2.3', 'kind': AUTH_KIND_BAD_RESPONSE},
         ]
         obs = client_observations(events)
-        self.assertIn('10.0.2.1', obs)     # flood is keyed by source IP
-        self.assertIn('iot2', obs)         # auth is keyed by device id
-        self.assertIn('iot3', obs)
+        # Both are keyed by the SOURCE IP: the host that acted. For a spoofer
+        # that is the only field naming the attacker at all -- device_id names
+        # its victim.
+        self.assertIn('10.0.2.1', obs)
+        self.assertIn('10.0.2.2', obs)
+        self.assertIn('10.0.2.3', obs)
 
 
 class TestAuthKindPinning(unittest.TestCase):
@@ -151,9 +154,11 @@ def _build_recording():
         [('srv1', 'sybil', 5.0), ('srv2', 'drop', 5.0), ('srv3', 'none', 0.0)],
         [('iot1', 'flood', 5.0), ('iot2', 'spoof', 2.0), ('iot3', 'none', 0.0)],
     )]
-    events.append({'ts': T0 + 2.2, 'type': 'auth_denied', 'device_id': 'iot2',
-                   'source_ip': '10.0.2.9', 'kind': AUTH_KIND_IP_PIN,
-                   'reason': 'pinned elsewhere'})
+    # iot2 is the SPOOFER here: it sends from its own address (10.0.2.2)
+    # while claiming to be iot1. The denial must be filed against iot2.
+    events.append({'ts': T0 + 2.2, 'type': 'auth_denied', 'device_id': 'iot1',
+                   'source_ip': '10.0.2.2', 'kind': AUTH_KIND_IP_PIN,
+                   'reason': 'iot1 is pinned to another IP'})
     events.append({'ts': T0 + 6.0, 'type': 'flood', 'client_ip': '10.0.2.1',
                    'ratio': 40.0, 'rate_hz': 40.0})
     for c in range(40):
@@ -554,12 +559,12 @@ class TestRealEventBusFormat(unittest.TestCase):
     def test_client_evidence_reads_a_real_recording(self):
         def publish(bus):
             bus.publish('flood', client_ip='10.0.2.1', rate_hz=40.0, ratio=40.0)
-            bus.publish('auth_denied', device_id='iot2', source_ip='10.0.2.9',
-                        kind=AUTH_KIND_IP_PIN, reason='pinned elsewhere')
+            bus.publish('auth_denied', device_id='iot1', source_ip='10.0.2.2',
+                        kind=AUTH_KIND_IP_PIN, reason='iot1 pinned elsewhere')
 
         obs = client_observations(self._record(publish))
         self.assertIn('10.0.2.1', obs)
-        self.assertIn('iot2', obs)
+        self.assertIn('10.0.2.2', obs)
 
     def test_availability_reads_a_real_recording(self):
         from evaluation.availability_report import compute
@@ -578,3 +583,36 @@ class TestRealEventBusFormat(unittest.TestCase):
         self.assertEqual(len(report.nodes), 1)
         self.assertEqual(report.nodes[0].episodes, 1)
         self.assertEqual(report.nodes[0].recoveries, 1)
+
+
+class TestSpoofIsBlamedOnTheAttackerNotTheVictim(unittest.TestCase):
+    """Live run 7's defect, pinned.
+
+    iot38 impersonated iot1. The defence worked -- the source-IP pin refused
+    it -- but the denial was filed under the CLAIMED device_id, so the `spoof`
+    label landed on iot1, the victim, and iot38 scored clean. A classifier that
+    blames the impersonated party is worse than no classifier: it manufactures
+    a false accusation out of a successful defence.
+    """
+
+    def _events(self):
+        return [
+            topology_event(
+                [('srv1', 'none', 0.0)],
+                [('iot1', 'none', 0.0), ('iot2', 'spoof', 2.0)],
+            ),
+            # iot2 (at 10.0.2.2) presents a correct response for iot1.
+            {'ts': T0 + 3.0, 'type': 'auth_denied', 'device_id': 'iot1',
+             'source_ip': '10.0.2.2', 'kind': AUTH_KIND_IP_PIN,
+             'reason': 'iot1 is pinned to 10.0.2.1'},
+        ]
+
+    def test_the_spoofer_is_labelled(self):
+        results = {r.subject: r for r in score_run(self._events())}
+        self.assertEqual(results['iot2'].predicted, ATTACK_SPOOF)
+        self.assertTrue(results['iot2'].correct)
+
+    def test_the_victim_is_not_labelled(self):
+        results = {r.subject: r for r in score_run(self._events())}
+        self.assertEqual(results['iot1'].predicted, NO_ATTACK)
+        self.assertTrue(results['iot1'].correct)

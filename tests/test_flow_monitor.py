@@ -399,3 +399,165 @@ def test_unreachable_node_is_classified_node_down_not_an_attack():
 
     labels = [c['attack_type'] for c in bus.of('classification')]
     assert NODE_DOWN in labels
+
+
+# --------------------------------------------------------------------------- #
+# The honesty-check reference split (live run 7).
+#
+# expected_duty_cycle() returning None had ONE fallback, and it produced every
+# false quarantine in run 7 (175/175 firings). The two causes of None are now
+# handled differently, and both halves matter:
+#   * node withholds busy_seconds -> keep the fallback, or a liar disables the
+#     check by omission;
+#   * controller lacks completions -> abstain, because that is our gap, not the
+#     node's misbehaviour.
+# --------------------------------------------------------------------------- #
+
+def _loaded_state(claimed):
+    """A node the controller believes is fully occupied, claiming near-idle --
+    the deviation that used to fire unconditionally."""
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    state.set_concurrency('srv1', 4)
+    for port in range(6000, 6004):
+        state.register_dispatch('10.0.0.5', port, 'srv1')
+    return state
+
+
+def _monitor_for(state, bus, status):
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None, bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(status)
+    return fm
+
+
+def test_abstains_when_the_controller_lacks_completions_but_the_node_reports():
+    """The run-7 false positive, now abstained on.
+
+    observed_load is 1.00 against a truthful claim of 0.00, which is exactly
+    what used to fire -- but the node IS supplying busy_seconds, so the missing
+    duty-cycle estimate is the controller's gap, not evidence against the node.
+    """
+    from controller.attack_classifier import SIG_CPU_HONESTY
+
+    state = _loaded_state(0.0)
+    bus = _RecordingBus()
+    status = {'cpu_load': 0.0, 'latency_ms': 40, 'concurrency': 4,
+              'busy_seconds': 0.0}
+    fm = _monitor_for(state, bus, status)
+    fm._poll_once()
+
+    assert state.reports_busy_seconds('srv1')
+    assert state.expected_duty_cycle('srv1') is None      # no completions yet
+    fired = [f for f in bus.of('anomaly') if SIG_CPU_HONESTY in f.get('signals', {})]
+    assert fired == [], 'honesty check fired on the controller''s own missing evidence'
+
+
+def test_still_fires_when_the_node_withholds_busy_seconds():
+    """The anti-evasion half. A node that simply omits the counter must not buy
+    itself immunity -- the degraded comparison is kept for exactly that case."""
+    from controller.attack_classifier import SIG_CPU_HONESTY
+
+    state = _loaded_state(0.0)
+    bus = _RecordingBus()
+    status = {'cpu_load': 0.0, 'latency_ms': 40, 'concurrency': 4}   # no busy_seconds
+    fm = _monitor_for(state, bus, status)
+    fm._poll_once()
+
+    assert not state.reports_busy_seconds('srv1')
+    fired = [f for f in bus.of('anomaly') if SIG_CPU_HONESTY in f.get('signals', {})]
+    assert fired, 'withholding busy_seconds disabled the honesty check'
+    assert 'no busy_seconds' in ' '.join(fired[0]['reasons'])
+
+
+def test_a_node_that_stops_reporting_stops_being_abstained_for():
+    """Reporting once then going quiet must not be a way to buy abstention
+    forever, which is why reports_busy_seconds is recency-based."""
+    state = _loaded_state(0.0)
+    state.report_claimed_status('srv1', 0.0, 40.0, busy_seconds=1.0)
+    assert state.reports_busy_seconds('srv1')
+    # Older than the 2 x load_window_s horizon.
+    assert not state.reports_busy_seconds('srv1', max_age_s=-1.0)
+
+
+def test_the_degraded_basis_is_named_in_the_reason():
+    """A reader must never be shown a residence-time number labelled as a duty
+    cycle -- the two differ by ~17x in live telemetry."""
+    state = _loaded_state(0.0)
+    bus = _RecordingBus()
+    fm = _monitor_for(state, bus, {'cpu_load': 0.0, 'latency_ms': 40, 'concurrency': 4})
+    fm._poll_once()
+    reason = ' '.join(bus.of('anomaly')[0]['reasons'])
+    assert 'observed' in reason and 'expected duty' not in reason
+
+
+# --------------------------------------------------------------------- #
+# Trust-rail isolation evidence (plan_adv.md 6.2)
+# --------------------------------------------------------------------- #
+
+def _trust_collapsed_monitor(bus):
+    """A node the TRUST rail has condemned, answering /status perfectly.
+
+    srv6's shape in live run 8: fast, honest about its load, and dropping the
+    work. Nothing here can trip the anomaly rail, which is the whole problem
+    the trust-collapse signal exists to solve.
+    """
+    from contracts.trust_update import TrustUpdate
+
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, task_timeout_s=4.0)
+    state.set_concurrency('srv1', 4)
+    state.record_task_outcome(TrustUpdate(
+        device_id='iot1', edge_node_id='srv1', task_status='timeout',
+        cpu_usage=1.0, reported_cpu=0.0, latency_ms=4000.0,
+    ))
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.0, 'latency_ms': 30, 'concurrency': 4, 'busy_seconds': 0.0}
+    )
+    return state, fm
+
+
+def test_trust_rail_isolation_reaches_the_classifier():
+    from controller.attack_classifier import SIG_TRUST_COLLAPSE
+
+    bus = _RecordingBus()
+    state, fm = _trust_collapsed_monitor(bus)
+    assert state.trust_calc.get_score('srv1') < state.isolation_threshold
+    fm._poll_once()
+
+    fired = [f for f in bus.of('anomaly') if SIG_TRUST_COLLAPSE in f.get('signals', {})]
+    assert fired, (
+        'a node the trust rail condemned before the anomaly rail had its '
+        'minimum samples must still leave evidence a classifier can read'
+    )
+    assert fired[0]['signals'][SIG_TRUST_COLLAPSE] == 1.0
+
+
+def test_trust_rail_evidence_adds_no_isolation_power():
+    """THE SAFETY PROPERTY. This signal describes a node already isolated by
+    the trust rail, so it must never touch the anomaly rail -- otherwise a
+    reporting improvement quietly becomes a new way to quarantine, which is how
+    every cascade in this project's live-run history started."""
+    from controller.attack_classifier import SIG_TRUST_COLLAPSE
+
+    bus = _RecordingBus()
+    state, fm = _trust_collapsed_monitor(bus)
+    for _ in range(5):
+        fm._poll_once()
+
+    assert state.get_anomaly('srv1') == 0.0, (
+        'the trust-collapse signal must not feed anomaly_raw'
+    )
+    published = bus.of('anomaly')
+    assert published and all(
+        SIG_TRUST_COLLAPSE in f['signals'] for f in published
+    )
+    assert all(f['anomaly'] == 0.0 for f in published), (
+        'the event must carry the real anomaly score so no reader mistakes '
+        'this for an anomaly-gate trip'
+    )
