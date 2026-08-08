@@ -1,17 +1,40 @@
 # Panel Review — Findings, Fixes and Evidence
 
-*Compiled 2026-08-07. Covers the work driven by `plan_adv.md` Phases 2–6:
-attack classification, the scalability sweep, the service-availability metric,
-the dashboard time-series, and live runs 7 and 8.*
+*Compiled 2026-08-07, updated through 2026-08-08. Covers `plan_adv.md`
+Phases 2–8: attack classification, the scalability sweep, the
+service-availability metric, the dashboard time-series, the classification
+fixes, the spoofing race, and live runs 7 through 10.*
 
 This is the defect and finding register. `plan_adv.md` holds the phase plan and
 status; this document holds **what was actually wrong, how we knew, and what
-the evidence says now**. Numbers quoted as results come from live run 8 unless
-stated otherwise.
+the evidence says now**. Headline numbers come from **live run 10**; where a
+finding was measured against an earlier run, that run is named.
 
 ---
 
-## 1. Headline results (live run 8, 311.7 s, 8 servers / 40 devices / 6 attacks)
+## 1. Headline results (live run 10, 320.5 s, 8 servers / 40 devices / 6 attacks)
+
+The best run to date, and the numbers to quote.
+
+| Metric | Value |
+|---|---|
+| **Attacks classified correctly** | **8 / 8** |
+| Attacks detected at all | **8 / 8** |
+| Attack classification accuracy | **97.9%** (47 / 48 subjects) |
+| Honest subjects wrongly labelled | 1 / 40 (srv7 — §6.9) |
+| Attacker containment | srv3 +9.6 s, srv8 +9.8 s, srv6 +11.9 s, srv1 +12.8 s |
+| Mean detection latency | 12.1 s (upper bound — §5.6) |
+| Honest-node availability | 3 of 4 at 100%, srv7 91.8% |
+| Total outage (0 nodes serving) | **none** |
+| Time at/above 50% serving quorum | 98.5% |
+| All four NFRs | **PASS** |
+| Identity spoof | **refused** (§3.16) |
+
+Full run-10 breakdown, including what it does *not* prove, in §1.4 below.
+The run-8 figures that follow are kept because §3.12–§3.14 were measured
+against them.
+
+## 1.1 Earlier headline (live run 8, 311.7 s, same topology)
 
 | Metric | Value |
 |---|---|
@@ -32,7 +55,7 @@ stated otherwise.
 (intermittent trust manipulation), DDoS/flooding, and identity spoofing — plus
 bad-credentials devices as a seventh ground-truth class.
 
-### Run 7 → run 8, after the fixes in §3.10 and §3.11
+## 1.2 Run 7 → run 8, after the fixes in §3.10 and §3.11
 
 | Metric | Run 7 | Run 8 |
 |---|---|---|
@@ -46,7 +69,7 @@ bad-credentials devices as a seventh ground-truth class.
 | Anomaly events | 589 | 315 |
 | CPU-honesty false firings | 175 | **0** |
 
-### Run 8's telemetry, re-scored after the classifier fixes in §3.12–§3.14
+### Run 8 re-scored after the classifier fixes in §3.12–§3.14
 
 The classifier is a pure function over recorded evidence, so re-running it over
 run 8's own events is a real measurement, not a projection — with the one
@@ -67,7 +90,7 @@ Remaining misses: **srv6** `blackhole` → `grayhole` (right family, magnitude
 unresolvable — §4.7) and **srv4** honest → `grayhole` (a re-dispatch attribution
 transient, not a classifier fault — §5.12).
 
-### Live run 9 (2026-08-08, 325 s, same config) — validation
+## 1.3 Live run 9 (2026-08-08, 325 s) — validation, and two findings
 
 Run 9 exists to confirm §3.14 in real telemetry. **It did** — and it found two
 things the re-score could not.
@@ -117,8 +140,57 @@ fixed at the source, and the fix is verified end-to-end against the real
 | A reset during the handshake | permanent self-eviction | retried, 5 attempts |
 | An identity nobody claimed | silent | `identity_unclaimed` event |
 
-**Live run 10 confirms this in situ.** Until then the honest claim is "refused
-in an end-to-end test of the real endpoint", not "refused in a live run".
+## 1.4 Live run 10 (2026-08-08, 320.5 s) — §3.16 confirmed, 8/8
+
+```
+iot38   spoof            spoof            OK   +5.3s
+iot39   bad_credentials  bad_credentials  OK   +5.6s
+iot40   bad_credentials  bad_credentials  OK   +5.6s
+iot37   flood            flood            OK   +9.1s
+srv1    grayhole         grayhole         OK   +12.8s
+srv3    sybil            sybil            OK   +9.6s
+srv6    blackhole        blackhole        OK   +11.9s
+srv8    onoff            onoff            OK   +37.1s
+```
+
+**Attacks classified correctly 8/8. Detected 8/8. Right family 8/8. Overall
+47/48 = 97.9%.** All four NFRs PASS, no outage, 98.5% of the run above quorum,
+every attacker contained in 9.6–12.8 s.
+
+- **The spoof was refused**, and the client says so itself:
+  `iot38: SPOOFING DENIED -- iot1's identity is pinned to a different source IP`.
+  The denial reached the bus as `ip_pin` from `10.0.0.38` and was classified
+  `spoof` **on the attacker**, not the victim (§3.11 holding up).
+- **Zero `Connection reset by peer` across all 40 client logs**, and zero
+  retries needed — the accept-queue fix removed the failure outright rather
+  than papering over it. Both bad-credentials devices got real 403s and both
+  were scored, closing §5.5 in situ.
+- **srv6 came out `blackhole`, not `grayhole`.** It carried 31 `packet_drop`
+  cycles *and* 31 `trust_collapse` cycles this run, so a measured rate existed
+  and the magnitude was taken from it. This is exactly the §4.7 design working
+  in both directions: the trust rail names the family when nothing else can,
+  and yields to a real measurement when one exists.
+- `identity_unclaimed` fired once at t+45.2 s naming iot38, iot39 and iot40 —
+  correct: those are precisely the three devices that never legitimately
+  authenticated as themselves.
+
+**What run 10 does NOT prove, and this matters.** iot1 authenticated
+successfully at t+0.5 s this run, so it already owned the TOFU pin by the time
+iot38 attempted the identity at t+15 s — **plain trust-on-first-use would have
+refused this spoof too.** Fix (a) removed the precondition for the
+vulnerability, so fix (c) was not load-bearing here. The roster's unique
+contribution — refusing a foreign host for an identity *nobody has claimed* —
+is exercised only by the end-to-end socket test above. A live run cannot
+demonstrate it without deliberately re-creating the eviction, which would mean
+reverting (a). Worth stating plainly rather than letting 8/8 imply more than it
+shows.
+
+**One honest node still mislabelled: srv7 → `grayhole`** (21 `packet_drop`
+cycles, quarantined twice for 26.4 s total, recovered both times). This is §6.9,
+the re-dispatch attribution defect — the same defect that hit **srv4** in run 8
+and nothing in run 9. Three runs, three different outcomes on the same unfixed
+bug: it is timing-dependent, which is an argument for fixing it rather than for
+waiting to see it again.
 
 ---
 

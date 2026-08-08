@@ -819,10 +819,38 @@ preflight test asserting the roster is *populated* caught it. **A fix with a
 silent fallback needs a test that it is in effect, not just that it is
 harmless.**
 
+### Live run 10 (2026-08-08) — §3.16 confirmed, and 8/8 for the first time
+
+- [x] **All eight attacks classified correctly.** 47/48 = 97.9% overall,
+      detected 8/8, right family 8/8, every attacker contained in 9.6–12.8 s,
+      all four NFRs PASS, no outage, 98.5% above quorum.
+- [x] **The spoof was refused.** `iot38: SPOOFING DENIED -- iot1's identity is
+      pinned to a different source IP`; the denial reached the bus as `ip_pin`
+      from 10.0.0.38 and was classified `spoof` on the attacker.
+- [x] **Zero `Connection reset by peer` across all 40 client logs**, zero
+      retries needed — the accept-queue fix removed the failure rather than
+      papering over it. Both bad-credentials devices got real 403s, closing
+      §5.5 in situ.
+- [x] **srv6 came out `blackhole`, not `grayhole`** — it had 31 `packet_drop`
+      *and* 31 `trust_collapse` cycles, so a measured rate existed and the
+      magnitude was taken from it. §4.7 working in both directions: the trust
+      rail names the family when nothing else can, and yields to a real
+      measurement when one exists.
+
+**What run 10 does NOT prove.** iot1 authenticated at t+0.5 s, so it already
+owned the TOFU pin when iot38 tried at t+15 s — **plain trust-on-first-use
+would have refused this spoof too.** Fix (a) removed the precondition, so fix
+(c) was not load-bearing here; the roster's unique contribution is exercised
+only by the end-to-end socket test. Saying "8/8, therefore the roster works"
+would be claiming more than the run shows.
+
 **Phase 8 status: done (2026-08-08). 581 → 599 tests green.**
 
-**Next: live run 10** to confirm §3.16 in situ, then §6.9 (the re-dispatch
-attribution defect behind srv4).
+**Next: §6.9** — the re-dispatch attribution defect, now the only open item
+touching correctness. It hit **srv4** in run 8, nothing in run 9, and **srv7**
+in run 10 (21 `packet_drop` cycles, quarantined twice, 26.4 s): three runs,
+three outcomes on the same unfixed bug, which is the argument for fixing it
+rather than waiting to see it again.
 
 ---
 
