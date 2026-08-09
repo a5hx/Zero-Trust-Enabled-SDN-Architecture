@@ -60,6 +60,56 @@ class _Dispatch:
 
     node_id: str
     dispatched_at: float
+    # Set by reassign_dispatches when quarantine re-steers this flow onto a
+    # survivor, and never by register_dispatch -- a fresh PacketIn builds a new
+    # _Dispatch, so a client's *next* connection starts unmarked. What these
+    # two fields buy is the ability to tell an outcome the receiving node
+    # actually produced from one it merely inherited; see CompletedDispatch.
+    resteered_from: Optional[str] = None
+    resteered_at: Optional[float] = None
+
+
+@dataclass
+class CompletedDispatch:
+    """What complete_dispatch() hands back: which node the flow was mapped to,
+    plus whether that mapping was inherited from a re-steer rather than earned.
+
+    `chargeable` is the whole point. A re-steered entry can only ever collect
+    the corpse of a connection the controller itself killed: quarantine
+    installs drop rules, which tear down the in-flight TCP connections, and
+    reassign_dispatches says so in its own docstring -- "it is each client's
+    *next* connection that this fast-path serves". The client, however, is
+    still blocked on the dead socket, and when its own task_timeout_s expires
+    it reports a timeout for a task the receiving node never saw.
+
+    Measured across three live runs (data/events_run{8,9,10}.jsonl, matching
+    each report to its flow via report.ts - latency_ms): 12/29, 9/13 and 26/68
+    timeouts were charged this way. In run 10 it was the receiving node's
+    ENTIRE timeout signal -- srv7 11 of 11, srv5 8 of 8, srv2 3 of 3, srv4 2
+    of 2 -- and srv7 was quarantined twice, for 26.4 s, on nothing else. The
+    two attackers earned every one of theirs (srv1 and srv6 inherit zero in
+    all three runs), which is why abstaining here costs no detection power.
+    """
+
+    node_id: str
+    dispatched_at: float
+    resteered_from: Optional[str] = None
+    resteered_at: Optional[float] = None
+
+    @property
+    def chargeable(self) -> bool:
+        """May this outcome be attributed to node_id at all?
+
+        Deliberately not a budget comparison. panel_fix.md §6.9 proposed
+        excusing an outcome that "arrived with less than the node's typical
+        service time remaining", but the recordings say the budget was never
+        the problem: the median re-steered flow still had 2.86 s of its 4.0 s
+        left at handover (min 0.15 s) against successful tasks that complete
+        in 103-437 ms end to end. A budget rule would have excused 0 of 26.
+        The flow was not short of time, it was on a dead socket -- which makes
+        this structural, and is why it carries no tuned threshold.
+        """
+        return self.resteered_at is None
 
 
 class TrustState:
@@ -598,17 +648,33 @@ class TrustState:
             self._accrue_inflight_locked(node_id)
             self._inflight[node_id] = self._inflight.get(node_id, 0) + 1
 
-    def complete_dispatch(self, client_ip: str, client_port: int) -> Optional[str]:
-        """Called when the client's completion report arrives. Returns the node_id
-        that flow was routed to, or None if it was never registered (e.g. this
-        report is stale / duplicated, or arrived after the reaper cleaned it up)."""
+    def complete_dispatch(
+        self, client_ip: str, client_port: int,
+    ) -> Optional[CompletedDispatch]:
+        """Called when the client's completion report arrives. Returns the
+        mapping that flow was routed under, or None if it was never registered
+        (e.g. this report is stale / duplicated, or arrived after the reaper
+        cleaned it up).
+
+        The inflight release below is unconditional and stays that way: the
+        occupancy invariant `sum(_inflight) == len(_dispatches)` is about
+        whether a task is outstanding, which is true regardless of whom the
+        outcome may be blamed on. Attribution is a separate axis -- see
+        CompletedDispatch.chargeable -- and conflating the two is what run 4's
+        register_dispatch leak did in the other direction.
+        """
         with self._lock:
             entry = self._dispatches.pop((client_ip, client_port), None)
             if entry is None:
                 return None
             self._accrue_inflight_locked(entry.node_id)
             self._inflight[entry.node_id] = max(0, self._inflight.get(entry.node_id, 0) - 1)
-            return entry.node_id
+            return CompletedDispatch(
+                node_id=entry.node_id,
+                dispatched_at=entry.dispatched_at,
+                resteered_from=entry.resteered_from,
+                resteered_at=entry.resteered_at,
+            )
 
     def reassign_dispatches(self, from_node_id: str, to_node_id: str) -> List[Tuple[str, int]]:
         """Move every still-active dispatch mapped to from_node_id onto
@@ -640,7 +706,21 @@ class TrustState:
                     # pinned observed_load at 1.00 against a truthful claimed_cpu
                     # of 0.00 and re-tripped the honesty check on every survivor
                     # the load was moved to.
-                    self._dispatches[key] = _Dispatch(to_node_id, d.dispatched_at)
+                    #
+                    # The re-steer marks, by contrast, ARE stamped now: they
+                    # record that to_node_id inherited this flow rather than
+                    # being routed it, which is what stops the receiving node
+                    # being charged for the killed connection's timeout (see
+                    # CompletedDispatch). dispatched_at answers "has the client
+                    # given up?"; resteered_at answers "whose outcome is this?"
+                    # -- two different questions that shared one field until
+                    # panel_fix.md §6.9.
+                    self._dispatches[key] = _Dispatch(
+                        node_id=to_node_id,
+                        dispatched_at=d.dispatched_at,
+                        resteered_from=d.resteered_from or from_node_id,
+                        resteered_at=d.resteered_at or time.time(),
+                    )
                     self._accrue_inflight_locked(from_node_id)
                     self._accrue_inflight_locked(to_node_id)
                     self._inflight[from_node_id] = max(0, self._inflight.get(from_node_id, 0) - 1)

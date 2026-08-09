@@ -477,6 +477,88 @@ indistinguishable from success. The preflight test that asserts the roster is
 *populated* for the real config caught it. **A fix with a silent fallback needs
 a test that the fix is actually in effect, not just that it does no harm.**
 
+### 3.17 A re-steered flow's timeout was charged to the node that never got it *(2026-08-09 — closes §5.12, §6.9)*
+
+**The register had the mechanism wrong, and re-deriving it from the recordings
+is what found that.** §5.12/§6.9 said the receiving node was handed a task whose
+client deadline was mostly spent, and proposed excusing an outcome that "arrived
+with less than the node's typical service time remaining". Both halves are
+false.
+
+Matching every report to its exact flow (`report.ts - latency_ms/1000` recovers
+the dispatch instant, which `route` events carry along with the client port that
+`report` does not), across `data/events_run{8,9,10}.jsonl`:
+
+- Budget remaining at handover: median **2.86 s** of 4.0 s, **min 0.15 s** —
+  against successful tasks that complete in **103–437 ms** end to end. A
+  service-time budget rule would have excused **0 of 26**.
+- Client-measured latency on every single one: **4031–4085 ms**, pinned at the
+  client's own `task_timeout_s` ceiling. The client got no answer from anybody.
+
+The real mechanism is stated in `reassign_dispatches`'s own docstring: quarantine
+installs drop rules, **the drop rules tear down the in-flight TCP connections**,
+and "it is each client's *next* connection that this fast-path serves". So the
+client sits on a dead socket until its own timeout expires. Meanwhile the
+dispatch map entry has moved to the survivor, so `complete_dispatch` resolves the
+report to the survivor and charges it. **The receiving node was never asked.**
+It is not a partial-budget problem, it is a wrong-node problem.
+
+**The fix.** `_Dispatch` gains `resteered_from`/`resteered_at`, stamped only by
+`reassign_dispatches` and never by `register_dispatch` — so a client's next
+connection, which arrives as a fresh PacketIn, starts unmarked and is chargeable
+again. `complete_dispatch` returns a `CompletedDispatch` whose `chargeable`
+property is false for an inherited flow, and `handle_client_report` then skips
+`record_task_outcome` for it. **`dispatched_at` is untouched**: it answers "has
+the client given up?" for the reaper and `observed_load`, and run 2's defect 3
+must stay fixed. The inflight release stays unconditional too — occupancy is
+about whether a task is outstanding, attribution is about whom to blame, and run
+4's leak was that same conflation pointed the other way.
+
+**It abstains without going silent.** The `report` event is still published, with
+the same `status`/`latency_ms` the availability and PDR readers consume — the
+client really did lose that task and hiding it would have inflated every
+availability figure in the study — plus `charged: false`, `attribution:
+resteer_inherited` and `resteered_from` so the abstention is re-derivable
+offline. What is withheld is only the trust update and the drop tell's evidence.
+
+**No tuned threshold.** The rule is structural, so there is no margin to pick and
+nothing that "no effect on run N" could leave untested — the §5.14 failure mode.
+Pinned by `test_the_rule_carries_no_tuned_threshold`.
+
+**Impact (first-order replay estimate).** Peak timeout rate over the drop tell's
+10-deep window, and the number of reports at which it would have fired:
+
+| node | truth | quarantines | withheld | peak rate | tell firings |
+|---|---|---:|---:|---|---:|
+| srv7 | honest | **2** | 13 | 0.60 → **0.10** | 7 → **0** |
+| srv5 | honest | 0 | 9 | 0.30 → 0.10 | 0 → 0 |
+| srv2 | honest | 0 | 3 | 0.20 → 0.00 | 0 → 0 |
+| srv4 | honest | 0 | 2 | 0.20 → 0.00 | 0 → 0 |
+| srv1 | grayhole | 14 | 1 | 0.70 → **0.70** | 25 → **24** |
+| srv6 | blackhole | 1 | 0 | 1.00 → **1.00** | 7 → **7** |
+| srv3 | sybil | 14 | 0 | 0.00 → 0.00 | 0 → 0 |
+| srv8 | onoff | 13 | 1 | 0.10 → 0.10 | 0 → 0 |
+
+Run 10 withholds 29 outcomes, **0.46% of reports** — 27 from honest nodes, 2
+from attackers. Run 8: 13, **all 13 honest**. Run 9: 11, of which 5 are srv8.
+**srv7's two quarantines rested on nothing else**: 11 of its 11 charged timeouts
+were inherited, and without them the tell never reaches its 4-sample minimum.
+srv4's run-8 miss (§5.12) goes the same way, 6 firings → 0. Neither attacker
+loses anything that matters: srv6 is untouched and srv1 still fires 24 times.
+
+**This is a replay, so it is a lower bound** (§4.6): the counterfactual run has
+different traffic, and the feedback half — fewer false quarantines → fewer
+re-steers → fewer inherited timeouts — is invisible to a replay by construction.
+**Live run 11 is what settles it.**
+
+**One interaction to record honestly.** Run 9's srv8 loses all 6 of its drop-tell
+firings, because 5 of its outcomes were inherited. Those firings are what §5.14
+diagnosed as demoting a true on-off attacker to `grayhole`, so the fix should
+*improve* that label — but it also means `DEFAULT_MIN_LYING_SHARE` was retuned
+against evidence partly composed of inherited timeouts. 0.25 sits mid-band in
+the swept safe range 0.15–0.40, so it does not need reverting; it does need
+re-checking in run 11 rather than being assumed still-calibrated.
+
 ### 3.15 Two documentation defects
 - `config/params_attacks_demo.yaml` claimed `start_s` was "advisory only". It has
   been honoured since Phase 0.
@@ -743,7 +825,17 @@ family established from trust-rail evidence, the magnitude correctly not
 claimed. The §4.6 reasoning held: an estimate for a change that cannot feed
 back into the traffic is not merely a lower bound.
 
-### 5.12 One honest node is still mislabelled, and it is a re-dispatch transient
+### 5.12 One honest node is still mislabelled, and it is a re-dispatch transient — **CLOSED by §3.17**, with the mechanism corrected
+
+**The diagnosis below is right that it is a re-dispatch defect and wrong about
+why.** srv4 was not short of budget — its re-steered flows had most of their
+4 s left. The connection they were riding had been killed by srv6's quarantine
+drop rules, so srv4 never received the task at all. The measurement is in
+§3.17; the paragraph below is kept because the *shape* of the reasoning ("the
+drop tell fired on true evidence, the defect is attribution") survived intact
+even though the physical story did not.
+
+
 srv4 (honest) → `grayhole`, the last honest-subject miss. Its root cause is not
 the classifier and not intermittency:
 
@@ -880,8 +972,26 @@ Worth stating plainly for the panel: run 9 is the run where **an attack
 succeeded**. Every previous run's misses were labelling failures on attacks
 that were contained. This one got in — and it is now closed.
 
-### 6.9 Do not charge a node for a re-steered task's spent budget
-Closes §5.12, the last honest-node mislabel. When `reassign_dispatches` moves an
+### 6.9 Do not charge a node for a re-steered task's spent budget — **DONE 2026-08-09** (§3.17)
+
+Landed, and **the premise in the title is wrong**. The measurement is in §3.17:
+the re-steered flows were not short of budget (median 2.86 s of 4.0 s left at
+handover, against 103–437 ms of real service), so the rule this section proposes
+— excuse an outcome that arrived with less than the node's typical service time
+remaining — would have excused **0 of 26**. The connection had been torn down by
+the quarantine drop rules; the receiving node never saw the task. The shipped
+rule is structural and reads no clock at all.
+
+**Rule earned here, and it is the same one §5.2 taught:** a defect register is a
+summary, and summaries drift from the data they came from. §5.2 was re-derived
+before acting and turned out misattributed; §6.9 was written *from that
+re-derivation* and still got the physical mechanism wrong, because it reasoned
+from the shape of the fix rather than measuring the flows. **Re-derive from the
+recording even when the register entry is itself a correction.**
+
+<details><summary>original plan text</summary>
+
+When `reassign_dispatches` moves an
 in-flight dispatch to a survivor, the receiving node inherits a task whose
 client-side deadline is already partly spent — and is then charged with the
 timeout. srv4 took 5 such tasks in a 0.9 s burst and was quarantined for 13.6 s
@@ -898,6 +1008,8 @@ as a timeout against it.
 **Deliberately not bundled with §3.12–3.14.** Unlike those, this one changes
 quarantine behaviour, so it needs its own live run to validate, and folding it
 into run 9 would make run 9 unable to tell which change produced which effect.
+
+</details>
 
 ---
 
@@ -926,6 +1038,18 @@ real defect:
   confidently attributed srv4's miss to on-off eagerness; the evidence says it is
   a `packet_drop` transient with no connection to intermittency. A defect
   register is a summary, and summaries drift from the data they came from.
+  **This applies to corrections too**: §6.9 was written from that very
+  re-derivation and still had the physical mechanism wrong (§3.17), because it
+  reasoned from the shape of the fix rather than measuring the flows. Being a
+  correction buys an entry no immunity.
+- **The fix that needs no threshold is the one to look for.** §3.17's rule reads
+  no clock: a flow was either re-steered or it was not. Nothing to tune means
+  nothing that "the run I wrote it against was indifferent to it" can leave
+  silently untested — the §5.14 trap.
+- **Separate the questions a field is answering before adding a second one.**
+  `dispatched_at` correctly answers "has the client given up?" and was being
+  asked "whose outcome is this?" as well. Two questions, one field, and the
+  second answer was wrong every time quarantine re-steered a flow.
 - **When two fixes both work but only one is needed, ship the derived one.** A
   minimum off-phase *count* and a minimum quiet *fraction* each sounded right;
   only the fraction follows from what on-off means, and the count would have

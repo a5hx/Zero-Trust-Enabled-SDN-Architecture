@@ -1344,11 +1344,39 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         Returns the node's new trust score, or None if this report can't be
         attributed to any known dispatch (stale, duplicate, or reaped)."""
-        node_id = self.state.complete_dispatch(client_ip, vip_src_port)
-        if node_id is None:
+        completed = self.state.complete_dispatch(client_ip, vip_src_port)
+        if completed is None:
             logger.warning(
                 "Unattributable /report from %s:%d (device=%s) -- stale or duplicate",
                 client_ip, vip_src_port, device_id,
+            )
+            return None
+        node_id = completed.node_id
+
+        if not completed.chargeable:
+            # This flow was re-steered onto node_id by _redispatch_after_quarantine,
+            # and quarantine's drop rules killed the connection it was riding.
+            # The client stayed blocked on the dead socket until its own
+            # task_timeout_s expired; node_id never saw the task. Publish the
+            # outcome -- the client really did lose it, so service availability
+            # and PDR must keep counting it -- but do not let it reach
+            # record_task_outcome, where it would move node_id's trust and enter
+            # the packet-drop tell's window as evidence about a node that was
+            # never asked. See panel_fix.md §3.17 / §6.9.
+            self.bus.publish(
+                'report', device=device_id, node=node_id, status=status,
+                latency_ms=round(latency_ms, 2),
+                trust=round(self.state.trust_calc.get_score(node_id), 4),
+                charged=False, attribution='resteer_inherited',
+                resteered_from=completed.resteered_from,
+                held_for_s=round(
+                    completed.resteered_at - completed.dispatched_at, 3,
+                ) if completed.resteered_at else None,
+            )
+            logger.info(
+                "Report: %s task=%s on %s NOT CHARGED -- inherited from %s "
+                "(connection killed by that node's quarantine)",
+                device_id, status, node_id, completed.resteered_from,
             )
             return None
 

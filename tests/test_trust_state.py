@@ -38,8 +38,10 @@ def test_dispatch_tracks_inflight_and_observed_load():
     # claimed 0.0 clears the 0.40 honesty threshold on its own.
     assert state.observed_load('srv1') < 0.1
 
-    node = state.complete_dispatch('10.0.0.5', 5000)
-    assert node == 'srv1'
+    completed = state.complete_dispatch('10.0.0.5', 5000)
+    assert completed.node_id == 'srv1'
+    # Routed, not inherited -- so this outcome is the node's to answer for.
+    assert completed.chargeable
     assert state.get_inflight('srv1') == 1
 
 
@@ -628,7 +630,7 @@ def test_re_registering_a_live_flow_does_not_leak_inflight():
     _assert_invariant(state)
 
     # One completion clears it entirely -- not "one of the several".
-    assert state.complete_dispatch('10.0.0.1', 40778) == 'srv1'
+    assert state.complete_dispatch('10.0.0.1', 40778).node_id == 'srv1'
     assert state.get_inflight('srv1') == 0
     _assert_invariant(state)
 
@@ -1071,3 +1073,224 @@ class TestIsolationEvidence:
         _collapsing_timeout(state, 'srv1')
         rate, samples = state.isolation_evidence('srv1')
         assert (rate, samples) == (1.0, 2)
+
+
+# --------------------------------------------------------------------------- #
+# Re-steer attribution (panel_fix.md §3.17 / §6.9)                             #
+# --------------------------------------------------------------------------- #
+class TestResteeredOutcomesAreNotChargedToTheReceivingNode:
+    """Quarantine's drop rules tear down the in-flight TCP connections, so a
+    flow moved by reassign_dispatches is a dead socket the client is still
+    blocked on. When its own task_timeout_s expires it reports a timeout for a
+    task the receiving node never saw.
+
+    Measured across three live runs by matching each report to its flow via
+    `report.ts - latency_ms`: 12/29 (run 8), 9/13 (run 9) and 26/68 (run 10)
+    timeouts were charged to a node that had merely inherited the flow. In run
+    10 that was the receiving nodes' *entire* timeout signal -- srv7 11 of 11,
+    srv5 8 of 8 -- and srv7 was quarantined twice, 26.4 s, on nothing else.
+    """
+
+    def test_a_routed_dispatch_is_chargeable(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv1'
+        assert completed.resteered_from is None
+        assert completed.chargeable
+
+    def test_a_resteered_dispatch_is_not_chargeable(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        assert state.reassign_dispatches('srv1', 'srv2') == [('10.0.0.5', 5000)]
+
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv2'
+        assert completed.resteered_from == 'srv1'
+        assert not completed.chargeable
+
+    def test_the_clients_next_connection_is_chargeable_again(self):
+        """The receiving node's real relationship with this client starts at
+        its *next* connection, which arrives as a fresh PacketIn and builds a
+        new _Dispatch. If that were not chargeable, a genuinely bad node could
+        be handed re-steered work and become permanently unaccountable."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        state.complete_dispatch('10.0.0.5', 5000)
+
+        state.register_dispatch('10.0.0.5', 5000, 'srv2')
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv2'
+        assert completed.chargeable
+
+    def test_a_second_resteer_keeps_the_first_handover(self):
+        """srv1 -> srv2 -> srv3: the connection died when srv1 was quarantined,
+        so srv1 is the origin of the corruption and the age at handover is
+        measured from there. Overwriting with the later hop would understate
+        how long the flow had already been dead."""
+        state = _make_state(node_ids=('srv1', 'srv2', 'srv3'))
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        first_handover = state._dispatches[('10.0.0.5', 5000)].resteered_at
+
+        state.reassign_dispatches('srv2', 'srv3')
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv3'
+        assert completed.resteered_from == 'srv1'
+        assert completed.resteered_at == first_handover
+        assert not completed.chargeable
+
+    def test_resteer_does_not_restart_the_reaper_clock(self):
+        """Run 2's defect 3 must stay fixed: dispatched_at answers 'has the
+        client given up?' and re-steering does not restart the client's timer.
+        The new marks are a second, separate question and must not disturb it."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        original = state._dispatches[('10.0.0.5', 5000)].dispatched_at
+
+        time.sleep(0.05)
+        state.reassign_dispatches('srv1', 'srv2')
+        entry = state._dispatches[('10.0.0.5', 5000)]
+        assert entry.dispatched_at == original
+        assert entry.resteered_at > original
+
+    def test_abstention_does_not_break_the_occupancy_invariant(self):
+        """Attribution and occupancy are separate axes. Whether an outcome is
+        blamed on the node has no bearing on whether a task was outstanding,
+        and the inflight release stays unconditional -- run 4's leak was this
+        same conflation pointed the other way."""
+        state = _make_state()
+        for port in (5000, 5001, 5002):
+            state.register_dispatch('10.0.0.5', port, 'srv1')
+        _assert_invariant(state)
+
+        state.reassign_dispatches('srv1', 'srv2')
+        assert state.get_inflight('srv1') == 0
+        assert state.get_inflight('srv2') == 3
+        _assert_invariant(state)
+
+        for port in (5000, 5001, 5002):
+            assert not state.complete_dispatch('10.0.0.5', port).chargeable
+        assert state.get_inflight('srv2') == 0
+        _assert_invariant(state)
+
+    def test_a_node_still_answers_for_the_work_it_was_actually_routed(self):
+        """The anti-evasion half. Abstention is scoped to flows the controller
+        itself re-steered; an attacker cannot reach it, because it cannot cause
+        its own dispatches to be re-steered onto itself. Confirmed on the
+        recordings: srv1 and srv6, the two attackers, inherit zero timeouts
+        across all three live runs -- they earn every one of theirs."""
+        state = _make_state()
+        # One inherited flow, and its own genuinely routed work alongside it.
+        state.register_dispatch('10.0.0.9', 6000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        for port in (7000, 7001, 7002, 7003):
+            state.register_dispatch('10.0.0.9', port, 'srv2')
+
+        assert not state.complete_dispatch('10.0.0.9', 6000).chargeable
+        charged = [state.complete_dispatch('10.0.0.9', p).chargeable
+                   for p in (7000, 7001, 7002, 7003)]
+        assert charged == [True, True, True, True]
+
+    def test_the_rule_carries_no_tuned_threshold(self):
+        """panel_fix.md §6.9 proposed excusing an outcome that arrived with
+        less than the node's typical service time remaining. The recordings
+        overturned it: the median re-steered flow still had 2.86 s of its 4.0 s
+        left at handover (min 0.15 s) against successful tasks completing in
+        103-437 ms, so a budget rule would have excused 0 of 26. The flow was
+        never short of time -- it was on a dead socket. Nothing here reads a
+        clock, a budget, or a service time, and a future 'tune the margin'
+        change should fail this test rather than pass quietly."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        entry = state._dispatches[('10.0.0.5', 5000)]
+
+        # Hand it a flow re-steered with its full budget intact.
+        entry.resteered_at = entry.dispatched_at
+        assert not state.complete_dispatch('10.0.0.5', 5000).chargeable
+
+
+class TestTheReportPathAbstainsWithoutGoingSilent:
+    """The controller half of §3.17. Two things must both hold: the receiving
+    node's trust and drop-tell evidence must not move, and the client's loss
+    must still reach the event bus -- service availability and PDR are measured
+    from 'report' events, and a task the client really did lose is real service
+    loss no matter who is to blame for it. Suppressing the event instead of the
+    attribution would have quietly inflated every availability figure in the
+    study.
+    """
+
+    def _stub(self, state):
+        import types
+
+        published = []
+
+        class _Bus:
+            def publish(self, topic, **kw):
+                published.append((topic, kw))
+
+        class _Backend:
+            commit_count = 0
+
+        return types.SimpleNamespace(
+            state=state, bus=_Bus(), _commit_backend=_Backend(),
+        ), published
+
+    def _report(self, state, port, status='timeout'):
+        from controller.trust_balancer import TrustBalancerApp
+
+        stub, published = self._stub(state)
+        score = TrustBalancerApp.handle_client_report(
+            stub, '10.0.0.5', port, 'iot5', status, 4040.0,
+        )
+        return score, published
+
+    def test_an_inherited_timeout_moves_no_trust_and_no_evidence(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        before = state.trust_calc.get_score('srv2')
+
+        score, published = self._report(state, 5000)
+
+        assert score is None
+        assert state.trust_calc.get_score('srv2') == before
+        assert not state._recent_statuses['srv2'], (
+            'an inherited timeout entered the packet-drop tell\'s window -- '
+            'this is exactly what quarantined srv7 twice in live run 10'
+        )
+        assert state.recent_timeout_rate('srv2', min_samples=1) is None
+
+    def test_the_clients_loss_still_reaches_the_bus(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+
+        _, published = self._report(state, 5000)
+
+        assert len(published) == 1
+        topic, ev = published[0]
+        assert topic == 'report'
+        # Same shape the availability/PDR readers already consume...
+        assert (ev['status'], ev['node']) == ('timeout', 'srv2')
+        assert ev['latency_ms'] == 4040.0
+        # ...plus enough to re-derive the abstention offline.
+        assert ev['charged'] is False
+        assert ev['attribution'] == 'resteer_inherited'
+        assert ev['resteered_from'] == 'srv1'
+
+    def test_a_routed_timeout_is_still_charged_in_full(self):
+        """The half that must not regress: abstention is scoped to inherited
+        flows, and a node's own work still moves its trust and fills the drop
+        tell's window."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv2')
+        before = state.trust_calc.get_score('srv2')
+
+        score, published = self._report(state, 5000)
+
+        assert score is not None and score < before
+        assert [s for _, s in state._recent_statuses['srv2']] == ['timeout']
+        assert published[0][1].get('charged') is not False

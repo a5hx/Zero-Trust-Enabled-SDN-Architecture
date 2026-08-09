@@ -854,6 +854,51 @@ rather than waiting to see it again.
 
 ---
 
+### Phase 9 — Re-steer attribution (`panel_fix.md` §6.9) — done 2026-08-09
+
+The last open correctness item. Full write-up in `panel_fix.md` §3.17.
+
+- [x] **Measured before building, and the register's mechanism did not
+      survive.** §6.9 proposed excusing a re-steered outcome that arrived with
+      less than the node's typical service time remaining. Recovering each
+      report's exact flow (`report.ts - latency_ms/1000` against the `route`
+      events, which carry the client port `report` omits) says the median
+      re-steered flow still had **2.86 s of its 4.0 s** at handover, min 0.15 s,
+      against successful tasks completing in 103–437 ms. That rule would have
+      excused **0 of 26**.
+- [x] **The actual mechanism was already in `reassign_dispatches`'s docstring.**
+      Quarantine's drop rules tear down the in-flight TCP connections, so the
+      client waits out its own timeout on a dead socket while the dispatch map
+      entry has already moved to the survivor. The survivor is charged for a
+      task it never received.
+- [x] **Fixed structurally, with no threshold.** `_Dispatch` carries
+      `resteered_from`/`resteered_at`, stamped only by `reassign_dispatches`;
+      `complete_dispatch` returns a `CompletedDispatch` whose `chargeable` is
+      false for an inherited flow; `handle_client_report` skips
+      `record_task_outcome` for those. `dispatched_at` and the inflight release
+      are deliberately untouched — reaper horizon and occupancy are different
+      questions from blame.
+- [x] **Abstains without going silent.** The `report` event still publishes, so
+      availability/PDR keep counting the client's real loss; `charged: false`
+      plus `resteered_from` make the abstention re-derivable offline.
+- [x] **599 → 610 tests.** Including the anti-evasion half (a node still answers
+      in full for work it was actually routed) and a test that the rule reads no
+      clock, so a future "tune the margin" change fails loudly.
+
+**First-order effect (replay, therefore a lower bound — §4.6).** Run 10 withholds
+29 outcomes, 0.46% of reports: 27 from honest nodes, 2 from attackers. srv7's
+peak timeout rate falls 0.60 → 0.10 and its drop-tell firings 7 → 0, which is
+**all the evidence its two quarantines had**. srv4's run-8 miss goes the same
+way. srv6 (blackhole) is untouched at 1.00 and 7 firings; srv1 (grayhole) still
+fires 24 of 25. The feedback half — fewer false quarantines → fewer re-steers →
+fewer inherited timeouts — is invisible to replay by construction.
+
+**Next: live run 11**, which is what actually settles this. Also re-check
+`DEFAULT_MIN_LYING_SHARE` there: run 9's srv8 loses all 6 of its drop-tell
+firings under this fix, and those firings are what §5.14 tuned the 0.25 against.
+
+---
+
 ## Notes / rules to not lose while building this
 
 - Keep the packet-drop discipline: task-level loss and OpenFlow drop-rule
