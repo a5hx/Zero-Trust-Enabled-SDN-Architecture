@@ -116,6 +116,66 @@ def test_history_is_bounded(tmp_path):
     assert [e['i'] for e in history] == [15, 16, 17, 18, 19]
 
 
+def test_topology_survives_eviction_from_the_history_ring(tmp_path):
+    """A browser opened mid-run must still learn the roster.
+
+    `topology` is published once, at run start, and is the only carrier of the
+    server roster and the ground-truth attack onsets. At the default history
+    depth it ages out within seconds of a real run, and every panel built on it
+    (trust map, chart attack bands, cluster split) then renders empty rather
+    than erroring -- a silent failure.
+    """
+    bus = EventBus(record_path=None, history_maxlen=5)
+    bus.publish('topology', graph={'nodes': [{'id': 'srv1', 'kind': 'server'}]})
+    for i in range(50):
+        bus.publish('flow_stats', i=i)
+
+    history = bus.history()
+    topos = [e for e in history if e['type'] == 'topology']
+    assert len(topos) == 1, 'the roster must survive eviction, exactly once'
+    assert topos[0]['graph']['nodes'][0]['id'] == 'srv1'
+
+
+def test_a_pinned_topology_comes_before_the_events_that_reference_it(tmp_path):
+    # A `route` naming srv6 is not interpretable before the topology that says
+    # what srv6 is, so the pinned event has to lead the backfill.
+    bus = EventBus(record_path=None, history_maxlen=3)
+    bus.publish('topology', graph={'nodes': []})
+    for i in range(10):
+        bus.publish('route', chosen='srv6')
+
+    types = [e['type'] for e in bus.history()]
+    assert types[0] == 'topology'
+    assert types[1:] == ['route'] * 3
+
+
+def test_topology_is_not_duplicated_while_still_in_the_ring(tmp_path):
+    # The common case -- a browser connecting at run start -- must not see the
+    # roster twice, or the chart panel would reset itself mid-backfill.
+    bus = EventBus(record_path=None, history_maxlen=50)
+    bus.publish('topology', graph={'nodes': []})
+    bus.publish('route', chosen='srv1')
+
+    types = [e['type'] for e in bus.history()]
+    assert types == ['topology', 'route']
+
+
+def test_only_the_latest_topology_is_pinned(tmp_path):
+    # A second run against the same controller replaces the roster; keeping
+    # both would leave the dashboard binning two runs onto one timeline.
+    bus = EventBus(record_path=None, history_maxlen=2)
+    bus.publish('topology', graph={'run': 1})
+    for i in range(5):
+        bus.publish('flow_stats', i=i)
+    bus.publish('topology', graph={'run': 2})
+    for i in range(5):
+        bus.publish('flow_stats', i=i)
+
+    topos = [e for e in bus.history() if e['type'] == 'topology']
+    assert len(topos) == 1
+    assert topos[0]['graph']['run'] == 2
+
+
 def test_events_are_recorded_as_replayable_jsonl(tmp_path):
     path = tmp_path / 'events.jsonl'
     bus = EventBus(record_path=str(path))

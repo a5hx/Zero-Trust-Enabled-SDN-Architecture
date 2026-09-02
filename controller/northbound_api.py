@@ -16,7 +16,7 @@ Endpoints:
         TrustBalancerApp.handle_offload_advisory -- the real routing decision
         happens on the VIP data-plane path)
     GET  /node/status     [?node_id=] -> TrustState.snapshot(), full or one node
-    GET  /ledger/verify   -> {valid, chain_length}
+    GET  /ledger/verify   -> {valid, chain_length, max_updates_per_block}
     POST /report          {device_id, vip_src_port, status, latency_ms} -- a
         client's task-completion report. Not one of the deck's original five
         endpoints, but required for the demo to function: this is how
@@ -33,6 +33,10 @@ and all inert unless controller.dashboard.enabled is set in the config):
     GET  /api/topology    -> the node/link graph the dashboard draws
     GET  /api/events      -> Server-Sent Events stream of controller events
     GET  /api/flows       -> current flow tables with live counters ("rules")
+    GET  /api/scale_compare -> pre-computed node-count sweep for the scaling
+                            panel. The ONLY dashboard route that serves
+                            something this run did not produce -- see
+                            _serve_scale_compare.
 
 SSE rather than WebSockets deliberately: it is one-way (controller -> browser,
 which is all this needs), it is plain HTTP so it works on the stdlib
@@ -55,6 +59,13 @@ from controller.trust_state import TrustState
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent.parent / 'dashboard'
+
+# Payload for the scaling-comparison panel, written by
+# evaluation/scale_compare.py. Not produced by a run and not live -- see
+# _serve_scale_compare for why it is served from here anyway.
+_SCALE_COMPARE_FILE = (
+    Path(__file__).resolve().parent.parent / 'data' / 'scale_compare.json'
+)
 
 # How long an idle SSE stream waits before emitting a keepalive comment. Without
 # this, a proxy or an asleep laptop can silently drop a connection that simply
@@ -113,6 +124,9 @@ def _make_handler(app: Any, state: TrustState):
             if path == '/api/optimizer':
                 self._write_json(200, app.optimizer_status())
                 return
+            if path == '/api/scale_compare':
+                self._serve_scale_compare()
+                return
 
             try:
                 if path == '/trust/score':
@@ -132,9 +146,21 @@ def _make_handler(app: Any, state: TrustState):
                     else:
                         self._write_json(200, snapshot)
                 elif path == '/ledger/verify':
+                    # `valid` is the controller auditing its own ledger with
+                    # the code that built it. The dashboard shows it beside a
+                    # verdict it computes itself from the streamed block
+                    # headers, and the two are deliberately not merged -- see
+                    # the ledger panel in dashboard/index.html.
+                    #
+                    # `max_updates_per_block` rides along rather than getting
+                    # its own route: it is the batch size this same ledger
+                    # commits at, the panel's pending gauge needs a denominator,
+                    # and a second endpoint for one integer is not worth the
+                    # served surface.
                     self._write_json(200, {
                         'valid': state.commit_backend.verify(),
                         'chain_length': state.commit_backend.chain_length(),
+                        'max_updates_per_block': state.max_updates_per_block,
                     })
                 else:
                     self._write_json(404, {'error': 'not found'})
@@ -257,6 +283,38 @@ def _make_handler(app: Any, state: TrustState):
                 return
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _serve_scale_compare(self) -> None:
+            """Serve the pre-computed node-count sweep, or 404 with the command
+            that produces it.
+
+            Every other dashboard route reports something the CURRENT run
+            observed. This one does not: it is a simulation sweep across five
+            fleet sizes and five client counts, which no single run can contain
+            (a run has one roster). It is served from here rather than fetched
+            as a static file because the dashboard has no static route at all
+            and giving it one would expose the whole repo over HTTP for a
+            single JSON file. Routing it explicitly keeps the served surface
+            enumerable, and dashboard/replay.py gets the panel for free since
+            it reuses this handler.
+
+            A missing file is NOT an error condition -- a clone that has never
+            run the sweep is the normal case. The 404 body carries the command,
+            and the panel prints it rather than showing an empty chart grid.
+            """
+            try:
+                body = _SCALE_COMPARE_FILE.read_bytes()
+            except OSError:
+                self._write_json(404, {
+                    'error': 'no scaling sweep has been generated',
+                    'hint': 'python3 -m evaluation.scale_compare',
+                })
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)

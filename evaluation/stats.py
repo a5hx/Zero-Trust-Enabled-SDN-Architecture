@@ -51,6 +51,42 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from scipy.stats import wilcoxon
 
+
+def _wilcoxon_p(sample: Sequence[float], method: str) -> Tuple[float, str]:
+    """Wilcoxon p-value, plus the null distribution actually used.
+
+    Two scipy-version differences are absorbed here, and the second one changes
+    the test rather than only its spelling, which is why the null used is
+    returned instead of assumed:
+
+    * **Argument name.** scipy >= 1.9 spells the null-distribution argument
+      `method=`; earlier versions spell the same argument, with the same accepted
+      values, `mode=`. Purely cosmetic -- translated and passed through.
+    * **Exact-null coverage.** scipy < 1.9 only tabulates the exact signed-rank
+      distribution up to n=25 and raises above it, whereas compare_pair's cutoff
+      (50) matches scipy >= 1.9. On an older scipy an exact request for
+      26 <= n <= 50 therefore cannot be honoured, and this falls back to the
+      tie-corrected normal approximation. That is the conservative direction --
+      the approximation yields the larger p-value -- but it is a different test
+      from the one requested, so it is reported rather than silently substituted.
+
+    Returns:
+        (p_value, null_used) where null_used is 'exact' or 'approx'.
+    """
+    def _call(null: str) -> float:
+        try:
+            return float(wilcoxon(sample, method=null).pvalue)
+        except TypeError:
+            return float(wilcoxon(sample, mode=null).pvalue)
+
+    try:
+        return _call(method), method
+    except ValueError:
+        # Exact null not tabulated at this n by this scipy; fall back and say so.
+        if method != 'exact':
+            raise
+        return _call('approx'), 'approx'
+
 # Metric -> True if a lower value is better. Mirrors evaluation.baseline.METRICS,
 # duplicated here so this module can consume any CSV without importing the sim.
 LOWER_IS_BETTER: Dict[str, bool] = {
@@ -83,6 +119,11 @@ class Comparison:
     wins: int                     # pairs where the system was strictly better
     losses: int
     ties: int
+    # Null distribution the p-value was actually computed under ('exact',
+    # 'approx', or 'none' when every pair tied and the null was reported
+    # without a test). Recorded because the installed scipy can decline an
+    # exact request -- see _wilcoxon_p.
+    null_distribution: str = 'exact'
 
     @property
     def significant(self) -> bool:
@@ -219,6 +260,7 @@ def compare_pair(
         # rather than letting scipy's exception on an all-zero vector surface as
         # a crash on the one input whose answer is obvious.
         p_raw = 1.0
+        null_used = 'none'
     else:
         # Choose the null distribution explicitly instead of relying on scipy's
         # 'auto', which mostly picks the same thing but warns when it does.
@@ -246,7 +288,7 @@ def compare_pair(
         magnitudes = [abs(d) for d in nonzero]
         exact_ok = len(nonzero) <= 50 and len(set(magnitudes)) == len(magnitudes)
         method = 'exact' if exact_ok else 'approx'
-        p_raw = float(wilcoxon(nonzero, method=method).pvalue)
+        p_raw, null_used = _wilcoxon_p(nonzero, method)
 
     sys_med = statistics.median(system_values)
     base_med = statistics.median(baseline_values)
@@ -263,6 +305,7 @@ def compare_pair(
         wins=sum(1 for d in diffs if d > 0),
         losses=sum(1 for d in diffs if d < 0),
         ties=sum(1 for d in diffs if d == 0),
+        null_distribution=null_used,
     )
 
 
@@ -364,6 +407,22 @@ def format_report(comparisons: Sequence[Comparison], alpha: float = 0.05) -> str
         "delta = baseline median - system median (positive favours the system).",
         "r = matched-pairs rank-biserial effect size. W/L/T = per-seed wins/losses/ties.",
     ]
+
+    # State the null distribution when it is not uniformly the exact one, so a
+    # p-value is never quoted as exact when the installed scipy declined to
+    # compute it that way (see _wilcoxon_p).
+    nulls = sorted({c.null_distribution for c in comparisons})
+    if nulls != ['exact']:
+        counts = ', '.join(
+            f"{n}: {sum(1 for c in comparisons if c.null_distribution == n)}"
+            for n in nulls
+        )
+        lines.append(f"null distribution used ({counts}).")
+        if 'approx' in nulls:
+            lines.append(
+                "'approx' = tie-corrected normal approximation, the conservative "
+                "direction (larger p-values)."
+            )
     return "\n".join(lines)
 
 

@@ -1442,14 +1442,43 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self, block: Optional[Any], elapsed_ms: float, num_updates: int,
     ) -> None:
         """TimingCommitBackend's on_commit hook -- publishes one 'block' event
-        per real commit() call, success or rejection, for the blockchain
-        overhead NFR (evaluation/nfr_report.py)."""
+        per real commit() call, success or rejection.
+
+        Two consumers with different needs:
+
+        * `evaluation/nfr_report.py` wants `commit_ms` and `num_updates` for the
+          blockchain-overhead NFR. That is what this event originally carried.
+        * The dashboard's ledger panel wants to **re-derive the chain itself**
+          rather than trust a `valid: true` flag from the process that built it.
+          For that it needs the exact header `Block.compute_hash()` hashes --
+          index, timestamp, previous_hash, merkle_root, proposer_id, raft_term
+          -- plus the resulting `hash` to check against.
+
+        The header fields are sent because they ARE the hash preimage, not for
+        display: a panel given only `hash` could redraw the chain but could
+        never contradict the controller about it, which is the one thing worth
+        having a second implementation for. `timestamp` in particular is not
+        decoration -- omit it and the browser cannot reproduce the digest.
+
+        A rejected block (`accepted: False`) has no header at all: `commit()`
+        returned None, so there is nothing to hash and every header field is
+        None rather than a plausible-looking blank.
+        """
         self.bus.publish(
             'block',
             index=(block.index if block is not None else None),
             commit_ms=round(elapsed_ms, 4),
             num_updates=num_updates,
             accepted=block is not None,
+            # The hash preimage, verbatim. NOT rounded -- `timestamp` is inside
+            # the digest, so a rounded copy would hash to something else and
+            # every browser-side check would fail on a chain that is fine.
+            timestamp=(block.timestamp if block is not None else None),
+            previous_hash=(block.previous_hash if block is not None else None),
+            merkle_root=(block.merkle_root if block is not None else None),
+            proposer_id=(block.proposer_id if block is not None else None),
+            raft_term=(block.raft_term if block is not None else None),
+            hash=(block.hash if block is not None else None),
         )
 
     # ------------------------------------------------------------------ #

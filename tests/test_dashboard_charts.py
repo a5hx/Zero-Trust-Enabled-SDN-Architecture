@@ -188,5 +188,410 @@ class TestChartStructure(unittest.TestCase):
         self.assertIn('_chartTimer', src)
 
 
+class TestChartTimelineAnchor(unittest.TestCase):
+    """The chart timeline is anchored to the RUN, not to when the page connected.
+
+    The controller is the same process that serves this page, so it routinely
+    outlives several topologies. Anchoring on the first event the browser ever
+    saw put `t0` hours in the past on a long-lived page, which broke three
+    things at once -- an absolute x axis reading "16770s" 40 seconds into a run,
+    attack bands drawn ~1600 buckets off-screen so the shaded onsets never
+    rendered at all, and the previous run's flow-rule state forward-filling a
+    flat throughput line for rules that no longer existed.
+    """
+
+    def test_the_topology_event_reanchors_and_resets(self):
+        src = source()
+        ingest = src[src.index('function chartIngest(ev)'):src.index('function pct(')]
+        self.assertIn("if (ev.type === 'topology') { resetCharts(ts); return; }", ingest)
+
+    def test_the_reset_clears_every_carry_over_across_runs(self):
+        """Anything that survives a reset silently mixes two runs.
+
+        `vipBps` forward-fills throughput, and `prevDropPkts` holds cumulative
+        counter baselines -- both are meaningless once the switch's rules are
+        torn down and rebuilt.
+        """
+        src = source()
+        body = src[src.index('function resetCharts(ts)'):src.index('function chartIngest(ev)')]
+        for field in ('CH.buckets', 'CH.vipBps', 'CH.prevDropPkts',
+                      'CH.lastBps', 'CH.lastBpsByNode', 'CH.t0'):
+            self.assertIn(field, body, f'{field} survives a re-anchor')
+
+    def test_reanchoring_happens_before_the_bucket_is_allocated(self):
+        # Otherwise the topology event itself lands in a bucket on the OLD
+        # timeline and the new run starts at index 1, not 0.
+        src = source()
+        ingest = src[src.index('function chartIngest(ev)'):src.index('function pct(')]
+        self.assertLess(ingest.index('resetCharts(ts)'), ingest.index('bucketFor(ts)'))
+
+    def test_the_anchor_agrees_with_the_offline_report(self):
+        """Re-anchoring makes the live panel AGREE with interval_report.py.
+
+        The offline report anchors on the first event of the recording; a
+        recording's first event is its topology event. So both now bin from the
+        same instant, where before the live panel could be hours adrift. If a
+        future change stops emitting topology first, the two diverge silently
+        and this fails instead.
+        """
+        import random
+        from dashboard.generate_demo_recording import Sim
+        random.seed(7)
+        events = Sim().run()
+        self.assertEqual(events[0]['type'], 'topology')
+        self.assertEqual(
+            events[0]['ts'], min(e['ts'] for e in events),
+            'topology must also be the EARLIEST event, not merely the first '
+            'written -- interval_report anchors on ordered[0]',
+        )
+        src = Path('evaluation/interval_report.py').read_text()
+        self.assertIn("t0 = ordered[0].get('ts'", src)
+
+
+class TestEmptyChartsKeepTheirFrame(unittest.TestCase):
+    def test_a_metric_with_no_data_still_renders_a_chart(self):
+        """Returning '' dropped the chart out of the grid entirely.
+
+        Six charts silently became four, and a reader cannot tell "nothing
+        reported yet" from "this chart was removed". Delay and PDR both hit
+        this, since both come only from `report` events.
+        """
+        src = source()
+        start = src.index('const flat = cols.flat()')
+        block = src[start:src.index('const top =', start)]
+        self.assertNotIn("return '';", block)
+        self.assertIn('cempty', block)
+        self.assertIn('no data in this window yet', block)
+
+    def test_the_placeholder_holds_the_same_height_as_a_plot(self):
+        # Or the surviving charts reflow around the gap every time one fills in.
+        src = source()
+        css = re.search(r'\.cempty \{([^}]*)\}', src).group(1)
+        self.assertIn('height: 118px', css)
+
+
+class TestClusterCharts(unittest.TestCase):
+    """The per-cluster panel: the same buckets, aggregated by node group.
+
+    It is a different SELECTION of series over the same evidence, not a second
+    charting implementation -- so most of what needs guarding here is that it
+    stayed that way, and that the split does not quietly claim attribution the
+    events cannot support.
+    """
+
+    def cluster_block(self):
+        src = source()
+        return src[src.index('const CLUSTER_CHART_DEFS'):
+                   src.index('function niceCeil')]
+
+    def test_the_panel_and_host_element_exist(self):
+        src = source()
+        self.assertIn('Metrics over time — by cluster', src)
+        self.assertIn('id="clusterCharts"', src)
+
+    def test_every_fleet_metric_has_a_cluster_counterpart(self):
+        block = self.cluster_block()
+        for key in ('cthr', 'cdel', 'cpdr', 'cjain', 'cload', 'cdrop', 'cqdrop'):
+            self.assertIn(f"key: '{key}'", block)
+
+    def test_exactly_two_clusters_because_two_slots_were_validated(self):
+        """One colour per cluster, held across every chart in the panel.
+
+        That fixes the series budget at two, which is exactly the two validated
+        categorical slots this surface has. A third cluster is not a config
+        change -- it needs the palette validator re-run first.
+        """
+        src = source()
+        defs = src[src.index('function clusterDefs()'):src.index('// Sum one per-node field')]
+        self.assertEqual(defs.count("key: 'A'"), 1)
+        self.assertEqual(defs.count("key: 'B'"), 1)
+        self.assertIn('color: SERIES_1', defs)
+        self.assertIn('color: SERIES_2', defs)
+        # No third hue smuggled in.
+        self.assertNotIn('SERIES_3', src)
+
+    def test_cluster_membership_comes_from_the_topology_roster(self):
+        # Not a hardcoded srv1..srv4 list: the roster is whatever the run
+        # actually built, so the panel works at any fleet size and cannot
+        # silently omit a node the config added.
+        src = source()
+        defs = src[src.index('function clusterDefs()'):src.index('// Sum one per-node field')]
+        self.assertIn('serverRoster()', defs)
+        for hardcoded in ("'srv1'", "'srv4'", "'srv5'", "'srv8'"):
+            self.assertNotIn(hardcoded, defs)
+
+    def test_task_loss_and_quarantine_drops_get_a_chart_each(self):
+        """The packet-drop discipline, held harder rather than relaxed.
+
+        The fleet panel keeps them as two series on one plot. Here both series
+        slots are spent on the clusters, so they cannot share a plot at all --
+        and the answer is two charts, never one summed "drops" line.
+        """
+        block = self.cluster_block()
+        self.assertIn("key: 'cdrop'", block)
+        self.assertIn("key: 'cqdrop'", block)
+        drop = block[block.index("key: 'cdrop'"):block.index("key: 'cqdrop'")]
+        self.assertNotIn('dropPkts', drop)   # task loss only
+        qdrop = block[block.index("key: 'cqdrop'"):]
+        self.assertNotIn("'timeout'", qdrop)  # enforcement only
+
+    def test_offered_load_is_not_attributed_to_a_cluster(self):
+        """`route_denied` carries no chosen node, so offered load has no cluster.
+
+        Plotting it per cluster would mean inventing an attribution the event
+        stream does not have. The chart plots requests ROUTED and says so.
+        """
+        block = self.cluster_block()
+        self.assertIn("title: 'Requests routed'", block)
+        self.assertNotIn("'offered'", block)
+        self.assertNotIn('b.offered', block)
+        src = source()
+        ingest = src[src.index("case 'route_denied':"):src.index("case 'flow_stats':")]
+        self.assertNotIn('nodeSlot', ingest)
+
+    def test_both_panels_share_one_renderer(self):
+        # Two drawing paths would drift, which is the argument this file's
+        # binning rules already answer that way.
+        src = source()
+        self.assertEqual(src.count('host.innerHTML = defs.map'), 1)
+        self.assertIn("renderCharts('clusterCharts', defs)", src)
+
+    def test_hover_is_scoped_to_the_panel_it_drew(self):
+        # document.querySelectorAll would re-wire the other panel's charts
+        # against the wrong series list on every redraw.
+        src = source()
+        start = src.index('function wireChartHover(')
+        hover = src[start:src.index('function setConn', start)]
+        self.assertIn('host.querySelectorAll', hover)
+        self.assertNotIn("document.querySelectorAll('.chart')", hover)
+
+    def test_binning_uses_the_node_fields_the_events_actually_carry(self):
+        """No controller change was needed, and this pins why.
+
+        `route.chosen`, `report.node` and `flow_stats.rules[].node` are all
+        already published. If a future edit starts binning on something the
+        recording does not carry, the cluster panel would go silently empty
+        rather than error.
+        """
+        src = source()
+        ingest = src[src.index('function chartIngest(ev)'):src.index('function pct(')]
+        self.assertIn('nodeSlot(b, ev.chosen)', ingest)
+        self.assertIn('nodeSlot(b, ev.node)', ingest)
+        self.assertIn('nodeSlot(b, r.node)', ingest)
+
+    def test_throughput_forward_fills_per_node_too(self):
+        # A quiet bucket is not a zero-throughput bucket -- the rule the fleet
+        # series already follows. Applied per node, or a quiet cluster reads as
+        # a dead one.
+        src = source()
+        self.assertIn('bpsByNode: { ...CH.lastBpsByNode }', src)
+        self.assertIn('lastBpsByNode', src)
+
+    def test_the_split_is_labelled_as_positional_not_physical(self):
+        """One server per edge switch here, so the halves are a convention.
+
+        A reader must not be able to infer a locality, rack or failure domain
+        that the topology does not have. It is said on the panel itself, not
+        only in a comment.
+        """
+        src = source()
+        self.assertIn('positional split, not a physical one', src)
+        self.assertIn('id="clusterKey"', src)
+
+    def test_cluster_membership_is_rendered_not_inferred(self):
+        # Which node sits in which cluster has to be readable off the panel.
+        src = source()
+        self.assertIn('c.members.join', src)
+
+
+class TestScalingPanel(unittest.TestCase):
+    """The one panel whose x axis is a node count instead of elapsed time.
+
+    Its data cannot come from a run -- a run has one roster -- so it is
+    pre-computed by evaluation/scale_compare.py and served over
+    /api/scale_compare. The properties worth pinning are the ones a reader
+    would be misled by if they silently broke: that it is marked as not live,
+    that time-only decoration does not leak onto a non-time axis, and that the
+    two rows are not quietly collapsed into one.
+    """
+
+    def scale_block(self):
+        src = source()
+        return src[src.index('const SCALE_SERIES'):
+                   src.index('function renderScaleCharts')]
+
+    def test_the_panel_and_its_row_host_exist(self):
+        src = source()
+        self.assertIn('Client load — 20→40 IoT devices', src)
+        self.assertIn('id="scaleCharts"', src)
+        # Row hosts are built from the payload's row keys, not hardcoded, so
+        # pin the template that produces them.
+        self.assertIn('id="scale_${row.key}"', src)
+
+    def test_no_fleet_size_row_is_reintroduced_without_a_live_run(self):
+        """The removed row swept 20-40 edge SERVERS against a live topology of
+        8, projecting five fleet sizes past anything ever instantiated. A
+        projection on the same page as live charts is a claim this project
+        cannot defend, so its absence is pinned rather than left to memory.
+
+        The capability itself was not lost: scalability_sweep.py still sweeps N
+        on the CLI, where the number reads as the simulation output it is.
+        """
+        gen = Path('evaluation/scale_compare.py').read_text()
+        self.assertIn("'key': 'clients'", gen)
+        self.assertNotIn("'key': 'fleet'", gen)
+        # The roster is the fixed quantity, not a swept one.
+        self.assertIn('SERVERS = 8', gen)
+        self.assertIn('DEVICE_COUNTS', gen)
+        # scalability_sweep.py keeps the N axis.
+        sweep = Path('evaluation/scalability_sweep.py').read_text()
+        self.assertIn("'--ns'", sweep)
+
+    def test_the_page_renders_whatever_rows_it_is_given(self):
+        # Not a hardcoded single row: if a second sweep is ever added it is a
+        # generator change, not a dashboard one.
+        self.assertIn('payload.rows.map', source())
+
+    def test_every_metric_needed_for_both_failure_modes_has_a_chart(self):
+        """Saturation shows in throughput/PDR/delay; starvation shows in Jain
+        and the starved count. A panel carrying only the first three would
+        show argmax and p2c agreeing on the client-load row."""
+        block = self.scale_block()
+        for key in ('sthr', 'sdel', 'spdr', 'sjain', 'sstarve', 'sdec'):
+            self.assertIn(f"key: '{key}'", block)
+
+    def test_the_panel_is_marked_as_not_live(self):
+        """Every other panel on this page reports the current run. This one
+        does not, and on a live dashboard that has to be visible on the panel
+        rather than only true in a docstring.
+
+        The note must also say what is real (the selector) and what is not (the
+        servers, the network) -- 'simulation' alone invites a reader to assume
+        the routing logic was modelled too, when it is the shipping function.
+        """
+        src = source()
+        self.assertIn('<b>Not live — simulation.</b>', src)
+        self.assertIn('sweepNote', src)
+        note = src[src.index('sweepNote"><b>Not live'):src.index('scale_compare</code>')]
+        self.assertIn('select_edge_node', note)
+        self.assertIn('network is not modelled', note)
+
+    def test_attack_bands_are_suppressed_on_the_node_count_axis(self):
+        """Bands mark a moment in TIME. Drawn against a node count they would
+        shade an unrelated run's arming second at "node 30" -- a nonsense claim
+        made with the authority of a shaded region."""
+        src = source()
+        self.assertIn('bands: false', src)
+        renderer = src[src.index('function renderCharts('):
+                       src.index('function wireChartHover')]
+        self.assertIn("opts.bands === false ? [] : attackOnsets()", renderer)
+
+    def test_there_is_still_exactly_one_renderer(self):
+        """The scaling panel is a different x QUANTITY, not a second chart
+        implementation. A fork would drift in units, tick precision or
+        empty-state handling, which is the same argument the cluster panel
+        already answers this way."""
+        src = source()
+        self.assertEqual(src.count('function renderCharts('), 1)
+        self.assertEqual(src.count('function wireChartHover('), 1)
+        # ...and the scaling panel reaches it through the shared entry point.
+        self.assertIn('renderCharts(`scale_${row.key}`', src)
+
+    def test_the_scaling_panel_introduces_no_new_hue(self):
+        """Two series again (p2c vs argmax), so this panel spends the same two
+        validated palette slots the cluster panel does. A third strategy needs
+        the validator re-run, not a hand-picked colour."""
+        block = self.scale_block()
+        self.assertIn('color: SERIES_1', block)
+        self.assertIn('color: SERIES_2', block)
+        self.assertNotIn('SERIES_3', source())
+        # Exactly two strategies plotted.
+        self.assertEqual(block.count("name: 'p2c'"), 1)
+        self.assertEqual(block.count("name: 'argmax'"), 1)
+
+    def test_rows_are_pivoted_by_x_value_not_by_position(self):
+        """The two sweep rows emit their points in different orders --
+        strategy-major for the fleet row, x-major for the client row, because
+        one calls run_sweep once and the other once per device count. Pairing
+        by position would put p2c's numbers under argmax's name in one of them.
+        """
+        src = source()
+        pivot = src[src.index('function scaleRows('):src.index('function scaleChartDefs')]
+        self.assertIn('row.x[i]', pivot)
+        self.assertIn('byX.get(xv)[p.strategy] = p', pivot)
+
+
+class TestScaleComparePayload(unittest.TestCase):
+    """Shape checks on what the generator hands the panel.
+
+    The browser code cannot be executed here (no JS runtime on this box, and
+    the page has no build step -- see the module docstring), so the pivot the
+    panel depends on is verified against the real payload in Python instead.
+    """
+
+    def payload(self):
+        import json
+        p = Path('data/scale_compare.json')
+        if not p.exists():
+            self.skipTest('no sweep generated; run python3 -m evaluation.scale_compare')
+        return json.loads(p.read_text())
+
+    def test_every_x_value_carries_both_strategies(self):
+        """What scaleRows() assumes: pivoting by x yields one row per node
+        count with both strategies present. A hole would render as a gap in
+        one line, which reads as a dip rather than as missing data."""
+        for row in self.payload()['rows']:
+            by_x = {}
+            for x, pt in zip(row['x'], row['points']):
+                by_x.setdefault(x, set()).add(pt['strategy'])
+            self.assertTrue(by_x, f"row {row['key']} has no points")
+            for x, strategies in sorted(by_x.items()):
+                self.assertEqual(
+                    strategies, {'argmax', 'p2c'},
+                    f"row {row['key']} x={x} is missing a strategy: {strategies}",
+                )
+
+    def test_the_roster_is_held_at_the_deployed_size(self):
+        """The variable is the DEVICE count. If the server count ever moves
+        with it the panel silently becomes a fleet-size projection again --
+        the exact thing that was removed."""
+        payload = self.payload()
+        clients = next(r for r in payload['rows'] if r['key'] == 'clients')
+        self.assertEqual({pt['n'] for pt in clients['points']}, {8})
+        # 8 is not a number chosen here: it is what the shipped config deploys.
+        import yaml
+        with open('config/params.yaml') as f:
+            cfg = yaml.safe_load(f)
+        self.assertEqual(cfg['simulation']['num_edge_nodes'], 8)
+
+    def test_the_sweep_ends_at_the_deployed_device_count(self):
+        """40 is config/params.yaml's num_iot_devices. Ending there is what
+        keeps both axes inside the topology the project actually builds."""
+        import yaml
+        with open('config/params.yaml') as f:
+            cfg = yaml.safe_load(f)
+        payload = self.payload()
+        self.assertEqual(max(payload['meta']['device_counts']),
+                         cfg['simulation']['num_iot_devices'])
+
+    def test_offered_load_rises_with_the_device_count(self):
+        payload = self.payload()
+        clients = next(r for r in payload['rows'] if r['key'] == 'clients')
+        loads = {}
+        for x, pt in zip(clients['x'], clients['points']):
+            loads[x] = pt['load_factor']
+        xs = sorted(loads)
+        self.assertEqual([loads[x] for x in xs], sorted(loads[x] for x in xs))
+        self.assertGreater(loads[xs[-1]], loads[xs[0]])
+
+    def test_pdr_is_stored_as_the_percent_the_chart_plots(self):
+        # The chart caps this axis at max: 100. A 0-1 fraction here would draw
+        # every PDR as a flat line on the floor.
+        for row in self.payload()['rows']:
+            for pt in row['points']:
+                self.assertLessEqual(pt['pdr'], 100.0)
+                self.assertGreaterEqual(pt['pdr'], 0.0)
+
+
 if __name__ == '__main__':
     unittest.main()

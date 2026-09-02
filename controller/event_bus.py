@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 # event happens to fire.
 _HISTORY_MAXLEN = 500
 
+# Event types pinned into every backfill regardless of age.
+#
+# `topology` is published exactly once, at run start, and it is the only
+# carrier of the server roster and the ground-truth attack onsets. Three
+# panels are built on it: the trust/topology map, the chart panel's shaded
+# attack bands, and the cluster split's membership. At 500 events of history
+# and ~20 events/sec it falls out of the window within half a minute, so
+# without pinning, a browser opened even slightly into a run gets no roster at
+# all -- and the failure is silent, because every panel simply renders empty
+# rather than erroring.
+_STICKY_TYPES = ('topology',)
+
 # Per-subscriber queue depth. At ~20 events/sec (12 IoT clients at 1Hz plus
 # flow-stats and node-status polls) this is several seconds of slack before a
 # stalled reader starts losing events.
@@ -57,6 +69,7 @@ class EventBus:
     ) -> None:
         self._lock = threading.Lock()
         self._history: Deque[Dict[str, Any]] = deque(maxlen=history_maxlen)
+        self._sticky: Dict[str, Dict[str, Any]] = {}
         self._subscribers: List[queue.Queue] = []
         self._subscriber_maxsize = subscriber_maxsize
         self._seq = 0
@@ -84,6 +97,8 @@ class EventBus:
             self._seq += 1
             event['seq'] = self._seq
             self._history.append(event)
+            if event_type in _STICKY_TYPES:
+                self._sticky[event_type] = event
             subscribers = list(self._subscribers)
 
         for q in subscribers:
@@ -136,9 +151,20 @@ class EventBus:
                 self._subscribers.remove(q)
 
     def history(self) -> List[Dict[str, Any]]:
-        """Backfill for a subscriber that connected mid-run."""
+        """Backfill for a subscriber that connected mid-run.
+
+        Sticky events are prepended when they have already aged out of the
+        ring, and never duplicated when they are still in it. They go FIRST
+        because everything after them refers to the roster they define -- a
+        `route` naming srv6 is not interpretable before the topology that says
+        what srv6 is.
+        """
         with self._lock:
-            return list(self._history)
+            hist = list(self._history)
+            present = {e.get('seq') for e in hist}
+            pinned = [e for e in self._sticky.values() if e.get('seq') not in present]
+            pinned.sort(key=lambda e: e.get('seq', 0))
+            return pinned + hist
 
     @property
     def dropped(self) -> int:

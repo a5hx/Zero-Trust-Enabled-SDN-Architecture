@@ -118,6 +118,101 @@
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   }
   .chart { min-width: 0; }
+  /* Same box the SVG would occupy, so a chart with no data yet holds its place
+     in the grid instead of letting the others reflow around the gap. */
+  .cempty {
+    display: flex; align-items: center; justify-content: center;
+    height: 118px; font-size: 11px; color: var(--muted);
+    border-bottom: 1px solid #2c313a;   /* same hairline as .gridline */
+  }
+  /* Cluster membership, spelled out. The split is positional, not physical
+     (one server per edge switch in this topology), so which node is in which
+     cluster has to be readable off the panel rather than inferred. */
+  .clusterKey {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    margin: 0 0 10px; font-size: 11px; color: var(--muted);
+  }
+  .clusterKey b { color: var(--text); font-weight: 600; }
+  .clusterKey .ckey { margin-right: 5px; }
+  /* Scaling panel: each sweep row gets a heading, because the two rows differ
+     in what their x axis COUNTS (servers vs devices) and a reader landing on
+     the second row must not read it as more of the first. */
+  .sweepRow { margin-bottom: 18px; }
+  .sweepRow:last-child { margin-bottom: 0; }
+  .sweepRow > h3 {
+    margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--text);
+  }
+  .sweepRow > .rowsub { margin: 0 0 10px; font-size: 10px; color: var(--muted); }
+  /* This panel is NOT live, and on a dashboard where everything else is, that
+     has to be impossible to miss rather than merely written down. */
+  .sweepNote {
+    margin: 0 0 12px; padding: 7px 10px; font-size: 11px; line-height: 1.5;
+    color: var(--muted); background: var(--panel-2);
+    border-left: 2px solid var(--muted); border-radius: 0 4px 4px 0;
+  }
+  .sweepNote b { color: var(--text); font-weight: 600; }
+  .sweepNote code { font-size: 10px; }
+  /* ---- trust ledger ---- */
+  .ledgerHead {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+    margin-bottom: 10px; font-size: 11px; color: var(--muted);
+  }
+  .ledgerHead b { color: var(--text); font-weight: 600; }
+  /* The two verdicts are deliberately separate pills: one is the controller
+     reporting on itself, the other is this page re-deriving the chain. They
+     are not the same claim and must not merge into one green tick. */
+  .vpill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .vpill.ok   { color: var(--good); border-color: rgba(63,185,80,.45); }
+  .vpill.bad  { color: var(--bad);  border-color: rgba(248,81,73,.55); }
+  .vpill.wait { color: var(--muted); }
+  /* Blocks scroll inside their own strip; the page never scrolls sideways. */
+  .chain { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding-bottom: 6px; }
+  .blk {
+    flex: 0 0 auto; width: 104px; padding: 7px 8px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 10px; line-height: 1.45;
+  }
+  .blk.genesis { border-style: dashed; }
+  .blk.broken { border-color: var(--bad); background: rgba(248,81,73,.12); }
+  .blk .bi { font-weight: 700; color: var(--text); font-size: 11px; }
+  .blk .bmeta { color: var(--muted); }
+  .blk .bstat { margin-top: 3px; font-weight: 600; }
+  .blk.broken .bstat { color: var(--bad); }
+  /* The hash chip is the whole point of the ribbon: block N's prev chip and
+     block N-1's own chip carry the SAME eight characters, so the linkage is
+     read off the screen rather than taken on faith. */
+  .hchip {
+    display: inline-block; padding: 0 4px; border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+    background: rgba(88,166,255,.20); color: var(--text);
+  }
+  .blk.broken .hchip { background: rgba(248,81,73,.25); }
+  .clink {
+    flex: 0 0 auto; align-self: center; width: 16px; text-align: center;
+    color: var(--muted); font-size: 12px;
+  }
+  .clink.broken { color: var(--bad); font-weight: 700; }
+  .ledgerFoot {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+    margin-top: 10px; font-size: 11px; color: var(--muted);
+  }
+  .gauge {
+    display: inline-block; width: 78px; height: 7px; border-radius: 4px;
+    background: var(--panel-2); border: 1px solid var(--border); overflow: hidden;
+    vertical-align: middle;
+  }
+  .gauge > i { display: block; height: 100%; background: var(--accent); }
+  .tamper {
+    font: inherit; font-size: 10px; padding: 3px 9px; cursor: pointer;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+  }
+  .tamper:hover { border-color: var(--bad); color: var(--bad); }
+  .tamper[disabled] { opacity: .45; cursor: default; }
   .chart .ct { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 1px; }
   .chart .cs { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
   .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
@@ -326,6 +421,23 @@
 
 <div class="wide">
   <div class="panel">
+    <h2>Trust ledger
+      <span class="note">— every trust update is batched into a hash-linked block;
+        this page recomputes each block's SHA-256 itself rather than taking the
+        controller's word for it</span>
+    </h2>
+    <div class="body">
+      <div id="ledgerHead" class="ledgerHead"></div>
+      <div id="chain" class="chain">
+        <div class="empty">waiting for the first block to commit…</div>
+      </div>
+      <div id="ledgerFoot" class="ledgerFoot"></div>
+    </div>
+  </div>
+</div>
+
+<div class="wide">
+  <div class="panel">
     <h2>Metrics over time
       <span class="note">— 10s buckets, binned live with the same rules as
         <code>evaluation/interval_report.py</code>; shaded bands mark configured attack onsets</span>
@@ -333,6 +445,35 @@
     <div class="body">
       <div class="charts" id="charts">
         <div class="empty">waiting for the first bucket to close…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wide">
+  <div class="panel">
+    <h2>Metrics over time — by cluster
+      <span class="note">— the same buckets and the same metric definitions as the
+        panel above, but attributed per serving node and summed per cluster</span>
+    </h2>
+    <div class="body">
+      <div id="clusterKey" class="clusterKey"></div>
+      <div class="charts" id="clusterCharts">
+        <div class="empty">waiting for the first bucket to close…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wide">
+  <div class="panel">
+    <h2>Client load — 20→40 IoT devices
+      <span class="note">— pre-computed sweep against the deployed 8-server
+        roster, p2c vs argmax; x is a device count, not time</span>
+    </h2>
+    <div class="body">
+      <div id="scaleCharts">
+        <div class="empty">loading the scaling sweep…</div>
       </div>
     </div>
   </div>
@@ -993,6 +1134,11 @@ function log(ev) {
     case 'anomaly': desc = `<b>${ev.node}</b> — ${ev.reasons.join('; ')}`; break;
     case 'report': desc = `${ev.device} → ${ev.node}: ${ev.status} (${ev.latency_ms} ms), trust ${ev.trust}`; break;
     case 'switch_up': desc = `switch dpid=${ev.dpid} connected`; break;
+    case 'block': desc = ev.accepted
+      ? `block <b>#${ev.index}</b> committed — ${ev.num_updates} trust update(s), `
+        + `${ev.commit_ms} ms, hash ${String(ev.hash).slice(0, 8)}…`
+      : `block <b>REJECTED</b> — ${ev.num_updates} update(s) not committed`;
+      break;
     case 'optimizer':
       desc = `weights → [${(ev.next_weights || []).map(x => x.toFixed(2)).join(', ')}] · ` +
              `reward ${ev.reward != null ? ev.reward.toFixed(3) : '?'} (${ev.outcomes} outcomes)`;
@@ -1019,6 +1165,25 @@ function handle(ev) {
     case 'switch_up':
       S.seenSwitches.add(ev.dpid);
       paintNodes();
+      break;
+
+    // Blocks arrive every max_updates_per_block-th report -- a few per second
+    // under load -- so the ledger panel is throttled like the charts rather
+    // than redrawn per event.
+    case 'block':
+      ledgerIngest(ev);
+      scheduleLedgerRender();
+      break;
+
+    // Each report contributes one TrustUpdate to the batch that is waiting to
+    // be committed. Counted here rather than polled from the controller: there
+    // is no endpoint for the pending queue, and inferring it from the event
+    // stream is exactly as accurate for a page that has seen every report
+    // since it connected. A page that connected mid-batch starts low and
+    // self-corrects at the next commit, which resets the count to zero.
+    case 'report':
+      LEDGER.pending++;
+      scheduleLedgerRender();
       break;
 
     case 'node_status':
@@ -1117,11 +1282,32 @@ const PRIO_QUARANTINE_DROP = 400;
 const CH = {
   t0: null,
   buckets: [],                    // {i, offered, served, taskTotal, success,
-                                  //  timeout, failure, lat[], dropPkts, bps}
-  vipBps: {},                     // rule key -> latest bps  (sum at read time)
+                                  //  timeout, failure, lat[], dropPkts, bps,
+                                  //  share{}, byNode{}, bpsByNode{}}
+  vipBps: {},                     // rule key -> {bps, node}  (sum at read time)
   prevDropPkts: {},               // rule key -> last cumulative packet count
   lastBps: 0,
+  lastBpsByNode: {},              // node -> latest summed bps, for forward-fill
 };
+
+// Per-node slot inside a bucket. Every event this panel bins already carries
+// the serving node (`route.chosen`, `report.node`, `flow_stats.rules[].node`),
+// so the cluster split needs NO controller change -- it is a different
+// aggregation of the same evidence, not new instrumentation.
+//
+// Kept per NODE rather than per cluster on purpose: cluster membership is
+// resolved at render time from the topology event's server roster, which may
+// arrive after the first events have already been binned. Binning straight
+// into clusters would silently drop everything that landed before the roster
+// was known.
+function nodeSlot(b, node) {
+  if (!node) return null;
+  if (!b.byNode[node]) {
+    b.byNode[node] = { total: 0, success: 0, timeout: 0, failure: 0,
+                       lat: [], dropPkts: 0, served: 0 };
+  }
+  return b.byNode[node];
+}
 
 function bucketFor(ts) {
   if (CH.t0 === null) CH.t0 = ts;
@@ -1132,7 +1318,9 @@ function bucketFor(ts) {
       success: 0, timeout: 0, failure: 0, lat: [], dropPkts: 0,
       // Throughput and quarantine state forward-fill: a quiet bucket is not a
       // zero-throughput bucket, which is how a live dashboard reads too.
+      // Same rule per node, or a quiet cluster reads as a dead one.
       bps: CH.lastBps, share: {},
+      byNode: {}, bpsByNode: { ...CH.lastBpsByNode },
     });
   }
   if (CH.buckets.length > MAX_BUCKETS) {
@@ -1143,27 +1331,87 @@ function bucketFor(ts) {
     : CH.buckets.find(b => b.i === idx) || CH.buckets[CH.buckets.length - 1];
 }
 
+// Anchor the chart timeline to the RUN, not to whenever this page happened to
+// connect.
+//
+// The bug this fixes: `t0` used to be the first event the browser ever saw. A
+// controller left running (it is the same process that serves this page, so it
+// commonly outlives several topologies) meant a page opened hours earlier had
+// `t0` hours in the past, and three things broke at once:
+//
+//   * the x axis read in absolute seconds since then -- "16770s" on a run that
+//     had been going 40 seconds;
+//   * the ground-truth ATTACK BANDS are drawn at bucket `attack_start_s /
+//     BUCKET_S`, i.e. buckets 2..6, which is ~1600 buckets left of the visible
+//     window -- so the shaded onsets, the entire point of the panel, silently
+//     never rendered;
+//   * the previous run's state survived into the next one: `vipBps` kept
+//     forward-filling throughput for flow rules that no longer exist (a flat
+//     line at a stale rate), and `prevDropPkts` held cumulative baselines for
+//     counters that had since reset.
+//
+// `topology` is published exactly once per run and is the closest thing on the
+// bus to "the network now exists", which is what `attack_start_s` is relative
+// to. Re-anchoring there also makes the live panel agree with
+// interval_report.py rather than diverge from it: a recording's first event IS
+// the topology event, so offline binning already uses this instant.
+//
+// It doubles as the reconnect fix. SSE backfill replays history on every
+// reconnect; without a reset those events would be binned a second time on top
+// of themselves. Resetting here means a reconnect rebuilds cleanly instead.
+function resetCharts(ts) {
+  CH.t0 = typeof ts === 'number' ? ts : null;
+  CH.buckets = [];
+  CH.vipBps = {};
+  CH.prevDropPkts = {};
+  CH.lastBps = 0;
+  CH.lastBpsByNode = {};
+}
+
 function chartIngest(ev) {
   const ts = ev.ts;
   if (typeof ts !== 'number') return;
+
+  // Before bucketFor, so the new run's first bucket is index 0.
+  if (ev.type === 'topology') { resetCharts(ts); return; }
+
   const b = bucketFor(ts);
 
   switch (ev.type) {
-    case 'route':
+    case 'route': {
       b.offered++; b.served++;
-      if (ev.chosen) b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
+      if (ev.chosen) {
+        b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
+        nodeSlot(b, ev.chosen).served++;
+      }
       break;
+    }
     case 'route_denied':
+      // Deliberately fleet-only. A denied request was never assigned a node,
+      // so there is no cluster to charge it to -- which is why the cluster
+      // panel plots requests ROUTED and never claims to plot offered load.
       b.offered++;
       break;
-    case 'report':
+    case 'report': {
       b.taskTotal++;
+      const n = nodeSlot(b, ev.node);
+      if (n) n.total++;
       if (ev.status === 'success') {
         b.success++;
-        if (typeof ev.latency_ms === 'number') b.lat.push(ev.latency_ms);
-      } else if (ev.status === 'timeout') b.timeout++;
-      else b.failure++;
+        if (n) n.success++;
+        if (typeof ev.latency_ms === 'number') {
+          b.lat.push(ev.latency_ms);
+          if (n) n.lat.push(ev.latency_ms);
+        }
+      } else if (ev.status === 'timeout') {
+        b.timeout++;
+        if (n) n.timeout++;
+      } else {
+        b.failure++;
+        if (n) n.failure++;
+      }
       break;
+    }
     case 'flow_stats':
       for (const r of ev.rules || []) {
         if (!r.is_vip) continue;
@@ -1173,20 +1421,28 @@ function chartIngest(ev) {
           // ITS OWN traffic rather than a running total.
           const pkts = r.packets || 0;
           const prev = key in CH.prevDropPkts ? CH.prevDropPkts[key] : pkts;
-          b.dropPkts += Math.max(0, pkts - prev);
+          const d = Math.max(0, pkts - prev);
+          b.dropPkts += d;
+          const n = nodeSlot(b, r.node);
+          if (n) n.dropPkts += d;
           CH.prevDropPkts[key] = pkts;
         } else {
           // bps is already a rate (FlowStatsPoller diffs it), so keep the
           // latest per rule and sum at read time -- never accumulate.
-          CH.vipBps[key] = r.bps || 0;
+          CH.vipBps[key] = { bps: r.bps || 0, node: r.node || null };
         }
       }
-      CH.lastBps = Object.values(CH.vipBps).reduce((a, v) => a + v, 0);
+      CH.lastBps = Object.values(CH.vipBps).reduce((a, v) => a + v.bps, 0);
+      CH.lastBpsByNode = {};
+      for (const v of Object.values(CH.vipBps)) {
+        if (v.node) CH.lastBpsByNode[v.node] = (CH.lastBpsByNode[v.node] || 0) + v.bps;
+      }
       break;
     default:
       return;
   }
   b.bps = CH.lastBps;
+  b.bpsByNode = { ...CH.lastBpsByNode };
 }
 
 function pct(xs, p) {
@@ -1199,14 +1455,61 @@ function pct(xs, p) {
 // Jain's Fairness Index (Jain, Chiu & Hawe 1984), over the FULL server roster
 // -- a node starved for the whole run must still count against fairness rather
 // than silently not appearing. Same rule as interval_report.jain_fairness_index.
-function jain(shareMap) {
-  const roster = (S.topo?.nodes || []).filter(n => n.kind === 'server');
+function serverRoster() {
+  return (S.topo?.nodes || []).filter(n => n.kind === 'server').map(n => n.id);
+}
+
+function jainOver(shareMap, roster) {
   if (!roster.length) return null;
-  const xs = roster.map(n => shareMap[n.id] || 0);
+  const xs = roster.map(id => shareMap[id] || 0);
   const total = xs.reduce((a, v) => a + v, 0);
   if (total <= 0) return null;
   const sq = xs.reduce((a, v) => a + v * v, 0);
   return sq > 0 ? (total * total) / (xs.length * sq) : null;
+}
+
+function jain(shareMap) {
+  return jainOver(shareMap, serverRoster());
+}
+
+// ------------------------------------------------------------- clusters ----
+// Two clusters, split positionally down the middle of the server roster.
+//
+// STATE PLAINLY WHAT THIS IS: the split is ARBITRARY. This topology gives
+// every server its own edge switch hanging off one core switch (s0 -> s1..s8,
+// one server each), so there is no physical cluster structure to follow --
+// srv1-4 and srv5-8 are not two racks, two sites or two failure domains. The
+// halves are a positional convention, and the panel says so rather than
+// letting a reader infer a locality that is not there.
+//
+// The roster order comes off the topology event, which is the same order
+// topology.py builds the fleet in, so membership is stable across a run and
+// across a replay of the same recording.
+function clusterDefs() {
+  const roster = serverRoster();
+  if (roster.length < 2) return [];
+  const half = Math.ceil(roster.length / 2);
+  const a = roster.slice(0, half), b = roster.slice(half);
+  return [
+    { key: 'A', name: `cluster A (${a[0]}–${a[a.length - 1]})`, color: SERIES_1, members: a },
+    { key: 'B', name: `cluster B (${b[0]}–${b[b.length - 1]})`, color: SERIES_2, members: b },
+  ];
+}
+
+// Sum one per-node field across a cluster's members for a bucket.
+function clusterSum(b, members, field) {
+  let t = 0;
+  for (const id of members) t += (b.byNode[id] || {})[field] || 0;
+  return t;
+}
+
+function clusterLat(b, members) {
+  const xs = [];
+  for (const id of members) {
+    const s = b.byNode[id];
+    if (s) xs.push(...s.lat);
+  }
+  return xs;
 }
 
 // Ground-truth attack onsets, for the shaded bands. Comes off the topology
@@ -1249,6 +1552,64 @@ const CHART_DEFS = [
       { name: 'quarantine drops', color: SERIES_2, f: b => b.dropPkts }] },
 ];
 
+// The same metrics, one series PER CLUSTER instead of per quantity.
+//
+// Built the same way and read the same way, with three differences forced by
+// what the evidence can actually support:
+//
+//  1. ONE COLOUR PER CLUSTER, held constant across every chart here. In small
+//     multiples a hue that means "cluster A" on one plot and "p95" on the next
+//     is worse than no colour at all. That fixes the series budget at two --
+//     which is exactly the two validated slots this surface has, so two
+//     clusters is the shipped shape. A third cluster needs the palette
+//     validator re-run before it can be added, not a hand-picked hue.
+//  2. DELAY IS p95 ONLY. The fleet panel above plots mean AND p95 because it
+//     has the budget for two series; here that budget is spent on the clusters
+//     themselves. p95 is the one kept because it moves first -- a few timed-out
+//     tasks are the top 5% long before they shift the mean.
+//  3. TASK LOSS AND QUARANTINE DROPS GET A CHART EACH. The packet-drop
+//     discipline says they are different quantities and must never share a
+//     line; here they cannot even share a plot, since both axes are spent on
+//     clusters. Splitting them is the discipline held harder, not relaxed.
+//
+// There is deliberately no "offered load" chart: `route_denied` carries no
+// chosen node (nothing was chosen), so offered traffic cannot honestly be
+// attributed to a cluster. Requests ROUTED can be, and is what is plotted.
+const CLUSTER_CHART_DEFS = [
+  { key: 'cthr', title: 'Throughput', sub: 'VIP-serving flow rules, summed per cluster',
+    unit: 'kbps', clusterF: (b, m) => {
+      let t = 0; for (const id of m) t += b.bpsByNode[id] || 0; return t / 1000;
+    } },
+  { key: 'cdel', title: 'Task delay (p95)', sub: 'successful tasks served by this cluster',
+    unit: 'ms', clusterF: (b, m) => pct(clusterLat(b, m), 95) },
+  { key: 'cpdr', title: 'Packet delivery ratio', sub: 'completed / reported, per cluster',
+    unit: '%', max: 100, clusterF: (b, m) => {
+      const t = clusterSum(b, m, 'total');
+      return t ? clusterSum(b, m, 'success') / t * 100 : null;
+    } },
+  { key: 'cjain', title: 'Load balancing', sub: "Jain's fairness WITHIN each cluster's own roster",
+    unit: '', max: 1, clusterF: (b, m) => jainOver(b.share, m) },
+  { key: 'cload', title: 'Requests routed', sub: 'decisions landing on this cluster (offered load is fleet-only)',
+    unit: 'req/s', clusterF: (b, m) => clusterSum(b, m, 'served') / BUCKET_S },
+  { key: 'cdrop', title: 'Tasks lost', sub: 'timeouts + failures charged to this cluster',
+    unit: '', clusterF: (b, m) => clusterSum(b, m, 'timeout') + clusterSum(b, m, 'failure') },
+  { key: 'cqdrop', title: 'Quarantine drops', sub: 'OpenFlow drop-rule packet hits — enforcement, not loss',
+    unit: 'pkts', clusterF: (b, m) => clusterSum(b, m, 'dropPkts') },
+];
+
+// Expand the cluster defs into the same {series:[{name,color,f}]} shape the
+// renderer already takes, so both panels go through ONE drawing path. Two
+// renderers would drift, which is the same argument interval_report.py and
+// this file's binning rules already answer that way.
+function clusterChartDefs() {
+  const cs = clusterDefs();
+  if (!cs.length) return [];
+  return CLUSTER_CHART_DEFS.map(d => ({
+    ...d,
+    series: cs.map(c => ({ name: c.name, color: c.color, f: b => d.clusterF(b, c.members) })),
+  }));
+}
+
 function niceCeil(v) {
   if (!(v > 0)) return 1;
   const mag = Math.pow(10, Math.floor(Math.log10(v)));
@@ -1278,31 +1639,62 @@ function fmtTick(v, top) {
 let _chartTimer = null;
 function scheduleChartRender() {
   if (_chartTimer !== null) return;
-  _chartTimer = setTimeout(() => { _chartTimer = null; renderCharts(); }, 500);
+  _chartTimer = setTimeout(() => {
+    _chartTimer = null;
+    renderCharts();
+    renderClusterCharts();
+  }, 500);
 }
 
-function renderCharts() {
-  const host = document.getElementById('charts');
-  if (!CH.buckets.length) return;
+// All three panels draw through here. The cluster panel is a different
+// SELECTION of series over the same buckets; the scaling panel is the same
+// drawing on a different X QUANTITY (node count instead of elapsed time).
+//
+// The x axis is therefore parameterised rather than assumed to be a bucket
+// index: `opts.rows` supplies the row objects, `opts.xOf` maps a row to its
+// numeric x, `opts.xLab` labels the two end ticks. Everything else -- scaling,
+// gridlines, endpoint labelling, legend, hover -- is shared. Forking a second
+// renderer for a non-time axis is exactly how the two would drift apart in
+// units, tick precision or empty-state handling.
+function renderCharts(hostId = 'charts', defs = CHART_DEFS, opts = {}) {
+  const host = document.getElementById(hostId);
+  const bs = opts.rows || CH.buckets;
+  if (!host || !bs.length) return;
 
   // PR is wide enough for the endpoint value label to sit INSIDE the viewBox.
   // At PR=30 a label like "85.0%" started at x=337 and ran past the 360-wide
   // box, overhanging the next chart in the grid.
   const W = 360, H = 118, PL = 42, PR = 56, PT = 8, PB = 18;
   const iw = W - PL - PR, ih = H - PT - PB;
-  const bs = CH.buckets;
-  const lastI = bs[bs.length - 1].i, firstI = bs[0].i;
+  const xOf = opts.xOf || (b => b.i);
+  const xLab = opts.xLab || (v => `${v * BUCKET_S}s`);
+  const lastI = xOf(bs[bs.length - 1]), firstI = xOf(bs[0]);
   const span = Math.max(1, lastI - firstI);
-  const x = i => PL + (i - firstI) / span * iw;
-  const onsets = attackOnsets();
+  const x = v => PL + (v - firstI) / span * iw;
+  // Attack bands mark a moment in TIME. On the scaling panel the x axis is a
+  // node count, so a band there would draw the arming second of an unrelated
+  // live run at "node 30" -- nonsense with the authority of a shaded region.
+  const onsets = opts.bands === false ? [] : attackOnsets();
 
-  host.innerHTML = CHART_DEFS.map(def => {
+  host.innerHTML = defs.map(def => {
     const cols = def.series.map(s => bs.map(b => {
       const v = s.f(b);
       return (v === null || v === undefined || !isFinite(v)) ? null : v;
     }));
     const flat = cols.flat().filter(v => v !== null);
-    if (!flat.length) return '';
+    // Keep the frame when the metric has nothing yet. Returning '' dropped the
+    // chart out of the grid entirely, which silently turned six charts into
+    // four -- and a reader cannot tell "nothing has been reported yet" from
+    // "this chart was removed". Delay and PDR are the two that hit this, since
+    // both come only from `report` events and a run has none until its first
+    // task completes.
+    if (!flat.length) {
+      return `<div class="chart" data-key="${def.key}">
+        <div class="ct">${def.title}${def.unit ? ` <span class="cs" style="display:inline">(${def.unit})</span>` : ''}</div>
+        <div class="cs">${def.sub}</div>
+        <div class="cempty">no data in this window yet</div>
+      </div>`;
+    }
     const top = def.max !== undefined ? def.max : niceCeil(Math.max(...flat) * 1.1);
     const y = v => PT + ih - (Math.min(v, top) / top) * ih;
 
@@ -1329,7 +1721,7 @@ function renderCharts() {
 
     const paths = def.series.map((s, si) => {
       const pts = [];
-      cols[si].forEach((v, k) => { if (v !== null) pts.push([x(bs[k].i), y(v)]); });
+      cols[si].forEach((v, k) => { if (v !== null) pts.push([x(xOf(bs[k])), y(v)]); });
       if (!pts.length) return '';
       const d = pts.map((p, k) => (k ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
       const last = pts[pts.length - 1];
@@ -1357,12 +1749,12 @@ function renderCharts() {
            geometry: 2px lines stopped being 2px and the end dots rendered as
            ellipses. -->
       <svg viewBox="0 0 ${W} ${H}" role="img"
-           aria-label="${def.title} over time">
+           aria-label="${def.title} ${opts.xdesc || 'over time'}">
         ${bands}${grid}
         <line class="axisline" x1="${PL}" y1="${PT + ih}" x2="${PL + iw}" y2="${PT + ih}"></line>
         ${paths}${bandLab}
-        <text class="tick x" x="${PL}" y="${H - 5}">${firstI * BUCKET_S}s</text>
-        <text class="tick x" x="${PL + iw}" y="${H - 5}">${lastI * BUCKET_S}s</text>
+        <text class="tick x" x="${PL}" y="${H - 5}">${xLab(firstI)}</text>
+        <text class="tick x" x="${PL + iw}" y="${H - 5}">${xLab(lastI)}</text>
         <rect class="hit" x="${PL}" y="${PT}" width="${iw}" height="${ih}"></rect>
         <line class="crosshair" style="display:none"></line>
       </svg>
@@ -1370,20 +1762,567 @@ function renderCharts() {
     </div>`;
   }).join('');
 
-  wireChartHover(x, firstI, span, PL, iw, PT, ih);
+  wireChartHover(host, defs, {
+    x, xOf, rows: bs, firstI, span, PL, iw, PT, ih,
+    tipLab: opts.tipLab || (b => `t = ${b.i * BUCKET_S}–${(b.i + 1) * BUCKET_S}s`),
+  });
+}
+
+// The cluster panel. Draws nothing until the topology event has named the
+// server roster -- membership is not guessable from traffic, and a chart drawn
+// before the roster arrives would silently omit whichever nodes had not yet
+// been seen.
+function renderClusterCharts() {
+  const defs = clusterChartDefs();
+  const key = document.getElementById('clusterKey');
+  if (!defs.length) {
+    if (key) key.innerHTML = '';
+    return;
+  }
+  if (key) {
+    key.innerHTML = clusterDefs().map(c =>
+      `<span><i class="ckey" style="background:${c.color}"></i>`
+      + `<b>${c.name}</b> — ${c.members.join(', ')}</span>`).join('')
+      + `<span>positional split, not a physical one — one server per edge switch here</span>`;
+  }
+  renderCharts('clusterCharts', defs);
+}
+
+// ---------------------------------------------------------- trust ledger ----
+// This panel re-derives the chain instead of rendering a verdict handed to it.
+//
+// `GET /ledger/verify` already answers "is the chain valid?", but it is the
+// controller auditing its own ledger with the same code that built it. A panel
+// that only displayed that flag could never disagree with it, and a tamper
+// demonstration driven by it would be theatre. So the block HEADER is streamed
+// (see trust_balancer._on_block_committed) and the digest is recomputed here,
+// in the browser, from the preimage. The two verdicts are shown side by side
+// and are allowed to differ -- that disagreement is the informative case.
+//
+// SHA-256 is implemented below rather than called through Web Crypto. Two
+// reasons, and the second is the deciding one:
+//   * crypto.subtle is async, and every redraw would become a promise chain
+//     for a digest over ~200 bytes.
+//   * crypto.subtle CANNOT BE TESTED on this box -- there is no browser in the
+//     test path. A plain function runs under the quickjs interpreter the tests
+//     drive, so the JS digest is pinned against Python's hashlib over real
+//     blocks (tests/test_dashboard_ledger.py). An untestable implementation of
+//     the one thing this panel claims to prove was not worth the brevity.
+const _K256 = [
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+];
+
+function sha256Hex(str) {
+  // UTF-8 encode. The header is ASCII in practice (hex digests, node ids), but
+  // encoding properly costs nothing and a non-ASCII proposer_id would
+  // otherwise hash differently here than in Python.
+  const bytes = [];
+  for (let i = 0; i < str.length; i++) {
+    let c = str.charCodeAt(i);
+    if (c < 0x80) bytes.push(c);
+    else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+    else if (c < 0xd800 || c >= 0xe000) bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    else {
+      const cp = 0x10000 + (((c & 0x3ff) << 10) | (str.charCodeAt(++i) & 0x3ff));
+      bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+    }
+  }
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  // Length is a 64-bit big-endian count of BITS. The high word is written as
+  // a float-safe division rather than a shift: bitLen can exceed 2^32 and JS
+  // bitwise operators truncate to 32 bits.
+  const hi = Math.floor(bitLen / 4294967296), lo = bitLen >>> 0;
+  bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255);
+  bytes.push((lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,
+      h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+  const w = new Array(64);
+  const rr = (x, n) => (x >>> n) | (x << (32 - n));
+
+  for (let off = 0; off < bytes.length; off += 64) {
+    for (let i = 0; i < 16; i++) {
+      w[i] = (bytes[off+i*4] << 24) | (bytes[off+i*4+1] << 16)
+           | (bytes[off+i*4+2] << 8) | bytes[off+i*4+3];
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = rr(w[i-15],7) ^ rr(w[i-15],18) ^ (w[i-15] >>> 3);
+      const s1 = rr(w[i-2],17) ^ rr(w[i-2],19) ^ (w[i-2] >>> 10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+    }
+    let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rr(e,6) ^ rr(e,11) ^ rr(e,25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + _K256[i] + w[i]) | 0;
+      const S0 = rr(a,2) ^ rr(a,13) ^ rr(a,22);
+      const mj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + mj) | 0;
+      h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+    }
+    h0=(h0+a)|0; h1=(h1+b)|0; h2=(h2+c)|0; h3=(h3+d)|0;
+    h4=(h4+e)|0; h5=(h5+f)|0; h6=(h6+g)|0; h7=(h7+h)|0;
+  }
+  return [h0,h1,h2,h3,h4,h5,h6,h7]
+    .map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+}
+
+// Python renders a float that happens to be integral as "0.0"; JSON.stringify
+// renders it as "0". The block timestamp is INSIDE the hash preimage, and the
+// genesis block's is exactly 0.0 -- so a naive JSON.stringify reproduces every
+// block's digest except the one that anchors the chain. Everything else in the
+// header is an int or a string, where the two languages already agree.
+//
+// Not handled: Python's exponent form (1e+16, 1e-05), which it uses outside
+// ~[1e-4, 1e16]. Real timestamps are ~1.7e9 with microsecond precision and
+// genesis is 0.0, so no block hits that range. Stated as a bound rather than
+// silently assumed; the test asserts agreement over real blocks.
+function pyFloat(v) {
+  if (!isFinite(v)) return String(v);
+  // -0 needs its own branch: Number.isInteger(-0) is true and (-0).toFixed(1)
+  // drops the sign, giving "0.0" where Python writes "-0.0" -- a different
+  // preimage and so a different digest.
+  if (Object.is(v, -0)) return '-0.0';
+  return Number.isInteger(v) ? v.toFixed(1) : String(v);
+}
+
+// Byte-for-byte reconstruction of contracts/block_schema.py's compute_hash
+// preimage: json.dumps(header, sort_keys=True) with Python's default
+// ", " / ": " separators. Key order is alphabetical, hardcoded here so a
+// reordering in either language is a visible diff rather than a silent
+// digest change.
+function blockPreimage(b) {
+  return '{"index": ' + b.index
+       + ', "merkle_root": ' + JSON.stringify(b.merkle_root)
+       + ', "previous_hash": ' + JSON.stringify(b.previous_hash)
+       + ', "proposer_id": ' + JSON.stringify(b.proposer_id)
+       + ', "raft_term": ' + b.raft_term
+       + ', "timestamp": ' + pyFloat(b.timestamp)
+       + '}';
+}
+
+// blockchain/ledger.py builds this identically on every replica, with the
+// timestamp pinned to 0.0 precisely so the genesis hash is deterministic. That
+// is what lets this page anchor the chain: block 1's previous_hash is checked
+// against a genesis digest computed HERE, not one the controller sent.
+const GENESIS = {
+  index: 0, timestamp: 0.0, previous_hash: '0'.repeat(64),
+  merkle_root: 'GENESIS', proposer_id: 'genesis', raft_term: 0,
+};
+
+const LEDGER = {
+  blocks: [],          // committed block headers, oldest first
+  rejected: 0,         // commits the ledger refused
+  chainLength: null,   // from /ledger/verify at boot
+  controllerValid: null,
+  pending: 0,          // reports since the last commit
+  maxPerBlock: null,   // config value from /ledger/verify; null on replay
+  observedMax: 0,      // largest block seen, the replay fallback for the above
+  tampered: null,      // index of the block this page corrupted, or null
+};
+const MAX_BLOCKS = 40;         // keep a bounded tail; a run commits hundreds
+const SHOW_BLOCKS = 10;
+
+// Verify what this page can actually see, and be honest about the rest.
+//
+// Two DIFFERENT checks, kept separate because they fail for different reasons:
+//   * self  -- recompute the digest from the header. Catches any edit to the
+//              block's own contents.
+//   * link  -- previous_hash must equal the predecessor's RECOMPUTED hash, not
+//              the hash it shipped with. Using the shipped value would let a
+//              tampered block still look correctly linked to its successor,
+//              which is the entire property being demonstrated.
+//
+// A dashboard opened mid-run has no earlier blocks. The first block held is
+// then linkable only if it is block 1 (whose predecessor is genesis, which
+// this page can build itself). Otherwise its link is UNKNOWN -- reported as
+// such, never as valid and never as broken.
+function verifyChain() {
+  const bs = LEDGER.blocks;
+  const out = [];
+  for (let i = 0; i < bs.length; i++) {
+    const b = bs[i];
+    const computed = sha256Hex(blockPreimage(b));
+    const selfOk = computed === b.hash;
+    let linkOk = null;                      // null = cannot be determined here
+    const prev = i > 0 ? bs[i - 1] : (b.index === 1 ? GENESIS : null);
+    if (prev) {
+      const prevComputed = sha256Hex(blockPreimage(prev));
+      linkOk = b.previous_hash === prevComputed;
+    }
+    out.push({ block: b, computed, selfOk, linkOk });
+  }
+  return out;
+}
+
+function shortHash(h) { return h ? h.slice(0, 8) : '—'; }
+
+function renderLedger() {
+  const head = document.getElementById('ledgerHead');
+  const chain = document.getElementById('chain');
+  const foot = document.getElementById('ledgerFoot');
+  if (!head || !chain || !foot) return;
+
+  const rows = verifyChain();
+  const broken = rows.filter(r => r.selfOk === false || r.linkOk === false).length;
+  const checked = rows.filter(r => r.linkOk !== null).length;
+
+  // Chain length: the controller's count if we have it, else what we have seen.
+  // Labelled either way -- a page opened mid-run has seen a suffix, and
+  // printing that as "the chain" would understate it.
+  const total = LEDGER.chainLength !== null
+    ? `<b>${LEDGER.chainLength}</b> blocks` : `<b>${LEDGER.blocks.length}</b> seen`;
+
+  let browserPill;
+  if (!rows.length) {
+    browserPill = `<span class="vpill wait">browser: nothing to verify yet</span>`;
+  } else if (broken) {
+    browserPill = `<span class="vpill bad">✗ browser: ${broken} block(s) fail verification</span>`;
+  } else {
+    browserPill = `<span class="vpill ok">✓ browser: ${rows.length} recomputed, `
+      + `${checked} link(s) checked</span>`;
+  }
+  // Under replay there is no live ledger to ask -- say so, rather than leaving
+  // a blank the reader fills in with "presumably fine".
+  const ctrlPill = LEDGER.controllerValid === null
+    ? `<span class="vpill wait">controller: ${S.replay ? 'n/a in replay' : 'not asked'}</span>`
+    : (LEDGER.controllerValid
+        ? `<span class="vpill ok">✓ controller: chain valid</span>`
+        : `<span class="vpill bad">✗ controller: chain invalid</span>`);
+
+  head.innerHTML = `<span>${total}</span>${browserPill}${ctrlPill}`
+    + (LEDGER.rejected ? `<span style="color:var(--bad)">${LEDGER.rejected} rejected</span>` : '')
+    + `<span>SHA-256 recomputed in this page from the block header</span>`;
+
+  if (!rows.length) {
+    chain.innerHTML = '<div class="empty">waiting for the first block to commit…</div>';
+    foot.innerHTML = '';
+    return;
+  }
+
+  // Show a tail. The genesis card is prepended only when block 1 is on screen,
+  // where it is the actual predecessor rather than a decorative anchor.
+  // Cards and the arrows between them are built in ONE pass over a single
+  // list, so an arrow's broken state always belongs to the card it points at.
+  // A previous version indexed the arrows back into `tail` with an offset that
+  // depended on whether the genesis card was present -- correct only half the
+  // time, and wrong in exactly the case the panel exists to show.
+  const tail = rows.slice(-SHOW_BLOCKS);
+  const items = tail.map(r => {
+    let stat;
+    if (r.selfOk === false) stat = 'hash mismatch';
+    else if (r.linkOk === false) stat = 'broken link';
+    else if (r.linkOk === null) stat = 'link unknown';
+    else stat = 'verified';
+    const bad = r.selfOk === false || r.linkOk === false;
+    const muted = !bad && r.linkOk === null ? ' style="color:var(--muted)"' : '';
+    return {
+      linkBroken: r.linkOk === false,
+      html: `<div class="blk${bad ? ' broken' : ''}" data-index="${r.block.index}">
+        <div class="bi">#${r.block.index}</div>
+        <div class="bmeta">prev <span class="hchip">${shortHash(r.block.previous_hash)}</span></div>
+        <div class="bmeta">hash <span class="hchip">${shortHash(r.computed)}</span></div>
+        <div class="bmeta">${r.block.num_updates} updates · ${r.block.commit_ms} ms</div>
+        <div class="bstat"${muted}>${stat}</div>
+      </div>`,
+    };
+  });
+  // Genesis leads the ribbon only when block 1 is on screen, where it is the
+  // real predecessor rather than a decorative anchor.
+  if (tail[0].block.index === 1) {
+    items.unshift({ linkBroken: false, html: `<div class="blk genesis">
+      <div class="bi">#0</div>
+      <div class="bmeta">genesis</div>
+      <div class="bmeta">hash <span class="hchip">${shortHash(sha256Hex(blockPreimage(GENESIS)))}</span></div>
+      <div class="bstat" style="color:var(--muted)">built here</div>
+    </div>` });
+  }
+  chain.innerHTML = items.map((it, i) =>
+    (i ? `<div class="clink${it.linkBroken ? ' broken' : ''}">→</div>` : '') + it.html
+  ).join('');
+
+  // Amortised overhead, the same quantity evaluation/nfr_report.py reports:
+  // commit cost spread over the updates that shared the block, against
+  // end-to-end task latency. Not commit_ms / latency, which would divide a
+  // per-block cost by a per-task time and overstate it by the batch size.
+  const commits = LEDGER.blocks.filter(b => typeof b.commit_ms === 'number');
+  const meanCommit = commits.length
+    ? commits.reduce((a, b) => a + b.commit_ms, 0) / commits.length : null;
+  const meanBatch = commits.length
+    ? commits.reduce((a, b) => a + (b.num_updates || 0), 0) / commits.length : null;
+  const lat = CH.buckets.flatMap(b => b.lat);
+  const meanLat = lat.length ? lat.reduce((a, v) => a + v, 0) / lat.length : null;
+  const perTask = (meanCommit !== null && meanBatch) ? meanCommit / meanBatch : null;
+  const pct = (perTask !== null && meanLat) ? (perTask / meanLat) * 100 : null;
+
+  // Config value if the controller gave one, else the largest block observed.
+  const cap = LEDGER.maxPerBlock !== null ? LEDGER.maxPerBlock : LEDGER.observedMax;
+  const fill = cap ? Math.min(100, LEDGER.pending / cap * 100) : 0;
+  foot.innerHTML =
+    `<span>pending <span class="gauge"><i style="width:${fill.toFixed(0)}%"></i></span> `
+      + `${LEDGER.pending}${cap ? ' / ' + cap : ''}`
+      + `${cap && LEDGER.maxPerBlock === null ? ' (observed)' : ''}</span>`
+    + (meanCommit !== null ? `<span>commit mean <b>${meanCommit.toFixed(3)} ms</b></span>` : '')
+    + (pct !== null
+        ? `<span>overhead <b>${pct.toFixed(3)}%</b> of task latency (NFR &lt; 15%)</span>`
+        : `<span>overhead — awaiting task latencies</span>`)
+    + `<button class="tamper" id="tamperBtn"${rows.length < 2 ? ' disabled' : ''}>`
+      + `${LEDGER.tampered !== null ? 'restore' : 'tamper with a block'}</button>`
+    + (LEDGER.tampered !== null
+        ? `<span style="color:var(--bad)">block #${LEDGER.tampered}'s merkle_root was `
+          + `edited in this page only — the controller's ledger is untouched</span>`
+        : '');
+
+  const btn = document.getElementById('tamperBtn');
+  if (btn) btn.onclick = toggleTamper;
+}
+
+// Edit a block IN THIS PAGE'S COPY and let the verification cascade.
+//
+// merkle_root is the field to corrupt, not the hash: the root commits to the
+// batch of TrustUpdates, so changing it is what "somebody rewrote a trust
+// record" actually looks like. The block's own digest then stops matching, and
+// its successor's previous_hash stops matching the recomputed value -- so the
+// damage is visible from the edited block rightward, which is the property.
+//
+// Nothing is sent anywhere. The controller's ledger is not modified, cannot be
+// modified through this route, and the caption says so; a demo that mutated
+// real state to prove immutability would be self-refuting.
+function toggleTamper() {
+  const bs = LEDGER.blocks;
+  if (bs.length < 2) return;
+  if (LEDGER.tampered !== null) {
+    for (const b of bs) if (b._origRoot !== undefined) { b.merkle_root = b._origRoot; delete b._origRoot; }
+    LEDGER.tampered = null;
+  } else {
+    // Middle of the visible tail, so the cascade to its right is on screen.
+    const target = bs[Math.max(0, bs.length - Math.min(SHOW_BLOCKS, bs.length) + 1)];
+    target._origRoot = target.merkle_root;
+    // Flip one hex digit. A single character is the point -- the digest is not
+    // "mostly right".
+    const c = target.merkle_root;
+    target.merkle_root = (c[0] === '0' ? '1' : '0') + c.slice(1);
+    LEDGER.tampered = target.index;
+  }
+  renderLedger();
+}
+
+// Fold one `block` event into the panel's state.
+//
+// A rejected commit carries no header (see _on_block_committed), so it is
+// counted but never added to the chain -- appending a header-less entry would
+// break the link check for the block that legitimately follows it.
+function ledgerIngest(ev) {
+  if (!ev.accepted || ev.hash === null || ev.hash === undefined) {
+    LEDGER.rejected++;
+    return;
+  }
+  LEDGER.blocks.push({
+    index: ev.index, timestamp: ev.timestamp,
+    previous_hash: ev.previous_hash, merkle_root: ev.merkle_root,
+    proposer_id: ev.proposer_id, raft_term: ev.raft_term, hash: ev.hash,
+    num_updates: ev.num_updates, commit_ms: ev.commit_ms,
+  });
+  if (LEDGER.blocks.length > MAX_BLOCKS) {
+    LEDGER.blocks.splice(0, LEDGER.blocks.length - MAX_BLOCKS);
+    // Dropping the oldest held block makes the new oldest unlinkable unless it
+    // is block 1. verifyChain() reports that as "link unknown" on its own.
+  }
+  // The batch just closed. Reports counted since the last block are exactly
+  // the ones it committed, so the gauge resets here rather than being polled.
+  LEDGER.pending = 0;
+  // Batch size, when nobody told us. TrustState commits at exactly
+  // max_updates_per_block, so the largest block seen IS that cap -- except for
+  // a final flush_pending() partial, which is smaller and cannot inflate it.
+  // Used on replay, where /ledger/verify describes a different (empty) ledger
+  // and is deliberately not consulted; the live path takes the config value.
+  if (LEDGER.maxPerBlock === null && ev.num_updates > 0) {
+    LEDGER.observedMax = Math.max(LEDGER.observedMax || 0, ev.num_updates);
+  }
+  // Keep the total current. Seeded once from /ledger/verify at boot, it would
+  // otherwise freeze at the boot value and read lower than the ribbon it sits
+  // above. `index + 1` counts genesis, matching Ledger.get_chain_length().
+  if (LEDGER.chainLength === null || ev.index + 1 > LEDGER.chainLength) {
+    LEDGER.chainLength = ev.index + 1;
+  }
+  if (LEDGER.tampered !== null && !LEDGER.blocks.some(b => b.index === LEDGER.tampered)) {
+    LEDGER.tampered = null;      // the corrupted block aged out of the tail
+  }
+}
+
+let _ledgerTimer = null;
+function scheduleLedgerRender() {
+  if (_ledgerTimer !== null) return;
+  _ledgerTimer = setTimeout(() => { _ledgerTimer = null; renderLedger(); }, 500);
+}
+
+// -------------------------------------------------------- scaling panel ----
+// The one panel on this page whose x axis is not time.
+//
+// Why it cannot be a re-binning of the run above: a run has ONE roster. There
+// is no 20-node collection to slice out of an 8-server recording, so comparing
+// fleet sizes means five separate runs and one point per run. That is a
+// different chart, and it is pre-computed rather than live -- generated by
+// evaluation/scale_compare.py, served over /api/scale_compare.
+//
+// One row: 20->40 IoT DEVICES against the deployed 8-server roster. A
+// fleet-size row (20->40 servers) was removed on 2026-08-13 -- the live
+// topology has 8, so it extrapolated five sizes past anything ever built, and
+// a projection sitting on the same page as live charts is not defensible.
+// evaluation/scalability_sweep.py still sweeps N on the CLI.
+//
+// The row is rendered from whatever rows the payload carries rather than from
+// a hardcoded list, so this is a generator change if it ever comes back.
+//
+// What it shows: argmax and p2c are INDISTINGUISHABLE on throughput and PDR
+// across this whole range, and argmax is meanwhile running the entire workload
+// on 3 of the 8 servers. That is why fairness and the starved count are on the
+// panel next to throughput -- the failure is invisible in the headline metrics.
+//
+// Colour: p2c holds slot 1 and argmax slot 2 across all twelve charts. Two
+// series again, so this panel spends the same validated palette budget as the
+// cluster one -- no new hue was introduced and the validator did not need
+// re-running. Adding a third strategy here does need it.
+const SCALE_SERIES = [
+  { name: 'p2c', color: SERIES_1, key: 'p2c' },
+  { name: 'argmax', color: SERIES_2, key: 'argmax' },
+];
+
+// Metrics chosen so BOTH failure modes are visible on one screen: throughput
+// /PDR/delay catch saturation, Jain and the starved count catch starvation.
+// Decision cost is here to keep an honest result honest -- p2c is not a
+// per-decision CPU win, both strategies cost the same and both grow with N,
+// and a scaling panel that quietly omitted that would be arguing rather than
+// reporting.
+const SCALE_CHART_DEFS = [
+  { key: 'sthr', title: 'Throughput', sub: 'tasks completed per second',
+    unit: '/s', field: 'throughput_hz' },
+  { key: 'sdel', title: 'Task delay (mean)', sub: 'successful tasks; ~2s means the timeout ceiling',
+    unit: 'ms', field: 'mean_latency_ms' },
+  { key: 'spdr', title: 'Packet delivery ratio', sub: 'completed / offered',
+    unit: '%', max: 100, field: 'pdr' },
+  { key: 'sjain', title: 'Load balancing', sub: "Jain's fairness over the roster",
+    unit: '', max: 1, field: 'jain' },
+  { key: 'sstarve', title: 'Starved nodes', sub: 'servers that completed nothing at all',
+    unit: '', field: 'starved' },
+  { key: 'sdec', title: 'Decision cost', sub: 'one real select_edge_node call — NOT the live decision_ms',
+    unit: 'µs', field: 'decision_us_mean' },
+];
+
+// Pivot the flat point list into one row per x value, so a row carries both
+// strategies and the shared renderer can read them as two series. Done by x
+// value rather than by position because the two sweep rows emit their points
+// in different orders (strategy-major vs x-major) and depending on that order
+// would put p2c's numbers under argmax's name in one of them.
+function scaleRows(row) {
+  const byX = new Map();
+  row.points.forEach((p, i) => {
+    const xv = row.x[i];
+    if (!byX.has(xv)) byX.set(xv, { x: xv });
+    byX.get(xv)[p.strategy] = p;
+  });
+  return [...byX.values()].sort((a, b) => a.x - b.x);
+}
+
+function scaleChartDefs(unit) {
+  return SCALE_CHART_DEFS.map(d => ({
+    ...d,
+    series: SCALE_SERIES.map(s => ({
+      name: s.name, color: s.color,
+      // A missing strategy is a hole in the sweep, not a zero.
+      f: r => (r[s.key] ? r[s.key][d.field] : null),
+    })),
+    sub: `${d.sub} — by ${unit}`,
+  }));
+}
+
+function renderScaleCharts(payload) {
+  const host = document.getElementById('scaleCharts');
+  if (!host) return;
+  const meta = payload.meta || {};
+  host.innerHTML =
+    `<div class="sweepNote"><b>Not live — simulation.</b> ${meta.sim_s || '?'}s
+      per cell, seed ${meta.seed ?? '?'}. The selector is real: every routing
+      decision here is made by the same <code>select_edge_node</code> the
+      controller calls. The servers are modelled as M/M/${meta.concurrency ?? '?'}
+      queues and the network is not modelled at all — no OpenFlow round trips,
+      no flow-rule installation, no propagation delay. Both axes stay inside the
+      deployed topology (${meta.servers ?? '?'} servers, up to 40 devices), but
+      that makes this interpolation within the shipped config, not a measured
+      run. Live 8/40/3 figures: <code>docs/LIVE_RUN_8_40_3.md</code>.
+      Regenerate: <code>python3 -m evaluation.scale_compare</code>.</div>`
+    + payload.rows.map(row =>
+        `<div class="sweepRow" data-row="${row.key}">
+           <h3>${row.title} — x axis: ${row.xlabel}</h3>
+           <div class="rowsub">${row.sub}</div>
+           <div class="charts" id="scale_${row.key}"></div>
+         </div>`).join('');
+
+  for (const row of payload.rows) {
+    const rows = scaleRows(row);
+    if (!rows.length) continue;
+    renderCharts(`scale_${row.key}`, scaleChartDefs(row.xlabel), {
+      rows,
+      xOf: r => r.x,
+      xLab: v => String(v),
+      xdesc: `by ${row.xlabel}`,
+      tipLab: r => `${r.x} ${row.xlabel}`,
+      // No time axis here, so no attack onsets to shade. See renderCharts.
+      bands: false,
+    });
+  }
+}
+
+// Fetched once at load, not on the event stream: nothing a run emits can
+// change it. A clone that has never generated the sweep is a normal state and
+// gets the command, not an error.
+function loadScaleCompare() {
+  fetch('/api/scale_compare')
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      const host = document.getElementById('scaleCharts');
+      if (!host) return;
+      if (!ok || !j.rows) {
+        host.innerHTML = `<div class="empty">no scaling sweep generated yet — `
+          + `run <code>${(j && j.hint) || 'python3 -m evaluation.scale_compare'}</code></div>`;
+        return;
+      }
+      renderScaleCharts(j);
+    })
+    .catch(() => {
+      const host = document.getElementById('scaleCharts');
+      if (host) host.innerHTML = '<div class="empty">scaling sweep unavailable</div>';
+    });
 }
 
 // Hover layer: crosshair + tooltip, shipped by default on a line chart. The
 // hit rect spans the whole plot so the target is far bigger than the 2px line.
-function wireChartHover(x, firstI, span, PL, iw, PT, ih) {
+// Scoped to the panel that was just drawn, and looked up in THAT panel's defs.
+// Querying the document would re-wire the other panel's charts against the
+// wrong series list every redraw -- the two panels share bucket keys but not
+// series.
+// Geometry arrives as one object rather than nine positional arguments: the
+// x-axis parameters grew when the scaling panel landed, and a ten-argument
+// call is the kind of thing that gets mis-ordered silently.
+function wireChartHover(host, defs, g) {
+  const { x, xOf, rows, firstI, span, PL, iw, PT, ih, tipLab } = g;
   let tip = document.getElementById('ctip');
   if (!tip) {
     tip = document.createElement('div');
     tip.id = 'ctip'; tip.className = 'ctip';
     document.body.appendChild(tip);
   }
-  for (const el of document.querySelectorAll('.chart')) {
-    const def = CHART_DEFS.find(d => d.key === el.dataset.key);
+  for (const el of host.querySelectorAll('.chart')) {
+    const def = defs.find(d => d.key === el.dataset.key);
     const svg = el.querySelector('svg');
     const hit = el.querySelector('.hit');
     const cross = el.querySelector('.crosshair');
@@ -1392,14 +2331,22 @@ function wireChartHover(x, firstI, span, PL, iw, PT, ih) {
     hit.addEventListener('mousemove', e => {
       const r = svg.getBoundingClientRect();
       const fx = (e.clientX - r.left) / r.width * 360;
-      const k = Math.round((fx - PL) / iw * span);
-      const b = CH.buckets.find(bb => bb.i === firstI + k);
+      // Snap to the NEAREST row by x value rather than indexing off the
+      // cursor. Time buckets are contiguous integers so an index worked, but
+      // the scaling panel's x values step by 5 -- and a nearest-value lookup
+      // is correct for both.
+      const xv = firstI + (fx - PL) / iw * span;
+      let b = null, best = Infinity;
+      for (const r2 of rows) {
+        const d = Math.abs(xOf(r2) - xv);
+        if (d < best) { best = d; b = r2; }
+      }
       if (!b) return;
-      const cx = x(b.i);
+      const cx = x(xOf(b));
       cross.setAttribute('x1', cx); cross.setAttribute('x2', cx);
       cross.setAttribute('y1', PT); cross.setAttribute('y2', PT + ih);
       cross.style.display = '';
-      tip.innerHTML = `<b>t = ${b.i * BUCKET_S}–${(b.i + 1) * BUCKET_S}s</b>`
+      tip.innerHTML = `<b>${tipLab(b)}</b>`
         + def.series.map(s => {
             const v = s.f(b);
             return `<div class="row"><i class="ckey" style="background:${s.color}"></i>`
@@ -1464,6 +2411,31 @@ async function boot() {
     }
   } catch (e) { /* replay serves no /api/optimizer */ }
 
+  // The controller's own verdict on its chain, plus the batch size the pending
+  // gauge needs.
+  //
+  // NOT fetched under replay, and this is a correctness point rather than an
+  // optimisation. dashboard/replay.py builds a throwaway `TrustState(node_ids=[])`
+  // purely to satisfy NorthboundAPI's signature; its ledger holds nothing but
+  // genesis and no block from the recording is ever appended to it. Asking it
+  // would return `{valid: true, chain_length: 1}` -- a green tick about an
+  // empty ledger, presented next to a ribbon of the recording's real blocks.
+  // The browser-side verification still runs on replay, because the block
+  // events carry their own headers; that is the verdict worth having anyway.
+  if (!S.replay) {
+    try {
+      const lj = await (await fetch('/ledger/verify')).json();
+      if (lj && typeof lj.chain_length === 'number') {
+        LEDGER.chainLength = lj.chain_length;
+        LEDGER.controllerValid = !!lj.valid;
+        if (typeof lj.max_updates_per_block === 'number') {
+          LEDGER.maxPerBlock = lj.max_updates_per_block;
+        }
+        renderLedger();
+      }
+    } catch (e) { /* controller may not expose the ledger */ }
+  }
+
   const es = new EventSource('/api/events');
   es.onopen = () => setConn(S.replay ? 'replay' : 'live', S.replay ? 'replay' : 'live');
   es.onerror = () => setConn('down', 'disconnected — retrying');
@@ -1479,6 +2451,11 @@ async function boot() {
 S.replay = new URLSearchParams(location.search).has('replay')
         || location.port === '8082';
 
+// Outside boot() on purpose. boot() returns early when /api/topology fails,
+// but the scaling panel depends on no run at all -- it is a file on disk, and
+// it should still draw for someone who opened the dashboard with nothing
+// running.
+loadScaleCompare();
 boot();
 </script>
 </body>
