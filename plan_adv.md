@@ -893,9 +893,32 @@ way. srv6 (blackhole) is untouched at 1.00 and 7 firings; srv1 (grayhole) still
 fires 24 of 25. The feedback half — fewer false quarantines → fewer re-steers →
 fewer inherited timeouts — is invisible to replay by construction.
 
-**Next: live run 11**, which is what actually settles this. Also re-check
-`DEFAULT_MIN_LYING_SHARE` there: run 9's srv8 loses all 6 of its drop-tell
-firings under this fix, and those firings are what §5.14 tuned the 0.25 against.
+### Live run 11 (2026-08-09, 327.9 s) — §3.17 confirmed, first 48/48
+
+- [x] **100% classification accuracy (48/48)**, 8/8 attacks correct, **0/40
+      honest subjects mislabelled**, precision = recall = f1 = 1.000 in every
+      class. Run 10 was 47/48 with srv7 mislabelled.
+- [x] **100.00% honest availability, 4/4 honest nodes never quarantined**,
+      100% of the run at/above quorum, no outage, all four NFRs PASS. Attackers
+      contained in 10.3–16.6 s and isolated 66.85% of the time (up from 59.66%).
+- [x] **17 outcomes withheld, 0.27% of reports** — 13 honest, 4 attacker.
+      Below the replay's ~0.5% estimate, consistent with the feedback half
+      (fewer false quarantines → fewer re-steers) that replay cannot see.
+- [x] **Detection cost measured live: zero.** Replaying run 11's own reports
+      with the withheld outcomes charged back in leaves srv1 (grayhole) and
+      srv6 (blackhole) bit-identical — 7 drop-tell firings each, peak rates 0.60
+      and 1.00.
+- [x] **The fix's measurable save is srv5**: 7 inherited outcomes which, charged
+      back in, would have fired the drop tell 4 times against its own peak rate
+      of 0.00.
+
+**Two things this run does not prove, both worth stating before anyone quotes
+the 48/48.** (1) srv7 — run 10's mislabelled node — inherited *zero* outcomes
+this run, so its clean sheet is timing, not the fix; the causal claim rests on
+srv5. (2) `DEFAULT_MIN_LYING_SHARE` is *still* untested: srv8's drop tell never
+fired in run 11 with or without the fix, so the run is indifferent to the 0.25
+threshold, and §5.14's lesson is that indifferent means untested. It has now
+carried unexercised through two runs.
 
 ---
 

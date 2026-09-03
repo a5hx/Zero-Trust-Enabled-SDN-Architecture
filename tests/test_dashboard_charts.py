@@ -13,11 +13,19 @@ single self-contained page with no build step (no pip, no CDN -- see
 northbound_api.py), so there is nothing to import and the source IS the artifact.
 """
 
+import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 from evaluation.interval_report import DEFAULT_BUCKET_S, PRIO_QUARANTINE_DROP
+from evaluation.topology_metrics import (
+    DEFAULT_SINK, distance_to_sink, node_degree,
+)
 
 HTML = Path('dashboard/index.html')
 
@@ -151,7 +159,10 @@ class TestChartStructure(unittest.TestCase):
     def test_every_metric_the_advisor_asked_for_has_a_chart(self):
         src = source()
         block = src[src.index('const CHART_DEFS'):src.index('function niceCeil')]
-        for key in ('thr', 'del', 'pdr', 'jain', 'load', 'drop'):
+        for key in ('thr', 'del', 'pdr', 'jain', 'load', 'drop',
+                    # Trust value, routing reliability and the network-lifetime
+                    # analogue (service availability).
+                    'trust', 'rel', 'life'):
             self.assertIn(f"key: '{key}'", block)
 
     def test_task_loss_and_openflow_drops_stay_separate_series(self):
@@ -595,3 +606,171 @@ class TestScaleComparePayload(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestGroundTruthSplitCharts(unittest.TestCase):
+    """Trust, routing reliability and service availability.
+
+    All three are split honest-vs-attacker and must never be averaged into one
+    series: quarantine downtime means opposite things for the two groups, so a
+    combined figure is a mean over two quantities that should move in opposite
+    directions. This is evaluation/availability_report.py's central rule
+    (see its "THE RULE THIS MODULE EXISTS TO ENFORCE" section), carried into
+    chart form the same way the packet-drop discipline was.
+    """
+
+    def _defs(self):
+        src = source()
+        return src[src.index('const CHART_DEFS'):src.index('function niceCeil')]
+
+    def test_trust_is_split_by_ground_truth(self):
+        block = self._defs()
+        chunk = block[block.index("key: 'trust'"):block.index("key: 'rel'")]
+        self.assertIn('honest', chunk)
+        self.assertIn('attacker', chunk)
+
+    def test_availability_keeps_serving_and_containment_apart(self):
+        block = self._defs()
+        chunk = block[block.index("key: 'life'"):]
+        self.assertIn('honest serving', chunk)
+        self.assertIn('attackers contained', chunk)
+
+    def test_an_absent_group_is_null_never_zero(self):
+        # "No attackers configured" must not render as "no attacker contained",
+        # which would read as total enforcement failure on every clean run.
+        src = source()
+        gt = src[src.index('function serverGroundTruth'):src.index('function attackOnsets')]
+        self.assertIn('return null', gt)
+        # mean() over an empty sample is null, not 0.
+        mean = src[src.index('function mean(xs)'):src.index('function serverGroundTruth')]
+        self.assertIn('null', mean)
+
+    def test_reliability_charges_a_resteer_to_its_originating_bucket(self):
+        """Charging a re-steer where it LANDS lets a quarantine burst exceed
+        that bucket's route count and drive reliability negative -- which would
+        then need a clamp, and a clamp that hides an out-of-range value is the
+        kind of knob this project removes rather than adds."""
+        src = source()
+        self.assertIn('routeOrigin', src)
+        # Scoped to chartIngest: handle()'s own switch has same-named cases
+        # earlier in the file.
+        body = src[src.index('function chartIngest'):src.index('function pct(')]
+        ingest = body[body.index("case 'reroute'"):body.index("case 'node_status'")]
+        # looked up by the dispatch key, and counted once per DECISION
+        self.assertIn('CH.routeOrigin.get', ingest)
+        self.assertIn('origin.counted', ingest)
+
+    def test_the_resteer_origin_map_is_bounded(self):
+        # A long run must not grow it without limit.
+        src = source()
+        self.assertIn('MAX_ROUTE_ORIGIN', src)
+        self.assertIn('CH.routeOrigin.delete', src)
+
+
+class TestStructuralMetricsMatchThePythonImplementation(unittest.TestCase):
+    """Node degree and distance to sink exist twice -- JS in the browser,
+    Python in evaluation/topology_metrics.py -- for the same reason BUCKET_S
+    does: the panel draws live while the offline module must run on a box with
+    no controller installed. They cannot share code, so they are pinned.
+    """
+
+    def test_the_sink_constant_matches(self):
+        self.assertIn(f"const SINK = '{DEFAULT_SINK}'", source())
+
+    def test_an_unreported_delay_is_null_not_zero_on_both_sides(self):
+        src = source()
+        fn = src[src.index('function distanceToSink'):src.index('const KIND_ORDER')]
+        self.assertIn('null', fn)
+        # and the table must render it as something other than a number
+        self.assertIn('class="na"', src)
+
+    def test_the_two_implementations_agree_on_a_real_graph(self):
+        """Actually run the browser code and compare, rather than trusting that
+        two hand-written traversals stayed in step."""
+        node = shutil.which('node')
+        if node is None:                      # pragma: no cover
+            self.skipTest('node not available to execute the dashboard JS')
+
+        src = source()
+        js = src[src.index('const SINK ='):src.index('const KIND_ORDER')]
+
+        graph = {
+            'nodes': [
+                {'id': 's0', 'kind': 'core_switch'},
+                {'id': 's1', 'kind': 'edge_switch'},
+                {'id': 's2', 'kind': 'edge_switch'},
+                {'id': 'srv1', 'kind': 'server'},
+                {'id': 'srv2', 'kind': 'server'},
+                {'id': 'iot1', 'kind': 'iot'},
+                {'id': 'iot2', 'kind': 'iot'},
+                {'id': 'iot3', 'kind': 'iot'},
+                {'id': 'orphan', 'kind': 'iot'},
+            ],
+            'links': [
+                {'a': 's1', 'b': 'srv1', 'delay_ms': 2.0},
+                {'a': 's0', 'b': 's1', 'delay_ms': 5.0},
+                {'a': 's2', 'b': 'srv2', 'delay_ms': 2.0},
+                {'a': 's0', 'b': 's2', 'delay_ms': 5.0},
+                {'a': 'iot1', 'b': 's1', 'delay_ms': 9.0},
+                {'a': 'iot2', 'b': 's2', 'delay_ms': 3.0},
+                {'a': 'iot3', 'b': 's1'},              # never reported
+                {'a': 'srv1', 'b': 'ghost'},           # unknown endpoint
+                {'a': 'srv2', 'b': 'srv2'},            # self-loop
+            ],
+        }
+        driver = (
+            js
+            + f'\nconst g = {json.dumps(graph)};\n'
+            + 'console.log(JSON.stringify({'
+              'degree: nodeDegree(g), dist: distanceToSink(g)}));\n'
+        )
+        with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+            fh.write(driver)
+            path = fh.name
+        try:
+            out = subprocess.run(
+                [node, path], capture_output=True, text=True, timeout=30,
+            )
+        finally:
+            os.unlink(path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        got = json.loads(out.stdout)
+
+        self.assertEqual(got['degree'], node_degree(graph))
+
+        want = distance_to_sink(graph)
+        self.assertEqual(sorted(got['dist']), sorted(want))
+        for nid, exp in want.items():
+            self.assertEqual(
+                got['dist'][nid]['hops'], exp['hops'],
+                f'hops disagree for {nid}',
+            )
+            self.assertEqual(
+                got['dist'][nid]['delay_ms'], exp['delay_ms'],
+                f'delay disagrees for {nid}',
+            )
+
+
+class TestNodeStructurePanel(unittest.TestCase):
+    def test_the_panel_exists(self):
+        src = source()
+        self.assertIn('Node structure', src)
+        self.assertIn('id="nodestruct"', src)
+
+    def test_it_says_the_delay_is_configured_not_measured(self):
+        # It is an input handed to tc, not an observed RTT. End-to-end delay is
+        # a different metric and already has its own chart.
+        src = source()
+        panel = src[src.index('Node structure'):src.index('id="nodestruct"')]
+        self.assertIn('configured', panel.lower())
+
+    def test_it_names_the_sink(self):
+        src = source()
+        panel = src[src.index('Node structure'):src.index('id="nodestruct"')]
+        self.assertIn('s0', panel)
+
+    def test_link_parameters_arrive_over_their_own_event(self):
+        # Re-publishing 'topology' would give dashboard/replay.py two competing
+        # graphs -- it reads the head-of-recording one as authoritative.
+        src = source()
+        self.assertIn("case 'topology_links'", src)

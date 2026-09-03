@@ -26,10 +26,18 @@ Endpoints:
         that way, since the /report POST originates from the same host as the
         /task connection it's completing (see simulation/iot_client.py).
     POST /register        {node_id, concurrency} -- agent startup registration.
+    POST /topology/links  {links: [{a, b, delay_ms, bw_mbps}]} -- the link
+        parameters simulation/topology.py actually built. The controller's own
+        graph is derived from config and cannot know the per-IoT link delay
+        (unseeded RNG in ZeroTrustTopo.build()), so the harness reports it.
 
 Dashboard routes (added alongside the five deck endpoints above; all read-only,
 and all inert unless controller.dashboard.enabled is set in the config):
     GET  /                -> dashboard/index.html
+    GET  /analysis        -> dashboard/analysis.html, the generated offline
+        analysis and comparison report (evaluation/build_analysis_page.py).
+        404 with a `hint` naming the build command when it has not been
+        generated yet.
     GET  /api/topology    -> the node/link graph the dashboard draws
     GET  /api/events      -> Server-Sent Events stream of controller events
     GET  /api/flows       -> current flow tables with live counters ("rules")
@@ -60,12 +68,27 @@ logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent.parent / 'dashboard'
 
-# Payload for the scaling-comparison panel, written by
-# evaluation/scale_compare.py. Not produced by a run and not live -- see
-# _serve_scale_compare for why it is served from here anyway.
-_SCALE_COMPARE_FILE = (
-    Path(__file__).resolve().parent.parent / 'data' / 'scale_compare.json'
-)
+#: URL path -> filename under _DASHBOARD_DIR. An explicit whitelist of literal
+#: filenames, never a path joined from the request: this handler has no
+#: path-traversal surface today and adding a generic static route would be the
+#: first one. Adding a page here is a one-line change; serving arbitrary files
+#: is not something this API should ever do.
+_HTML_ROUTES = {
+    '/': 'index.html',
+    '/index.html': 'index.html',
+    '/dashboard': 'index.html',
+    '/analysis': 'analysis.html',
+    '/analysis.html': 'analysis.html',
+}
+
+#: Shown when a generated page has not been built yet. Naming the command is
+#: the difference between a dead link and a next step.
+_HOW_TO_BUILD = {
+    'analysis.html': (
+        'python3 -m evaluation.build_analysis_page data/events.jsonl '
+        '--comparison-csv data/results_rf.csv'
+    ),
+}
 
 # How long an idle SSE stream waits before emitting a keepalive comment. Without
 # this, a proxy or an asleep laptop can silently drop a connection that simply
@@ -106,8 +129,8 @@ def _make_handler(app: Any, state: TrustState):
             # Dashboard routes are handled first and return early. /api/events
             # in particular never returns until the client disconnects, so it
             # must not fall through to the JSON paths below.
-            if path in ('/', '/index.html', '/dashboard'):
-                self._serve_dashboard()
+            if path in _HTML_ROUTES:
+                self._serve_html(_HTML_ROUTES[path])
                 return
             if path == '/api/events':
                 self._serve_events()
@@ -187,6 +210,8 @@ def _make_handler(app: Any, state: TrustState):
                     self._handle_report(body)
                 elif path == '/register':
                     self._handle_register(body)
+                elif path == '/topology/links':
+                    self._handle_topology_links(body)
                 elif path == '/monitor/pause':
                     # Teardown ordering, not a security control. The harness
                     # kills the agents at end of run while the controller is
@@ -271,15 +296,39 @@ def _make_handler(app: Any, state: TrustState):
             state.set_concurrency(node_id, concurrency)
             self._write_json(200, {'ok': True})
 
+        def _handle_topology_links(self, body: Dict[str, Any]) -> None:
+            """The harness reporting what it actually wired up.
+
+            Descriptive, not a control: it attaches measured parameters to a
+            graph the controller already has and never changes routing,
+            trust, or enforcement. A malformed entry is dropped rather than
+            failing the request -- the harness sends this best-effort during
+            startup and a rejected link table must not be able to abort a run.
+            """
+            links = body.get('links')
+            if not isinstance(links, list):
+                self._write_json(400, {'error': 'links must be a list'})
+                return
+            accepted = app.record_link_params(links)
+            self._write_json(200, {'accepted': accepted, 'received': len(links)})
+
         # -------------------------------------------------------------- #
         # Dashboard                                                       #
         # -------------------------------------------------------------- #
-        def _serve_dashboard(self) -> None:
-            index = _DASHBOARD_DIR / 'index.html'
+        def _serve_html(self, filename: str) -> None:
+            """Serve one of the pages named in _HTML_ROUTES.
+
+            `filename` is always a literal value from that dict, never anything
+            derived from the request path.
+            """
             try:
-                body = index.read_bytes()
+                body = (_DASHBOARD_DIR / filename).read_bytes()
             except OSError:
-                self._write_json(404, {'error': 'dashboard/index.html not found'})
+                error = {'error': f'dashboard/{filename} not found'}
+                build_cmd = _HOW_TO_BUILD.get(filename)
+                if build_cmd:
+                    error['hint'] = f'This page is generated. Build it with: {build_cmd}'
+                self._write_json(404, error)
                 return
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')

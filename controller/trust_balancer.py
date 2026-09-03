@@ -509,6 +509,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._mac_to_port: Dict[int, Dict[str, int]] = {}
         self._cookie_base = 0x5A00000000000000
 
+        # Real link parameters reported by simulation/topology.py over
+        # POST /topology/links, keyed on the UNORDERED endpoint pair -- the
+        # harness reports the link in whatever order it called addLink(), and
+        # topology_graph() writes it in its own order. Merged into
+        # topology_graph()['links'] by record_link_params(). Empty until (and
+        # unless) the harness reports; every consumer must treat a missing
+        # delay_ms as "not measured", never as zero.
+        self._link_params: Dict[frozenset, Dict[str, float]] = {}
+
         # Imported here (not at module scope) because FlowMonitor is built and
         # wired in the same Sprint 1 pass as this class -- avoids a hard
         # top-level dependency ordering requirement between the two files.
@@ -1589,6 +1598,22 @@ class TrustBalancerApp(app_manager.OSKenApp):
             })
             links.append({'a': f'iot{j}', 'b': f's{sw_idx + 1}', 'kind': 'iot_link'})
 
+        # Attach the parameters the harness actually applied, where it has
+        # reported them. A link with no reported entry keeps no delay_ms key at
+        # all rather than a zero: "not measured" and "zero delay" are different
+        # claims, and evaluation/topology_metrics.distance_to_sink() reports
+        # None for the first so an un-plumbed run shows a dash on screen.
+        # getattr, not attribute access: this method is deliberately callable
+        # against a duck-typed stand-in that implements only what the dashboard
+        # needs (dashboard/replay.py::ReplayApp, and the fakes in
+        # tests/test_attack_report.py). Requiring the attribute would make the
+        # graph un-derivable outside a live controller.
+        measured_links = getattr(self, '_link_params', None) or {}
+        for lk in links:
+            measured = measured_links.get(frozenset((lk['a'], lk['b'])))
+            if measured:
+                lk.update(measured)
+
         return {
             'nodes': nodes,
             'links': links,
@@ -1612,6 +1637,78 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'epsilon': self.state.epsilon,
             },
         }
+
+    def record_link_params(self, links: List[Dict[str, Any]]) -> int:
+        """Store the link parameters simulation/topology.py reported.
+
+        Descriptive only: these numbers annotate a graph this class already
+        derives from config, and nothing here feeds routing, trust or
+        enforcement. Returns how many entries were usable.
+
+        Malformed entries are skipped rather than raising -- the harness sends
+        this best-effort during startup and a bad row must not be able to abort
+        a run over a cosmetic annotation.
+
+        Also diffs the reported link set against the config-derived one and
+        logs the difference. topology_graph()'s docstring warns that it
+        hand-duplicates ZeroTrustTopo.build()'s `sw_idx = (j - 1) % n_edge`
+        attachment rule and must be kept in sync by hand; comparing the two
+        here is the cheapest way to make that drift visible instead of silent.
+        The reported table is still stored either way -- the harness built what
+        it built, and the controller's derived graph is the copy more likely to
+        be wrong.
+        """
+        accepted = 0
+        for lk in links:
+            if not isinstance(lk, dict):
+                continue
+            a, b = lk.get('a'), lk.get('b')
+            if not isinstance(a, str) or not isinstance(b, str) or a == b:
+                continue
+            entry: Dict[str, float] = {}
+            for key in ('delay_ms', 'bw_mbps'):
+                val = lk.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    entry[key] = float(val)
+            if not entry:
+                continue
+            self._link_params[frozenset((a, b))] = entry
+            accepted += 1
+
+        if accepted:
+            self._warn_on_link_drift()
+            if self.dashboard_enabled:
+                # A separate event rather than re-publishing 'topology': that
+                # one is contracted as the FIRST event in every recording and
+                # dashboard/replay.py::_recover_topology() reads it as such, so
+                # a second copy would give replay two competing graphs.
+                self.bus.publish('topology_links', graph=self.topology_graph())
+        return accepted
+
+    def _warn_on_link_drift(self) -> None:
+        """Log any disagreement between the reported and derived link sets."""
+        derived = {
+            frozenset((lk['a'], lk['b']))
+            for lk in self.topology_graph()['links']
+        }
+        reported = set(self._link_params)
+        # The harness also builds the cx <-> s0 management link after
+        # net.start(); it is deliberately absent from the derived graph (it
+        # carries no VIP traffic and is not part of the topology the dashboard
+        # draws), so it is not drift.
+        only_reported = {
+            pair for pair in reported - derived if 'cx' not in pair
+        }
+        only_derived = derived - reported
+        if only_reported or only_derived:
+            fmt = lambda pairs: sorted('-'.join(sorted(p)) for p in pairs)  # noqa: E731
+            logger.warning(
+                "Topology link drift: topology_graph() and the harness disagree. "
+                "Only reported by the harness: %s. Only derived from config: %s. "
+                "topology_graph() duplicates ZeroTrustTopo.build()'s attachment "
+                "rule by hand -- one of the two copies is now stale.",
+                fmt(only_reported), fmt(only_derived),
+            )
 
     def optimizer_status(self) -> Dict[str, Any]:
         """AI weight-optimizer state for GET /api/optimizer and the dashboard: the

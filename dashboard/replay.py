@@ -77,10 +77,22 @@ class ReplayApp:
         TrustBalancerApp.start), so normally this is a straight read. The
         reconstruction path below only matters for recordings made before that
         event existed, or hand-trimmed ones.
+
+        A later `topology_links` event carries the same graph plus the link
+        parameters the harness actually built (delay_ms/bw_mbps). Prefer it, so
+        GET /api/topology returns the same enriched graph on replay as it does
+        live and the Node structure panel is populated the moment the page
+        loads -- rather than staying blank until the recorded topology_links
+        event happens to stream past.
         """
+        graph = None
         for ev in events:
-            if ev.get('type') == 'topology':
+            if ev.get('type') == 'topology_links' and ev.get('graph'):
                 return ev['graph']
+            if graph is None and ev.get('type') == 'topology':
+                graph = ev.get('graph')
+        if graph is not None:
+            return graph
 
         # Fallback: infer the servers from node_status and the IoT devices from
         # whatever client IPs appear in the routing decisions.

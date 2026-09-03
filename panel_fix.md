@@ -1,38 +1,104 @@
 # Panel Review — Findings, Fixes and Evidence
 
-*Compiled 2026-08-07, updated through 2026-08-08. Covers `plan_adv.md`
-Phases 2–8: attack classification, the scalability sweep, the
+*Compiled 2026-08-07, updated through 2026-08-09. Covers `plan_adv.md`
+Phases 2–9: attack classification, the scalability sweep, the
 service-availability metric, the dashboard time-series, the classification
-fixes, the spoofing race, and live runs 7 through 10.*
+fixes, the spoofing race, re-steer attribution, and live runs 7 through 11.*
 
 This is the defect and finding register. `plan_adv.md` holds the phase plan and
 status; this document holds **what was actually wrong, how we knew, and what
-the evidence says now**. Headline numbers come from **live run 10**; where a
+the evidence says now**. Headline numbers come from **live run 11**; where a
 finding was measured against an earlier run, that run is named.
+
+For the narrative version — why each change was made, in the order it happened —
+see **`explain_adv.md`**, which is the single-source explanation of everything
+from the metrics work through run 11.
 
 ---
 
-## 1. Headline results (live run 10, 320.5 s, 8 servers / 40 devices / 6 attacks)
+## 1. Headline results (live run 11, 327.9 s, 8 servers / 40 devices / 6 attacks)
 
 The best run to date, and the numbers to quote.
 
-| Metric | Value |
-|---|---|
-| **Attacks classified correctly** | **8 / 8** |
-| Attacks detected at all | **8 / 8** |
-| Attack classification accuracy | **97.9%** (47 / 48 subjects) |
-| Honest subjects wrongly labelled | 1 / 40 (srv7 — §6.9) |
-| Attacker containment | srv3 +9.6 s, srv8 +9.8 s, srv6 +11.9 s, srv1 +12.8 s |
-| Mean detection latency | 12.1 s (upper bound — §5.6) |
-| Honest-node availability | 3 of 4 at 100%, srv7 91.8% |
-| Total outage (0 nodes serving) | **none** |
-| Time at/above 50% serving quorum | 98.5% |
-| All four NFRs | **PASS** |
-| Identity spoof | **refused** (§3.16) |
+| Metric | Value | run 10 |
+|---|---|---|
+| **Attack classification accuracy** | **48 / 48 = 100.0%** | 47/48 = 97.9% |
+| Attacks classified correctly | **8 / 8** | 8/8 |
+| Attacks detected at all | **8 / 8** | 8/8 |
+| **Honest subjects wrongly labelled** | **0 / 40** | 1/40 (srv7) |
+| **Honest-node availability** | **100.00%** | 97.94% |
+| **Honest nodes never quarantined** | **4 / 4** | 3/4 |
+| Attacker containment | srv3 +10.3 s, srv6 +11.6 s, srv8 +11.8 s, srv1 +16.6 s | 9.6–12.8 s |
+| Mean attacker time isolated | 66.85% | 59.66% |
+| Mean detection latency | 12.5 s (upper bound — §5.6) | 12.1 s |
+| Total outage (0 nodes serving) | **none** | none |
+| Time at/above 50% serving quorum | **100.0%** | 98.5% |
+| All four NFRs | **PASS** | PASS |
+| Identity spoof | **refused** (§3.16) | refused |
 
-Full run-10 breakdown, including what it does *not* prove, in §1.4 below.
+Every class scores precision = recall = f1 = 1.000. Full run-11 breakdown,
+including the two things it does *not* prove, in §1.5 below. Mean nodes serving
+reads slightly lower than run 10 (5.33 vs 5.53 of 8) because attackers were
+isolated *more* of the time — attacker downtime is the system working, which is
+why availability is reported split by ground truth (§7).
+
 The run-8 figures that follow are kept because §3.12–§3.14 were measured
 against them.
+
+## 1.5 Live run 11 (2026-08-09, 327.9 s) — §3.17 confirmed, and the first 48/48
+
+```
+iot38   spoof            spoof            OK
+iot39   bad_credentials  bad_credentials  OK
+iot40   bad_credentials  bad_credentials  OK
+iot37   flood            flood            OK
+srv1    grayhole         grayhole         OK   +16.6s
+srv3    sybil            sybil            OK   +10.3s
+srv6    blackhole        blackhole        OK   +11.6s
+srv8    onoff            onoff            OK   +11.8s
+```
+
+**100% accuracy, 0/40 honest subjects mislabelled, 4/4 honest nodes never
+quarantined, 100.00% honest availability, 100% of the run above quorum.**
+17 outcomes withheld, **0.27% of reports** — 13 from honest nodes, 4 from
+attackers. Zero `Connection reset by peer` across all 40 client logs; the spoof
+refused as `ip_pin` and blamed on iot38; `identity_unclaimed` named iot38/39/40.
+
+**The fix's live contribution, isolated.** Replaying run 11's own reports with
+the withheld outcomes charged back in — the counterfactual this run exists to
+produce:
+
+| node | truth | peak timeout rate as run | if charged | drop-tell firings |
+|---|---|---:|---:|---|
+| **srv5** | **honest** | **0.00** | **0.50** | 0 → **4** |
+| srv2 | honest | 0.00 | 0.20 | 0 → 0 |
+| srv4 | honest | 0.10 | 0.20 | 0 → 0 |
+| srv1 | grayhole | 0.60 | 0.60 | 7 → 7 |
+| srv6 | blackhole | 1.00 | 1.00 | 7 → 7 |
+
+**srv5 is the one the fix actually saved**: 7 inherited outcomes (5 from srv1,
+1 from srv3, 1 from srv8), and charging them would have tripped the drop tell 4
+times on a node whose own peak rate was 0.00. **Neither drop-family attacker
+loses anything — srv1 and srv6 are bit-identical with and without.** That is the
+detection-cost question answered live rather than by replay: it is zero.
+
+**What run 11 does NOT prove, part 1: srv7's clean sheet is not this fix's
+doing.** srv7 inherited **zero** outcomes this run, against 13 in run 10 where
+it was quarantined twice. The re-steer traffic simply went elsewhere. Saying
+"srv7 was mislabelled in run 10 and is clean in run 11, therefore §3.17 fixed
+it" would be claiming a causal link the data does not carry — the honest claim
+is srv5's, above, where the counterfactual is measurable.
+
+**What run 11 does NOT prove, part 2: `DEFAULT_MIN_LYING_SHARE` is still
+untested.** The §5.14 tension needs the drop tell to fire on a lying attacker,
+and srv8's peak timeout rate was 0.10 in run 11 **both with and without** the
+fix — the tell never fired on it either way. So this run is *indifferent* to the
+0.25 threshold, and §5.14's own lesson is that indifferent means untested, not
+safe. It carried over from run 9 unexercised and it still is.
+
+**The roster is still not load-bearing** (§1.4's caveat, unchanged): iot1 does
+not appear in `identity_unclaimed`, so it claimed its pin before iot38's
+attempt, and plain TOFU would have refused this spoof too.
 
 ## 1.1 Earlier headline (live run 8, 311.7 s, same topology)
 
@@ -190,7 +256,8 @@ cycles, quarantined twice for 26.4 s total, recovered both times). This is §6.9
 the re-dispatch attribution defect — the same defect that hit **srv4** in run 8
 and nothing in run 9. Three runs, three different outcomes on the same unfixed
 bug: it is timing-dependent, which is an argument for fixing it rather than for
-waiting to see it again.
+waiting to see it again. **Fixed as §3.17; validated in run 11 (§1.5)** — though
+on srv5's evidence, not srv7's, which run 11 happened not to reproduce.
 
 ---
 
@@ -549,7 +616,14 @@ loses anything that matters: srv6 is untouched and srv1 still fires 24 times.
 **This is a replay, so it is a lower bound** (§4.6): the counterfactual run has
 different traffic, and the feedback half — fewer false quarantines → fewer
 re-steers → fewer inherited timeouts — is invisible to a replay by construction.
-**Live run 11 is what settles it.**
+
+**CONFIRMED LIVE, run 11 (§1.5).** 17 outcomes withheld, 0.27% of reports,
+0/40 honest subjects mislabelled and 4/4 honest nodes never quarantined against
+run 10's 1/40 and 3/4. The measurable contribution is **srv5**: 7 inherited
+outcomes which, charged back in, would have fired the drop tell 4 times on a node
+whose own peak timeout rate was 0.00. **Detection cost measured live is zero** —
+srv1 and srv6 are bit-identical with and without the withholding. Note the fix
+was *not* validated on srv7, which inherited nothing this run; see §1.5.
 
 **One interaction to record honestly.** Run 9's srv8 loses all 6 of its drop-tell
 firings, because 5 of its outcomes were inherited. Those firings are what §5.14
@@ -783,9 +857,16 @@ which supports that reading but does not prove it.
 ### 5.9 Single run per configuration
 Every live figure here comes from one run at one seed. No confidence intervals.
 
-### 5.10 The study document is stale
-`docs/study/trust-routing-study.html` still describes code that no longer ships
-(pre-p2c routing), and its PDF was printed from an even older version.
+### 5.10 The study document is stale — **CLOSED 2026-08-09** (§6.3)
+`docs/study/trust-routing-study.html` described code that no longer ships
+(pre-p2c routing) and asserted the §7 honesty finding as still live. Sections
+1–8 are **kept as measured** — they record the system as it behaved when the
+findings were made, and rewriting them would destroy the evidence the fixes
+were derived from — but the header now carries a status line saying so, the
+two affected Limitations bullets are annotated, and a new **§12** re-measures
+both open findings on live run 11. **The PDF is still stale**: it must be
+re-printed from the updated HTML via the in-page "Print / Save as PDF" button,
+which is a browser action this box cannot perform (§"No headless rendering").
 
 ### 5.14 The weighing rule was set too high, and live run 9 caught it
 `DEFAULT_MIN_LYING_SHARE` shipped at 0.50 — "the lying signal must dominate".
@@ -899,11 +980,36 @@ family, taking attacks-detected to 8/8.
 but simultaneously renames the true grayhole srv1 a blackhole, and no sample bar
 separates them. Naming the family is what this can honestly deliver.
 
-### 6.3 Rewrite the study document from live run 8
-`docs/study/trust-routing-study.html` (§5.10) should be rebuilt on run 8's
-telemetry. Both of its open questions now have answers: starvation is closed by
-p2c + ε-exploration, and the H-term mismatch is closed by the duty-cycle
-comparison plus §3.10's abstention rule.
+### 6.3 Rewrite the study document from live run 8 — **DONE 2026-08-09**, differently
+
+Both open questions did have answers, and they are now measured on **live run 11**
+rather than run 8 (run 11 is on current code and is the better evidence).
+
+**The plan said "rebuild"; what shipped is "extend, and mark".** Rewriting
+sections 1–8 from new telemetry would have deleted the measurements the fixes
+were derived from — the study's value is partly that it is a record of a system
+that was wrong in two specific, diagnosable ways. So sections 1–8 are kept
+verbatim, the header states plainly that they describe code that no longer
+ships, the two Limitations bullets that overtook themselves are annotated, and
+a new **§12** re-tests both findings:
+
+| finding | when written | live run 11 |
+|---|---|---|
+| F1/F5 starvation | 2 of 4 nodes served everything; srv2 starved 2,238.8 s | **0 nodes starved**, honest share 21.0–23.2%, **Jain 0.9985** |
+| F6 honesty tax | `dev/occ = 1.000` in every bin | **median 0.092**, mean deviation 0.0033 vs a 0.40 gate |
+| — | `claimed_cpu` non-zero in 1.51% of samples | **99.56%** |
+| — | `expected_duty` computed for 70%, used by 0 of 175 firings | **99.4%** |
+
+Jain over all eight nodes is 0.6253 and the section says why that is the system
+working: four of the eight are attackers under quarantine, and averaging their
+downtime with honest downtime is the exact conflation §7's discipline note
+forbids. The figure encodes the split in its ordering and colour rather than
+leaving it to the reader.
+
+Renderer verified the way everything visual in this project is verified —
+executed headlessly in `node` against a DOM stub, markup inspected for
+viewBox overflow and label bounds (§"No headless rendering" explains why a
+browser is not available here). **The PDF still needs re-printing by hand.**
 
 ### 6.4 Statistical rigour for the panel
 Multiple seeds per configuration with confidence intervals (§5.9).

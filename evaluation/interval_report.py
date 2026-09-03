@@ -39,6 +39,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+from evaluation.attack_report import ground_truth
 from evaluation.nfr_report import _percentile, load_events
 
 # controller/trust_balancer.py's PRIO_QUARANTINE_DROP. Duplicated as a plain
@@ -104,6 +105,27 @@ class IntervalMetrics:
     # Throughput -- sum of bps across serving (non-drop) VIP flow-table rules
     throughput_bps: float = 0.0
 
+    # Routing reliability -- did the routing DECISION hold? Distinct from PDR
+    # (did the task succeed) and from offered/served (was it routed at all).
+    # Fractions in [0,1] like pdr and jain_fairness; the dashboard renders the
+    # same definitions as percentages.
+    resteers: int = 0
+    routing_reliability: Optional[float] = None
+    admitted_ratio: Optional[float] = None
+
+    # Trust and service availability, split by ground truth and NEVER combined.
+    # Quarantine downtime means opposite things for the two groups -- an
+    # isolated attacker is enforcement working, an isolated honest node is the
+    # system's real cost -- so a single fleet-wide average would be a mean over
+    # two quantities that should move in opposite directions. This is
+    # evaluation/availability_report.py's central rule, carried into the
+    # interval report. Absent groups are None, never 0.0: "no attackers
+    # configured" must not read as "total enforcement failure".
+    mean_trust_honest: Optional[float] = None
+    mean_trust_attacker: Optional[float] = None
+    honest_serving_fraction: Optional[float] = None
+    attacker_contained_fraction: Optional[float] = None
+
     # Status
     quarantined_nodes: List[str] = field(default_factory=list)
     num_quarantined: int = 0
@@ -157,6 +179,31 @@ def bucket_events(
     decision_ms_by_bucket: List[List[float]] = [[] for _ in range(n_buckets)]
     latency_ms_by_bucket: List[List[float]] = [[] for _ in range(n_buckets)]
     routing_share_by_bucket: List[Dict[str, int]] = [dict() for _ in range(n_buckets)]
+    # Per-`node_status` samples (one per controller poll, ~1 Hz), averaged at
+    # the end. Time-averaged rather than last-sample: availability is a time
+    # integral, and a bucket whose final poll happens to catch a node mid-probation
+    # is not a bucket in which it was quarantined the whole time.
+    trust_honest_by_bucket: List[List[float]] = [[] for _ in range(n_buckets)]
+    trust_attacker_by_bucket: List[List[float]] = [[] for _ in range(n_buckets)]
+    serving_honest_by_bucket: List[List[float]] = [[] for _ in range(n_buckets)]
+    contained_attacker_by_bucket: List[List[float]] = [[] for _ in range(n_buckets)]
+
+    # Ground-truth split of the server roster, from the topology event.
+    truth = ground_truth(events)
+    honest_ids = [
+        n for n in roster if truth.get(n, ('node', 'none'))[1] == 'none'
+    ] if roster else []
+    attacker_ids = [
+        n for n in roster if truth.get(n, ('node', 'none'))[1] != 'none'
+    ] if roster else []
+
+    # (client_ip, client_port) -> [originating bucket index, already counted].
+    # Charging a re-steer to the bucket its ROUTE was taken in, not the one it
+    # lands in: a quarantine re-steers every pending dispatch at once, so a
+    # burst can exceed the route count of the bucket it arrives in and drive
+    # reliability negative. Counted once per decision, not once per re-steer --
+    # a dispatch re-steered twice is still one decision that failed to hold.
+    route_origin: Dict[tuple, List[Any]] = {}
 
     # Running state carried across the whole timeline -- cumulative counters
     # must be diffed against their own last sighting, not reset per bucket,
@@ -186,6 +233,39 @@ def bucket_events(
                 )
             if 'decision_ms' in e:
                 decision_ms_by_bucket[i].append(e['decision_ms'])
+            key = (e.get('client_ip'), e.get('client_port'))
+            if key[0] is not None and key[1] is not None:
+                route_origin[key] = [i, False]
+
+        elif et == 'reroute':
+            bucket_touched[i] = True
+            origin = route_origin.get((e.get('client_ip'), e.get('client_port')))
+            if origin is not None and not origin[1]:
+                origin[1] = True
+                buckets[origin[0]].resteers += 1
+
+        elif et == 'node_status':
+            bucket_touched[i] = True
+            nodes = e.get('nodes') or {}
+
+            def _sample(ids, trust_acc, state_acc, want_quarantined):
+                # An absent group stays absent -- no sample is appended, so the
+                # mean stays None rather than becoming 0.0.
+                seen = [nodes[n] for n in ids if n in nodes]
+                if not seen:
+                    return
+                trust_acc.append(
+                    sum(float(x.get('trust', 0.0)) for x in seen) / len(seen)
+                )
+                state_acc.append(
+                    sum(1 for x in seen if bool(x.get('quarantined')) == want_quarantined)
+                    / len(seen)
+                )
+
+            _sample(honest_ids, trust_honest_by_bucket[i],
+                    serving_honest_by_bucket[i], False)
+            _sample(attacker_ids, trust_attacker_by_bucket[i],
+                    contained_attacker_by_bucket[i], True)
 
         elif et == 'route_denied':
             bucket_touched[i] = True
@@ -266,6 +346,21 @@ def bucket_events(
         completed = b.task_success + b.task_timeout + b.task_failure
         b.pdr = round(b.task_success / completed, 4) if completed > 0 else None
 
+        # A bucket with no routing decisions has no opinion on reliability --
+        # None, not 1.0 (nothing failed) and not 0.0 (nothing succeeded).
+        if b.served > 0:
+            b.routing_reliability = round((b.served - b.resteers) / b.served, 4)
+        if b.offered > 0:
+            b.admitted_ratio = round(b.served / b.offered, 4)
+
+        def _mean(xs):
+            return round(statistics.mean(xs), 4) if xs else None
+
+        b.mean_trust_honest = _mean(trust_honest_by_bucket[i])
+        b.mean_trust_attacker = _mean(trust_attacker_by_bucket[i])
+        b.honest_serving_fraction = _mean(serving_honest_by_bucket[i])
+        b.attacker_contained_fraction = _mean(contained_attacker_by_bucket[i])
+
         share = routing_share_by_bucket[i]
         b.routing_share = share
         if roster:
@@ -304,6 +399,56 @@ def format_table(buckets: Sequence[IntervalMetrics]) -> str:
     return '\n'.join(lines)
 
 
+def format_reliability_table(buckets: Sequence[IntervalMetrics]) -> str:
+    """The routing-reliability, trust and availability series.
+
+    A second table rather than six more columns on the first: these are the
+    metrics that are split by ground truth, and putting an honest and an
+    attacker column side by side is the whole point -- squeezed onto the end of
+    an already-wide row they would read as unrelated numbers.
+
+    Blank means "no opinion", never zero. A bucket with no routing decisions
+    has nothing to say about reliability, and a run with no attackers
+    configured has nothing to say about containment.
+    """
+    header = (
+        f"{'t(s)':>8} {'held':>7} {'admit':>7} {'re-st':>6} "
+        f"{'T honest':>9} {'T attack':>9} {'serving':>8} {'contain':>8}"
+    )
+    lines = [
+        header,
+        '-' * len(header),
+    ]
+    for b in buckets:
+        f2 = lambda v: '' if v is None else f'{v:.2f}'  # noqa: E731
+        f3 = lambda v: '' if v is None else f'{v:.3f}'  # noqa: E731
+        lines.append(
+            f"{b.t_start_s:8.0f} {f2(b.routing_reliability):>7} "
+            f"{f2(b.admitted_ratio):>7} {b.resteers:6d} "
+            f"{f3(b.mean_trust_honest):>9} {f3(b.mean_trust_attacker):>9} "
+            f"{f2(b.honest_serving_fraction):>8} "
+            f"{f2(b.attacker_contained_fraction):>8}"
+        )
+    lines.append('')
+    lines.append(
+        'held    = routing decisions never re-steered (re-steers are charged'
+    )
+    lines.append(
+        '          to the bucket the ROUTE was taken in, not the one they land in)'
+    )
+    lines.append('admit   = requests that found an eligible node at all')
+    lines.append(
+        'serving = honest servers not quarantined; contain = attackers quarantined.'
+    )
+    lines.append(
+        '          Never averaged together: an isolated attacker is enforcement'
+    )
+    lines.append(
+        '          working, an isolated honest node is the system\'s real cost.'
+    )
+    return '\n'.join(lines)
+
+
 def to_csv_rows(buckets: Sequence[IntervalMetrics]) -> List[List[Any]]:
     header = [
         't_start_s', 't_end_s', 'offered', 'served', 'offered_rate_hz',
@@ -311,6 +456,9 @@ def to_csv_rows(buckets: Sequence[IntervalMetrics]) -> List[List[Any]]:
         'throughput_bps', 'jain_fairness', 'num_quarantined',
         'quarantined_nodes', 'quarantine_drop_packets',
         'task_success', 'task_timeout', 'task_failure',
+        'resteers', 'routing_reliability', 'admitted_ratio',
+        'mean_trust_honest', 'mean_trust_attacker',
+        'honest_serving_fraction', 'attacker_contained_fraction',
     ]
     rows: List[List[Any]] = [header]
     for b in buckets:
@@ -320,6 +468,9 @@ def to_csv_rows(buckets: Sequence[IntervalMetrics]) -> List[List[Any]]:
             b.throughput_bps, b.jain_fairness, b.num_quarantined,
             ';'.join(b.quarantined_nodes), b.quarantine_drop_packets,
             b.task_success, b.task_timeout, b.task_failure,
+            b.resteers, b.routing_reliability, b.admitted_ratio,
+            b.mean_trust_honest, b.mean_trust_attacker,
+            b.honest_serving_fraction, b.attacker_contained_fraction,
         ])
     return rows
 
@@ -334,6 +485,8 @@ def main() -> None:
     events = load_events(args.events_path)
     buckets = bucket_events(events, bucket_s=args.bucket_s)
     print(format_table(buckets))
+    print()
+    print(format_reliability_table(buckets))
 
     if args.csv:
         import csv

@@ -303,6 +303,12 @@
   .a { color: var(--good); }
   .num { text-align: right; color: var(--muted); white-space: nowrap; }
 
+  /* ---------- node structure ---------- */
+  #nodestruct { max-height: 300px; overflow: auto; }
+  #nodestruct td.kind { color: var(--muted); }
+  /* "not measured" is its own state and must not look like a small number. */
+  #nodestruct td .na { color: #4d5560; }
+
   /* ---------- log ---------- */
   #log { max-height: 260px; overflow: auto; font-size: 11px; }
   .ev { padding: 3px 14px; border-bottom: 1px solid #1b2028; display: flex; gap: 8px; }
@@ -353,6 +359,14 @@
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 10px; color: var(--muted); padding: 8px 14px 0; }
   .legend b { font-weight: 500; color: var(--text); }
   .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+
+  /* Link across to the generated offline report. */
+  a.pagelink {
+    color: var(--muted); text-decoration: none; font-size: 12px;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  a.pagelink:hover { color: var(--text); border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -366,6 +380,7 @@
   <span class="pill" id="throughput" title="Total measured link throughput across all switch ports (OFPPortStats, real counters)">links —</span>
   <span class="pill" id="dropped" title="Total packets dropped by quarantine drop rules (priority 400, action=drop)">dropped —</span>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></span>
+  <a class="pagelink" href="/analysis" title="Offline analysis: baselines, significance, scalability, and where the system loses">analysis →</a>
 </header>
 
 <div class="grid">
@@ -410,6 +425,14 @@
         <span class="note">— per-server routing share &amp; fairness, tallied live from routing decisions</span>
       </h2>
       <div class="body" id="balance"><div class="empty">waiting for the first routing decision…</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Node structure
+        <span class="note">— sink = s0, the core switch every VIP task
+          transits; delay is <em>configured</em> link delay, not measured RTT</span>
+      </h2>
+      <div id="nodestruct"><div class="empty">waiting for controller…</div></div>
     </div>
 
     <div class="panel">
@@ -614,6 +637,131 @@ function updateFormula() {
   el.textContent =
     `EdgeScore = ${(+w.w1_trust).toFixed(2)}·T + ${(+w.w2_cpu).toFixed(2)}·(1−cpu)` +
     ` + ${(+w.w3_latency).toFixed(2)}·(1−lat)`;
+}
+
+// -------------------------------------------------- node structure ----
+// Node degree and distance to the sink: the two metrics on the advisor's list
+// that are properties of the GRAPH rather than of the traffic. They do not
+// vary over time, so they are a table rather than a chart -- a flat line is
+// not a chart.
+//
+// These mirror evaluation/topology_metrics.py exactly (node_degree /
+// distance_to_sink). They cannot share code -- this is JS in a browser, that
+// is Python that must run with no controller installed -- so the coupling is
+// pinned by tests/test_dashboard_charts.py instead, the same way BUCKET_S is
+// pinned against interval_report.DEFAULT_BUCKET_S.
+const SINK = 's0';
+
+function nodeDegree(graph) {
+  const deg = {};
+  for (const n of graph.nodes || []) if (n.id) deg[n.id] = 0;
+  for (const lk of graph.links || []) {
+    // Both endpoints must be known nodes, matching distanceToSink's rule (and
+    // topology_metrics.node_degree's). Counting a half-known link here but
+    // refusing to traverse it there would let degree and distance disagree
+    // about what the graph is.
+    if (lk.a === lk.b || !(lk.a in deg) || !(lk.b in deg)) continue;
+    deg[lk.a]++;
+    deg[lk.b]++;
+  }
+  return deg;
+}
+
+// BFS from the sink. Hops is the primary metric; where several equal-hop paths
+// exist the one with the lowest total configured delay wins, and an unknown
+// delay counts as worse than any known one -- a stated tie-break rather than
+// whichever edge the iteration happened to reach first.
+//
+// delay_ms is null, never 0, whenever any link on the path never reported one.
+// "Not measured" and "zero delay" are different claims: a run where the
+// harness never POSTed /topology/links must show a dash, not a plausible zero.
+function distanceToSink(graph, sink = SINK) {
+  const adj = {};
+  for (const n of graph.nodes || []) if (n.id) adj[n.id] = [];
+  for (const lk of graph.links || []) {
+    if (lk.a === lk.b || !(lk.a in adj) || !(lk.b in adj)) continue;
+    const d = typeof lk.delay_ms === 'number' ? lk.delay_ms : null;
+    adj[lk.a].push([lk.b, d]);
+    adj[lk.b].push([lk.a, d]);
+  }
+  const out = {};
+  for (const id of Object.keys(adj)) out[id] = { hops: null, delay_ms: null };
+  if (!(sink in adj)) return out;
+
+  const hops = { [sink]: 0 }, delay = { [sink]: 0 };
+  let frontier = [sink], level = 0;
+  while (frontier.length) {
+    level++;
+    const nxt = new Map();
+    for (const u of frontier) {
+      for (const [v, d] of adj[u]) {
+        if (v in hops) continue;
+        const base = delay[u];
+        const cand = (base === null || d === null) ? null : base + d;
+        if (!nxt.has(v)) { nxt.set(v, cand); continue; }
+        // known beats unknown; among known, smaller wins
+        const best = nxt.get(v);
+        if (cand !== null && (best === null || cand < best)) nxt.set(v, cand);
+      }
+    }
+    for (const [v, cand] of nxt) { hops[v] = level; delay[v] = cand; }
+    frontier = [...nxt.keys()];
+  }
+  for (const id of Object.keys(out)) {
+    if (id in hops) out[id] = { hops: hops[id], delay_ms: delay[id] };
+  }
+  return out;
+}
+
+// Routing targets first, then the fabric they sit on, then traffic sources.
+const KIND_ORDER = { server: 0, core_switch: 1, edge_switch: 2, iot: 3 };
+const KIND_LABEL = {
+  server: 'server', core_switch: 'core sw', edge_switch: 'edge sw', iot: 'iot',
+};
+
+// 'srv10' after 'srv9', not between 'srv1' and 'srv2'.
+function natKey(id) {
+  const m = /^(.*?)(\d*)$/.exec(id);
+  return [m[1], m[2] === '' ? -1 : parseInt(m[2], 10)];
+}
+
+function renderNodeStructure() {
+  const box = document.getElementById('nodestruct');
+  if (!box || !S.topo) return;
+  const deg = nodeDegree(S.topo);
+  const dist = distanceToSink(S.topo);
+  const kinds = {};
+  for (const n of S.topo.nodes || []) kinds[n.id] = n.kind || '';
+
+  const ids = Object.keys(deg).sort((a, b) => {
+    const ka = KIND_ORDER[kinds[a]] ?? 9, kb = KIND_ORDER[kinds[b]] ?? 9;
+    if (ka !== kb) return ka - kb;
+    const [pa, na] = natKey(a), [pb, nb] = natKey(b);
+    return pa < pb ? -1 : pa > pb ? 1 : na - nb;
+  });
+  if (!ids.length) return;
+
+  const na = '<span class="na">—</span>';
+  const rows = ids.map(id => {
+    const d = dist[id] || { hops: null, delay_ms: null };
+    const hops = d.hops === null ? na : d.hops;
+    const dl = d.delay_ms === null ? na : `${d.delay_ms.toFixed(1)} ms`;
+    return `<tr>
+      <td>${id}</td>
+      <td class="kind">${KIND_LABEL[kinds[id]] || kinds[id] || ''}</td>
+      <td class="num">${deg[id]}</td>
+      <td class="num">${hops}</td>
+      <td class="num">${dl}</td>
+    </tr>`;
+  }).join('');
+
+  box.innerHTML = `<table>
+    <thead><tr>
+      <th>node</th><th>kind</th><th class="num">degree</th>
+      <th class="num">hops→${SINK}</th><th class="num">delay→${SINK}</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 // AI optimizer panel: the live weights as a stacked bar, plus one row per bandit
@@ -1167,23 +1315,21 @@ function handle(ev) {
       paintNodes();
       break;
 
-    // Blocks arrive every max_updates_per_block-th report -- a few per second
-    // under load -- so the ledger panel is throttled like the charts rather
-    // than redrawn per event.
-    case 'block':
-      ledgerIngest(ev);
-      scheduleLedgerRender();
-      break;
-
-    // Each report contributes one TrustUpdate to the batch that is waiting to
-    // be committed. Counted here rather than polled from the controller: there
-    // is no endpoint for the pending queue, and inferring it from the event
-    // stream is exactly as accurate for a page that has seen every report
-    // since it connected. A page that connected mid-batch starts low and
-    // self-corrects at the next commit, which resets the count to zero.
-    case 'report':
-      LEDGER.pending++;
-      scheduleLedgerRender();
+    // The harness reporting the link parameters it actually built
+    // (POST /topology/links -> trust_balancer.record_link_params). Same graph
+    // shape as 'topology', plus delay_ms/bw_mbps on the links -- which is the
+    // only source for the per-IoT delay, drawn from an unseeded RNG in
+    // ZeroTrustTopo.build() and therefore not derivable from config.
+    //
+    // Merged rather than assigned: the boot-time /api/topology response is
+    // what the map is drawn from, and replacing the object wholesale would
+    // discard nothing today but would silently drop any field a future
+    // controller adds to one payload and not the other.
+    case 'topology_links':
+      if (ev.graph && ev.graph.links) {
+        S.topo.links = ev.graph.links;
+        renderNodeStructure();
+      }
       break;
 
     case 'node_status':
@@ -1287,27 +1433,17 @@ const CH = {
   vipBps: {},                     // rule key -> {bps, node}  (sum at read time)
   prevDropPkts: {},               // rule key -> last cumulative packet count
   lastBps: 0,
-  lastBpsByNode: {},              // node -> latest summed bps, for forward-fill
+  // 'client_ip:client_port' -> {i: originating bucket index, counted: bool}.
+  // Same key controller/trust_state.py's _dispatches uses; a re-steer changes
+  // which node serves a request, never the client port it came from.
+  routeOrigin: new Map(),
 };
 
-// Per-node slot inside a bucket. Every event this panel bins already carries
-// the serving node (`route.chosen`, `report.node`, `flow_stats.rules[].node`),
-// so the cluster split needs NO controller change -- it is a different
-// aggregation of the same evidence, not new instrumentation.
-//
-// Kept per NODE rather than per cluster on purpose: cluster membership is
-// resolved at render time from the topology event's server roster, which may
-// arrive after the first events have already been binned. Binning straight
-// into clusters would silently drop everything that landed before the roster
-// was known.
-function nodeSlot(b, node) {
-  if (!node) return null;
-  if (!b.byNode[node]) {
-    b.byNode[node] = { total: 0, success: 0, timeout: 0, failure: 0,
-                       lat: [], dropPkts: 0, served: 0 };
-  }
-  return b.byNode[node];
-}
+// Cap on CH.routeOrigin. A re-steer arrives at most a couple of seconds after
+// its route, so anything older than the visible window can never be charged to
+// a bucket that still exists. Insertion-ordered Map, so evicting from the front
+// evicts the oldest.
+const MAX_ROUTE_ORIGIN = 4000;
 
 function bucketFor(ts) {
   if (CH.t0 === null) CH.t0 = ts;
@@ -1316,6 +1452,15 @@ function bucketFor(ts) {
     CH.buckets.push({
       i: CH.buckets.length, offered: 0, served: 0, taskTotal: 0,
       success: 0, timeout: 0, failure: 0, lat: [], dropPkts: 0,
+      // Routing decisions taken in THIS bucket that were later re-steered --
+      // charged back here from the 'reroute' event, not to the bucket the
+      // re-steer lands in. See chartIngest's 'reroute' case.
+      resteered: 0,
+      // Per-node_status samples (1 Hz, so ~10 per bucket), split by ground
+      // truth and averaged at read time. Never combined into one series:
+      // quarantine means opposite things for the two groups, which is the rule
+      // evaluation/availability_report.py exists to enforce.
+      trustH: [], trustA: [], servingH: [], containedA: [],
       // Throughput and quarantine state forward-fill: a quiet bucket is not a
       // zero-throughput bucket, which is how a live dashboard reads too.
       // Same rule per node, or a quiet cluster reads as a dead one.
@@ -1380,9 +1525,12 @@ function chartIngest(ev) {
   switch (ev.type) {
     case 'route': {
       b.offered++; b.served++;
-      if (ev.chosen) {
-        b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
-        nodeSlot(b, ev.chosen).served++;
+      if (ev.chosen) b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
+      if (ev.client_ip && ev.client_port !== undefined) {
+        CH.routeOrigin.set(`${ev.client_ip}:${ev.client_port}`, { i: b.i, counted: false });
+        while (CH.routeOrigin.size > MAX_ROUTE_ORIGIN) {
+          CH.routeOrigin.delete(CH.routeOrigin.keys().next().value);
+        }
       }
       break;
     }
@@ -1392,7 +1540,45 @@ function chartIngest(ev) {
       // panel plots requests ROUTED and never claims to plot offered load.
       b.offered++;
       break;
-    case 'report': {
+    // Charge a re-steer back to the bucket its ROUTE was taken in, not the one
+    // the re-steer lands in. A quarantine re-steers every pending dispatch at
+    // once, so a burst can easily exceed the count of routes in the bucket it
+    // arrives in and drive reliability negative -- which would then need a
+    // clamp, and a clamp that hides an out-of-range value is exactly the kind
+    // of flattering knob this project removes rather than adds.
+    //
+    // Counted once per routing decision, not once per re-steer event: a
+    // dispatch re-steered twice is still one decision that failed to hold, and
+    // double-counting it could push resteered past served all over again.
+    case 'reroute': {
+      const key = `${ev.client_ip}:${ev.client_port}`;
+      const origin = CH.routeOrigin.get(key);
+      if (!origin || origin.counted) break;
+      origin.counted = true;
+      const ob = CH.buckets.find(x => x.i === origin.i);
+      if (ob) ob.resteered++;   // else: scrolled out of the window
+      break;
+    }
+    // Fleet trust and quarantine state, sampled once per controller poll.
+    case 'node_status': {
+      const roster = serverGroundTruth();
+      if (!roster) break;
+      const push = (ids, trustArr, stateArr, wantQuarantined) => {
+        if (!ids.length) return;              // absent group stays absent
+        const seen = ids.map(id => ev.nodes[id]).filter(Boolean);
+        if (!seen.length) return;
+        trustArr.push(seen.reduce((a, n) => a + (n.trust || 0), 0) / seen.length);
+        stateArr.push(
+          seen.filter(n => !!n.quarantined === wantQuarantined).length / seen.length);
+      };
+      // honest: trust, and the fraction still ELIGIBLE to serve
+      push(roster.honest, b.trustH, b.servingH, false);
+      // attacker: trust, and the fraction CONTAINED. Same measurement,
+      // opposite polarity -- which is why they are never one series.
+      push(roster.attacker, b.trustA, b.containedA, true);
+      break;
+    }
+    case 'report':
       b.taskTotal++;
       const n = nodeSlot(b, ev.node);
       if (n) n.total++;
@@ -1468,48 +1654,30 @@ function jainOver(shareMap, roster) {
   return sq > 0 ? (total * total) / (xs.length * sq) : null;
 }
 
-function jain(shareMap) {
-  return jainOver(shareMap, serverRoster());
+function mean(xs) {
+  return xs.length ? xs.reduce((a, v) => a + v, 0) / xs.length : null;
 }
 
-// ------------------------------------------------------------- clusters ----
-// Two clusters, split positionally down the middle of the server roster.
+// The server roster split by ground truth, from the topology event's `attack`
+// field. Cached: this is static for a run and is read on every node_status.
 //
-// STATE PLAINLY WHAT THIS IS: the split is ARBITRARY. This topology gives
-// every server its own edge switch hanging off one core switch (s0 -> s1..s8,
-// one server each), so there is no physical cluster structure to follow --
-// srv1-4 and srv5-8 are not two racks, two sites or two failure domains. The
-// halves are a positional convention, and the panel says so rather than
-// letting a reader infer a locality that is not there.
-//
-// The roster order comes off the topology event, which is the same order
-// topology.py builds the fleet in, so membership is stable across a run and
-// across a replay of the same recording.
-function clusterDefs() {
-  const roster = serverRoster();
-  if (roster.length < 2) return [];
-  const half = Math.ceil(roster.length / 2);
-  const a = roster.slice(0, half), b = roster.slice(half);
-  return [
-    { key: 'A', name: `cluster A (${a[0]}–${a[a.length - 1]})`, color: SERIES_1, members: a },
-    { key: 'B', name: `cluster B (${b[0]}–${b[b.length - 1]})`, color: SERIES_2, members: b },
-  ];
-}
-
-// Sum one per-node field across a cluster's members for a bucket.
-function clusterSum(b, members, field) {
-  let t = 0;
-  for (const id of members) t += (b.byNode[id] || {})[field] || 0;
-  return t;
-}
-
-function clusterLat(b, members) {
-  const xs = [];
-  for (const id of members) {
-    const s = b.byNode[id];
-    if (s) xs.push(...s.lat);
-  }
-  return xs;
+// Returns null before the topology is known, and an EMPTY attacker list when a
+// run configures no attacks -- which the charts render as a null series, never
+// as 0%. "No attackers configured" and "no attacker contained" are different
+// statements, and collapsing them would read as total enforcement failure on
+// every clean run (the rule availability_report.py states for absent groups).
+let _groundTruth = null;
+function serverGroundTruth() {
+  if (_groundTruth) return _groundTruth;
+  const nodes = S.topo && S.topo.nodes;
+  if (!nodes) return null;
+  const servers = nodes.filter(n => n.kind === 'server');
+  if (!servers.length) return null;
+  _groundTruth = {
+    honest: servers.filter(n => !n.attack || n.attack === 'none').map(n => n.id),
+    attacker: servers.filter(n => n.attack && n.attack !== 'none').map(n => n.id),
+  };
+  return _groundTruth;
 }
 
 // Ground-truth attack onsets, for the shaded bands. Comes off the topology
@@ -1550,6 +1718,35 @@ const CHART_DEFS = [
     unit: '', series: [
       { name: 'tasks lost', color: SERIES_1, f: b => b.timeout + b.failure },
       { name: 'quarantine drops', color: SERIES_2, f: b => b.dropPkts }] },
+  // Trust was always on screen as a live snapshot (renderTrust) but never as a
+  // series, so the run's central claim -- attacker trust collapsing while
+  // honest trust holds -- was only ever visible in the instant it happened.
+  // Split by ground truth, never averaged: one fleet-wide mean would move
+  // downward when the system works, which is backwards.
+  { key: 'trust', title: 'Trust value', sub: 'mean T, honest vs. attacker servers',
+    unit: '', max: 1, series: [
+      { name: 'honest', color: SERIES_1, f: b => mean(b.trustH) },
+      { name: 'attacker', color: SERIES_2, f: b => mean(b.trustA) }] },
+  // Reliability of the ROUTING DECISION, which is not the same question as
+  // PDR (did the task succeed) or traffic load (was it routed at all):
+  // "held" is the share of decisions that were never re-steered, "admitted"
+  // the share of requests that found any eligible node at all.
+  { key: 'rel', title: 'Routing reliability', sub: 'decisions that held vs. requests admitted',
+    unit: '%', max: 100, series: [
+      { name: 'held', color: SERIES_1,
+        f: b => b.served ? 100 * (b.served - b.resteered) / b.served : null },
+      { name: 'admitted', color: SERIES_2,
+        f: b => b.offered ? 100 * b.served / b.offered : null }] },
+  // The "network lifetime" analogue -- see evaluation/availability_report.py
+  // for why isolation stands in for battery death and why an energy model was
+  // not invented. The two series must move in OPPOSITE directions when the
+  // system is working, which is precisely why averaging them is forbidden.
+  { key: 'life', title: 'Service availability', sub: 'honest nodes serving vs. attackers contained',
+    unit: '%', max: 100, series: [
+      { name: 'honest serving', color: SERIES_1,
+        f: b => { const m = mean(b.servingH); return m === null ? null : 100 * m; } },
+      { name: 'attackers contained', color: SERIES_2,
+        f: b => { const m = mean(b.containedA); return m === null ? null : 100 * m; } }] },
 ];
 
 // The same metrics, one series PER CLUSTER instead of per quantity.
@@ -2382,6 +2579,7 @@ async function boot() {
   S.pos = layout(S.topo);
   S.topo.nodes.forEach(n => S.nodes[n.id] = n);
   drawTopology();
+  renderNodeStructure();
 
   document.getElementById('vip').textContent = `VIP ${S.topo.vip}`;
   S.weights = S.topo.weights;

@@ -53,7 +53,10 @@ SYBIL_NODE = 'srv3'
 SYBIL_START_S = 12.0          # compressed from the config's 20s for a tighter loop
 DURATION_S = 28.0
 POLL_S = 1.0                  # flow_monitor cadence
-MICRO_S = 0.25               # routing granularity between polls
+MICRO_S = 0.25
+#: Tasks a node serves in parallel. Matches config's agents concurrency and
+#: the value TrustState is told via set_concurrency().
+CONCURRENCY = 4               # routing granularity between polls
 HONESTY_THRESHOLD = 0.4      # |claimed_cpu - observed_load| gate (config: ">40%")
 VIP = '10.0.99.1'
 VIP_PORT = 9000
@@ -61,7 +64,11 @@ VIP_PORT = 9000
 # Honest baseline CPU each server self-reports (spreads routing so it isn't all
 # one node). Kept <= 0.35 so |claimed - observed| never trips the gate while a
 # node completes tasks promptly. srv3's honest baseline is used before it lies.
-HONEST_CPU = {'srv1': 0.15, 'srv2': 0.30, 'srv3': 0.20, 'srv4': 0.25}
+#: Baseline per-node service speed, so the four honest nodes are not
+#: interchangeable. Scales how long each holds a task, which the controller
+#: then sees through observed_load and RTT -- never injected into the node's
+#: self-report, which must come from its own activity (see status_for).
+HONEST_SPEED = {'srv1': 0.85, 'srv2': 1.25, 'srv3': 1.0, 'srv4': 1.1}
 # ONE cookie per node, 0x5A base, covering that node's serving AND drop rules --
 # exactly TrustBalancerApp._cookie_for(). The single shared cookie is the whole
 # mechanism behind quarantine deleting every rule for a node with one
@@ -82,6 +89,21 @@ OPTIMIZER_ARMS = [
     EdgeWeights(0.34, 0.16, 0.50),   # latency-heavy
     EdgeWeights(0.45, 0.45, 0.10),   # trust + load
 ]
+
+
+# The link parameters simulation/topology.py applies, so the recording carries
+# the same shape a live run reports over POST /topology/links. The per-IoT
+# delay is randomised there (an unseeded randint(1, 10)); here it is drawn from
+# the seeded RNG so the recording stays reproducible, and it VARIES per device
+# -- a uniform column would hide the one place this metric has any spread.
+LINK_PARAMS = {
+    'server_link': lambda lk: {'delay_ms': 2.0, 'bw_mbps': 100.0},
+    'core_link': lambda lk: {'delay_ms': 5.0, 'bw_mbps': 1000.0},
+    'iot_link': lambda lk: {
+        'delay_ms': float(1 + (int(lk['a'].replace('iot', '')) * 7) % 10),
+        'bw_mbps': 10.0,
+    },
+}
 
 
 class RecordingBus:
@@ -171,24 +193,111 @@ class Sim:
         self._dropped: Dict[str, int] = {}
         self._recent_routes: List[Tuple[float, str, str]] = []  # (t, node, iot)
         self._quarantined: set = set()
+        self._busy_s: Dict[str, float] = {}
         self._first_sybil_q_t: Optional[float] = None
 
     # -- telemetry the scripted monitor serves -----------------------------
+    def _active_tasks(self, node_id: str) -> int:
+        return sum(1 for node, _due in self._pending.values() if node == node_id)
+
+    def _accrue_busy(self, dt: float) -> None:
+        """Integrate each node's real busy time, the way node_agent.py's
+        _busy_seconds_total does -- cumulative, monotonic, in seconds.
+
+        Measured from this Sim's own pending work, NOT from
+        TrustState._inflight_area. The controller compares a node's self-report
+        against its own occupancy estimate; sourcing the self-report from the
+        controller's estimate would make the honesty check pass by
+        construction, which is a self-flattering measurement rather than a
+        simulated one.
+        """
+        active: Dict[str, int] = {}
+        for node, _due in self._pending.values():
+            active[node] = active.get(node, 0) + 1
+        for node, n in active.items():
+            self._busy_s[node] = self._busy_s.get(node, 0.0) + dt * min(n, CONCURRENCY)
+
     def status_for(self, node_id: str) -> Dict[str, Any]:
         if node_id == SYBIL_NODE and self.clock.t >= SYBIL_START_S:
             # The lie: reports a fixed near-idle CPU regardless of real load, to
             # win the EdgeScore argmax and attract traffic. Because it ignores
             # its actual load, |claimed - observed| grows as it fills up.
             claimed = 0.05
+            # The lie is SELF-CONSISTENT: busy_seconds is derived from the
+            # claimed CPU rather than reported truthfully, exactly as
+            # node_agent.py does when its attack is armed
+            # (busy_seconds = uptime * cpu_load * concurrency). A liar that
+            # reported a truthful duty cycle alongside a false CPU would be
+            # caught by an arithmetic check no real attacker would fail.
+            busy_s = self.clock.t * claimed * CONCURRENCY
+            # ...and it is caught anyway, by the OTHER signal. Its CPU is
+            # genuinely burning, so it answers the controller's poll slowly
+            # "no matter how little task traffic it receives"
+            # (flow_monitor.evaluate_latency_tell) -- which is why this is
+            # independent of occupancy below. That is this project's headline
+            # finding running in the recording: the anomaly gate catches what
+            # the trust score and the honesty check provably cannot.
+            return {
+                'cpu_load': round(claimed, 3),
+                'latency_ms': round(random.uniform(95.0, 145.0), 1),
+                'concurrency': CONCURRENCY,
+                'busy_seconds': round(busy_s, 6),
+            }
         else:
-            # An honest agent reports its ACTUAL CPU, which tracks the load the
-            # controller itself observes. This is the negative feedback that
-            # balances routing (a busy node reports high CPU and stops winning)
-            # and keeps |claimed - observed| small, so honest nodes never trip.
-            observed = self.state.observed_load(node_id)
-            claimed = max(0.0, min(1.0, observed + HONEST_CPU[node_id] * 0.4 + random.uniform(-0.03, 0.03)))
-        latency = random.uniform(8, 45)
-        return {'cpu_load': round(claimed, 3), 'latency_ms': round(latency, 1), 'concurrency': 4}
+            # An honest agent reports its ACTUAL CPU, computed exactly as
+            # node_agent.py does: min(1.0, active_tasks / concurrency).
+            #
+            # It matters that this and busy_seconds below come from the SAME
+            # activity, because that is what makes an honest node honest: the
+            # controller's H term compares the claim against a duty cycle
+            # derived from busy_seconds, so a claim synthesised from anything
+            # else disagrees with it and the node is quarantined for telling
+            # the truth about a different quantity. A synthetic claim here
+            # (observed_load plus a per-node offset) did exactly that -- srv4
+            # quarantined at t=8.05 on |claimed 0.04 - expected duty 0.50|
+            # while behaving perfectly.
+            active = self._active_tasks(node_id)
+            claimed = min(1.0, active / CONCURRENCY)
+            busy_s = self._busy_s.get(node_id, 0.0)
+
+        # The controller-measured RTT, which tracks the node's REAL occupancy
+        # regardless of what it claims. This is the load-independent Sybil tell
+        # (flow_monitor.evaluate_latency_tell): a node claiming to be idle
+        # should answer its poll about as fast as the rest of the fleet, and
+        # one that is actually saturated cannot -- the RTT is the controller's
+        # own measurement, so the node cannot understate it.
+        #
+        # Previously every node, liar included, drew an unconditional
+        # random.uniform(8, 45), so the tell could never fire and the Sybil was
+        # caught only by the honesty check's fallback path. Once the fallback
+        # was removed (busy_seconds above) that left it uncaught entirely --
+        # a self-consistent liar defeats the duty-cycle comparison, which is
+        # exactly why this project has a second, independent signal.
+        # An honest node's RTT stays near the fleet baseline: it answers
+        # promptly and only slows in proportion to work it is actually doing.
+        # Keeping the spread tight matters -- the tell fires on a multiple of
+        # the fleet MEDIAN, so noisy honest nodes would raise the bar the liar
+        # has to clear and mask it.
+        occupancy = min(1.0, self._active_tasks(node_id) / CONCURRENCY)
+        latency = random.uniform(8.0, 16.0) * (1.0 + 0.8 * occupancy)
+        return {
+            'cpu_load': round(claimed, 3), 'latency_ms': round(latency, 1),
+            'concurrency': CONCURRENCY,
+            # Cumulative in-handler seconds. Every real node_agent sends this
+            # (node_agent.py's /status), and the controller needs it to run
+            # TrustState.expected_duty_cycle() -- the service-time estimator
+            # the H term prefers. Without it the controller silently falls back
+            # to comparing the claim against observed_load, which is residence
+            # time rather than service time: a node that inherits a re-steered
+            # backlog then shows a large |claimed - observed| purely because
+            # the work was moved onto it, and gets quarantined for someone
+            # else's load. That fallback is the documented cause of this
+            # project's false quarantines (memory/live-run-7-honesty-fallback),
+            # and omitting the field here drove the recording down it on every
+            # poll -- a fourth defect of the same shape as panel_fix.md 6.3's
+            # three: a plausible-looking wrong result, never an error.
+            'busy_seconds': round(busy_s, 6),
+        }
 
     # -- quarantine callback (mirrors trust_balancer._on_trust_collapse) ----
     def _on_quarantine(self, node_id: str) -> None:
@@ -207,6 +316,44 @@ class Sim:
         self.bus.publish(
             'flow_delete', node=node_id, cookie=VIP_COOKIE[node_id], dpids=[idx + 1],
         )
+        self._redispatch_after_quarantine(node_id)
+
+    # -- re-steer (mirrors trust_balancer._redispatch_after_quarantine) -----
+    def _redispatch_after_quarantine(self, node_id: str) -> None:
+        """Move the quarantined node's in-flight clients to the next-best
+        eligible node and publish one 'reroute' per moved client.
+
+        Uses the REAL TrustState.reassign_dispatches(), same as the controller,
+        so the dispatch registry stays consistent with what the trust rail sees
+        -- this generator's whole contract is that only I/O is scripted. Without
+        it the recording had no 'reroute' events at all, and the routing
+        reliability chart's "decisions that held" series read a flat 100% on a
+        run where a node was quarantined mid-flight. That is exactly the shape
+        of the three fidelity defects in panel_fix.md 6.3: a plausible-looking
+        wrong chart rather than an error.
+
+        All moved clients go to a single re-selected target, and no eligible
+        target means their retry is denied -- both faithful to the controller.
+        """
+        target = self.state.choose_edge_node()
+        if target is None:
+            return
+        moved = self.state.reassign_dispatches(node_id, target)
+        if not moved:
+            return
+        for client_ip, client_port in moved:
+            # Keep this Sim's own pending map in step with the registry, or the
+            # moved tasks would never complete and observed_load on the target
+            # would climb off a backlog that has no work behind it.
+            key = (client_ip, client_port)
+            if key in self._pending:
+                _old, due_t = self._pending[key]
+                self._pending[key] = (target, due_t)
+            self.bus.publish(
+                'reroute', client_ip=client_ip, client_port=client_port,
+                from_node=node_id, to_node=target,
+                resteer_ms=round(random.uniform(8.0, 20.0), 2),
+            )
 
     # -- routing (mirrors trust_balancer's PacketIn dispatch path) ----------
     def _route_one(self) -> None:
@@ -232,7 +379,7 @@ class Sim:
         if chosen == SYBIL_NODE and self.clock.t >= SYBIL_START_S:
             service = random.uniform(1.8, 3.2)
         else:
-            service = random.uniform(0.3, 0.7)
+            service = random.uniform(0.3, 0.7) * HONEST_SPEED.get(chosen, 1.0)
         self._pending[(client_ip, port)] = (chosen, self.clock.t + service)
 
     def _complete_due(self) -> None:
@@ -241,9 +388,23 @@ class Sim:
         # A quarantined (overloaded) node keeps its backlog of unfinished tasks
         # in-flight -- observed_load stays high, so it isn't spuriously re-admitted.
         for key in due:
-            node, _ = self._pending.pop(key)
+            self._pending.pop(key)
             resolved = self.state.complete_dispatch(*key)
             if resolved is None:
+                continue
+            # The registry is the authority on which node owns this flow, not
+            # this Sim's own pending map -- a re-steer moves the former and the
+            # latter only follows.
+            node = resolved.node_id
+            # Never charge a node for a task it inherited from a re-steer.
+            # Quarantine's drop rules kill the in-flight connection, so a
+            # re-steered entry can only collect the corpse of a task the
+            # receiving node never saw; charging it is the defect
+            # CompletedDispatch.chargeable exists to prevent (panel_fix.md
+            # 6.9 / memory resteer-attribution), and it is self-amplifying --
+            # the inherited load re-trips the honesty check on each survivor
+            # the load is moved to, cascading the quarantine across the fleet.
+            if not resolved.chargeable:
                 continue
             # Sybil node still SERVES successfully -- trust stays high; only the
             # anomaly gate catches it. That is design finding #1, live.
@@ -316,7 +477,7 @@ class Sim:
                 })
             self.bus.publish('flow_stats', dpid=dpid, rules=rules)
 
-    def _topology(self) -> Dict[str, Any]:
+    def _topology(self, with_link_params: bool = False) -> Dict[str, Any]:
         nodes: List[Dict[str, Any]] = [
             {'id': 's0', 'kind': 'core_switch', 'dpid': 1, 'label': 's0 (core)'}]
         links: List[Dict[str, Any]] = []
@@ -340,6 +501,9 @@ class Sim:
             sw = (j - 1) % NUM_EDGE + 1
             nodes.append({'id': f'iot{j}', 'kind': 'iot', 'ip': f'10.0.0.{j}', 'label': f'iot{j}'})
             links.append({'a': f'iot{j}', 'b': f's{sw}', 'kind': 'iot_link'})
+        if with_link_params:
+            for lk in links:
+                lk.update(LINK_PARAMS[lk['kind']](lk))
         return {
             'nodes': nodes, 'links': links, 'vip': f'{VIP}:{VIP_PORT}',
             'weights': {'w1_trust': 0.50, 'w2_cpu': 0.30, 'w3_latency': 0.20},
@@ -348,10 +512,19 @@ class Sim:
         }
 
     def run(self) -> List[Dict[str, Any]]:
+        # 'topology' first and WITHOUT link parameters, exactly as a live run
+        # emits it: the controller publishes it from config in start(), before
+        # Mininet exists, so it cannot know what the harness will build.
         self.bus.publish('topology', graph=self._topology())
         for dpid in range(1, NUM_EDGE + 2):
             self.clock.t += 0.05
             self.bus.publish('switch_up', dpid=dpid)
+        # Then the harness reporting what it actually wired up
+        # (simulation/topology.py -> POST /topology/links ->
+        # trust_balancer.record_link_params). Arrives after the switches come
+        # up in a live run, for the same reason.
+        self.clock.t += 0.05
+        self.bus.publish('topology_links', graph=self._topology(with_link_params=True))
 
         last_poll = -1.0
         while self.clock.t <= DURATION_S:
@@ -369,6 +542,7 @@ class Sim:
             # a clean build-up -> flood -> catch -> re-steer arc.
             if self._first_sybil_q_t is not None and self.clock.t - self._first_sybil_q_t >= 5.0:
                 break
+            self._accrue_busy(MICRO_S)
             self.clock.t += MICRO_S
         return self.bus.events
 

@@ -181,7 +181,7 @@ tasks* at high load, and either end alone tells only half the story.
 
 ## Analysing a finished run
 
-All four read the same `data/events.jsonl` a live run writes, and none of them
+All five read the same `data/events.jsonl` a live run writes, and none of them
 needs the controller stack installed:
 
 ```bash
@@ -189,7 +189,21 @@ python3 -m evaluation.nfr_report          data/events.jsonl   # NFR pass/fail, w
 python3 -m evaluation.interval_report     data/events.jsonl   # every metric vs time (10s buckets)
 python3 -m evaluation.attack_report       data/events.jsonl   # attack classification + confusion matrix
 python3 -m evaluation.availability_report data/events.jsonl   # service availability / "network lifetime"
+python3 -m evaluation.topology_metrics    data/events.jsonl   # node degree + distance to the sink
 ```
+
+`interval_report` prints two tables: the traffic metrics (throughput, PDR,
+delay, Jain fairness, traffic load, packet drop) and then routing reliability,
+trust and service availability split honest-vs-attacker. The dashboard's
+"Metrics over time" panel draws the same definitions live, and
+`tests/test_dashboard_charts.py` pins the two implementations against each
+other so they cannot drift.
+
+`topology_metrics` reports the two *structural* metrics — node degree and
+distance to the sink (`s0`, the core switch every VIP task transits). Its
+`delay` column is the sum of **configured** link delays reported by the harness
+over `POST /topology/links`, not a measured RTT; a recording made without that
+report shows hop counts and a dash, never a zero.
 
 `attack_report` and `availability_report` both score against the ground truth
 carried on the run's `topology` event, so they need a recording that includes

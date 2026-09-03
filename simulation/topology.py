@@ -4,6 +4,7 @@ All Mininet imports are conditional so that unit tests and standalone
 simulation can run without Mininet installed.
 """
 
+import json
 import logging
 import random
 import sys
@@ -76,6 +77,23 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
         edge_switches: List[Any] = []
         self.edge_servers: List[Any] = []
         self.iot_to_edge: Dict[str, int] = {}
+        # The link parameters this run actually applied, recorded at the moment
+        # addLink() applies them. The per-IoT delay below is drawn from an
+        # UNSEEDED RNG, so this list is the only record of what was really
+        # built: the controller derives its own graph from config
+        # (trust_balancer.topology_graph()) and cannot know the random value.
+        # Reported to the controller by _publish_link_table() after net.start()
+        # so "distance to sink" is a measured-input number rather than a guess.
+        self.link_params: List[Dict[str, Any]] = []
+
+        def link(a: Any, b: Any, delay_ms: int, bw_mbps: int) -> None:
+            # delay is formatted exactly as the literals it replaced ('2ms',
+            # '5ms', '<n>ms') so tc sees a byte-identical argument.
+            self.addLink(a, b, cls=TCLink, delay=f'{delay_ms}ms', bw=bw_mbps)
+            self.link_params.append({
+                'a': str(a), 'b': str(b),
+                'delay_ms': float(delay_ms), 'bw_mbps': float(bw_mbps),
+            })
 
         # Core switch. dpid=1 (not the Mininet default of 0).
         core = self.addSwitch('s0', cls=OVSSwitch, protocols='OpenFlow13', dpid='%016x' % 1)
@@ -86,8 +104,8 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
                 f's{i}', cls=OVSSwitch, protocols='OpenFlow13', dpid='%016x' % (i + 1),
             )
             srv = self.addHost(f'srv{i}', ip=f'{srv_ip(i)}/8', mac=srv_mac(i))
-            self.addLink(sw, srv, cls=TCLink, delay='2ms', bw=100)
-            self.addLink(core, sw, cls=TCLink, delay='5ms', bw=1000)
+            link(sw, srv, delay_ms=2, bw_mbps=100)
+            link(core, sw, delay_ms=5, bw_mbps=1000)
             edge_switches.append(sw)
             self.edge_servers.append(srv)
 
@@ -97,8 +115,7 @@ class ZeroTrustTopo(Topo):  # type: ignore[misc]
             is_mal = j > (n_iot - n_mal)
             h = self.addHost(f'iot{j}', ip=f'{iot_ip(j)}/8', mac=iot_mac(j))
             sw_idx = (j - 1) % n_edge
-            delay = f'{random.randint(1, 10)}ms'
-            self.addLink(h, edge_switches[sw_idx], cls=TCLink, delay=delay, bw=10)
+            link(h, edge_switches[sw_idx], delay_ms=random.randint(1, 10), bw_mbps=10)
             self.iot_to_edge[f'iot{j}'] = sw_idx + 1
             if is_mal:
                 self.malicious_ids.append(f'iot{j}')
@@ -325,6 +342,50 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     )
 
 
+def _publish_link_table(cfg: Dict[str, Any], topo: Any) -> None:
+    """Report the link parameters this run actually built to the controller.
+
+    The controller builds its own node/link graph from config
+    (trust_balancer.topology_graph()) because the dashboard has to draw the
+    topology before any switch has connected. That graph therefore knows the
+    SHAPE of the network but none of its physical parameters -- and the per-IoT
+    link delay is drawn from an unseeded random.randint(1, 10) in
+    ZeroTrustTopo.build(), so it cannot be re-derived from config at all. Sent
+    here rather than re-derived there, so "distance to sink" on the dashboard
+    is the delay that was applied and not a plausible-looking guess.
+
+    Sending it also lets the controller diff the reported link set against its
+    own config-derived one. topology_graph()'s docstring already warns that it
+    hand-duplicates build()'s `sw_idx = (j - 1) % n_edge` attachment rule and
+    must be kept in sync manually; this turns that silent drift into a logged
+    one.
+
+    Best-effort, exactly like _pause_controller_monitor(): a controller that is
+    not up yet, or predates the endpoint, just means the dashboard falls back
+    to hop counts with no delays. Never fatal to the run.
+    """
+    links = list(getattr(topo, 'link_params', []) or [])
+    if not links:
+        return
+    ctrl = cfg.get('controller') or {}
+    host, port = ctrl.get('api_host'), ctrl.get('api_port')
+    if not host or not port:
+        return
+    try:
+        body = json.dumps({'links': links}).encode()
+        req = urllib.request.Request(
+            f'http://{host}:{port}/topology/links', data=body,
+            headers={'Content-Type': 'application/json'}, method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=2.0):
+            logger.info("Reported %d link parameters to the controller", len(links))
+    except Exception as exc:  # noqa: BLE001 -- never fatal to the run
+        logger.warning(
+            "Could not report the link table (%s); the dashboard will show "
+            "hop counts without link delays", exc,
+        )
+
+
 def _pause_controller_monitor(cfg: Dict[str, Any]) -> None:
     """Ask the controller to stop polling before we kill the agents.
 
@@ -420,6 +481,7 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
 
     if trust_mode:
         _add_cx_node(net, net.get('s0'))
+        _publish_link_table(cfg, topo)
         # Agents BEFORE pingAll, not after. The controller starts polling every
         # node's /status the moment it has datapaths, and scores an unanswered
         # poll as anomalous -- correctly, since an unreachable node is exactly

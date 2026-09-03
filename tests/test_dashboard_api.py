@@ -93,6 +93,7 @@ class _FakeApp:
 
     def __init__(self):
         self.bus = EventBus(record_path=None)
+        self.link_params = {}
         self._flows = [{
             'dpid': 2, 'table': 0, 'priority': 300, 'cookie': 0x5A00000000000001,
             'node': 'srv1', 'match': 'ipv4_dst=10.0.99.1,tcp_dst=9000',
@@ -106,6 +107,24 @@ class _FakeApp:
 
     def flow_table(self):
         return self._flows
+
+    def record_link_params(self, links):
+        # Mirrors TrustBalancerApp.record_link_params' contract: store the
+        # usable entries, skip the malformed ones, return how many were kept.
+        kept = 0
+        for lk in links:
+            if not isinstance(lk, dict):
+                continue
+            a, b = lk.get('a'), lk.get('b')
+            if not isinstance(a, str) or not isinstance(b, str) or a == b:
+                continue
+            if not any(isinstance(lk.get(k), (int, float))
+                       and not isinstance(lk.get(k), bool)
+                       for k in ('delay_ms', 'bw_mbps')):
+                continue
+            self.link_params[frozenset((a, b))] = lk
+            kept += 1
+        return kept
 
     def optimizer_status(self):
         return {
@@ -238,3 +257,145 @@ def test_load_events_survives_a_torn_final_line(tmp_path):
     )
     events = load_events(path)
     assert [e['type'] for e in events] == ['route']
+
+
+# --------------------------------------------------------------------------- #
+# POST /topology/links -- the harness reporting what it actually built         #
+# --------------------------------------------------------------------------- #
+def _post(base, path, payload):
+    req = urllib.request.Request(
+        base + path, data=json.dumps(payload).encode(),
+        headers={'Content-Type': 'application/json'}, method='POST',
+    )
+    with urllib.request.urlopen(req, timeout=3) as r:
+        return r.status, json.loads(r.read())
+
+
+def test_topology_links_accepts_the_harness_report(server):
+    _, app, base = server
+    status, body = _post(base, '/topology/links', {'links': [
+        {'a': 's0', 'b': 's1', 'delay_ms': 5.0, 'bw_mbps': 1000.0},
+        {'a': 'iot1', 'b': 's1', 'delay_ms': 7.0, 'bw_mbps': 10.0},
+    ]})
+    assert status == 200
+    assert body['accepted'] == 2
+    assert body['received'] == 2
+    assert len(app.link_params) == 2
+
+
+def test_topology_links_is_keyed_on_the_unordered_pair(server):
+    """The harness reports a link in whatever order it called addLink();
+    topology_graph() writes it in its own order. Keying on the ordered pair
+    would silently fail to merge half the table."""
+    _, app, base = server
+    _post(base, '/topology/links', {'links': [
+        {'a': 's1', 'b': 'srv1', 'delay_ms': 2.0, 'bw_mbps': 100.0},
+    ]})
+    assert frozenset(('srv1', 's1')) in app.link_params
+
+
+def test_topology_links_skips_malformed_entries_without_failing(server):
+    """The harness sends this best-effort during startup; one bad row must not
+    be able to abort a run over a cosmetic annotation."""
+    _, app, base = server
+    status, body = _post(base, '/topology/links', {'links': [
+        {'a': 's0', 'b': 's1', 'delay_ms': 5.0},   # good
+        {'a': 's0'},                               # no b
+        {'a': 's0', 'b': 's0', 'delay_ms': 1.0},   # self-loop
+        {'a': 's0', 'b': 's2'},                    # no parameters at all
+        'not-a-dict',
+        {'a': 1, 'b': 2, 'delay_ms': 1.0},         # non-string endpoints
+    ]})
+    assert status == 200
+    assert body['accepted'] == 1
+    assert body['received'] == 6
+
+
+def test_topology_links_rejects_a_non_list_body(server):
+    _, _, base = server
+    req = urllib.request.Request(
+        base + '/topology/links', data=b'{"links": "s0-s1"}',
+        headers={'Content-Type': 'application/json'}, method='POST',
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=3)
+    assert exc.value.code == 400
+
+
+def test_topology_links_rejects_malformed_json(server):
+    _, _, base = server
+    req = urllib.request.Request(
+        base + '/topology/links', data=b'{not json',
+        headers={'Content-Type': 'application/json'}, method='POST',
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=3)
+    assert exc.value.code == 400
+
+
+def test_the_real_controller_merges_link_params_into_its_graph(cfg):
+    """End to end on the real TrustBalancerApp.topology_graph(), not the fake:
+    a reported link must come back out of the graph carrying its parameters,
+    and an unreported one must carry none at all -- not a zero."""
+    from controller.trust_balancer import TrustBalancerApp
+
+    class _Bare:
+        # Borrow the real methods so this exercises the shipping code, not a
+        # copy of it. Everything else the two touch is plain state.
+        topology_graph = TrustBalancerApp.topology_graph
+        record_link_params = TrustBalancerApp.record_link_params
+        _warn_on_link_drift = TrustBalancerApp._warn_on_link_drift
+        dashboard_enabled = False
+
+    bare = _Bare()
+    bare.cfg = cfg
+    bare._link_params = {}
+    bare.vip_ip, bare.vip_port = '10.0.99.1', 9000
+
+    class _W:
+        w1_trust, w2_cpu, w3_latency = 0.5, 0.3, 0.2
+
+    class _S:
+        edge_weights = _W()
+        isolation_threshold, anomaly_gate = 0.3, 0.5
+        selection_strategy, d_choices, epsilon = 'p2c', 2, 0.05
+
+    bare.state = _S()
+
+    accepted = bare.record_link_params([
+        {'a': 's0', 'b': 's1', 'delay_ms': 5.0, 'bw_mbps': 1000.0},
+    ])
+    assert accepted == 1
+
+    graph = bare.topology_graph()
+    by_pair = {frozenset((lk['a'], lk['b'])): lk for lk in graph['links']}
+    assert by_pair[frozenset(('s0', 's1'))]['delay_ms'] == 5.0
+    # An unreported link carries no delay_ms key at all: "not measured" and
+    # "zero delay" are different claims.
+    assert 'delay_ms' not in by_pair[frozenset(('s1', 'srv1'))]
+
+
+def test_replay_prefers_the_enriched_topology_links_graph():
+    """GET /api/topology must return the same enriched graph on replay as it
+    does live, so the Node structure panel is populated the moment the page
+    loads rather than staying blank until the recorded event streams past."""
+    events = [
+        {'type': 'topology', 'ts': 1.0, 'seq': 1, 'graph': {
+            'nodes': [{'id': 's0', 'kind': 'core_switch'}],
+            'links': [{'a': 's0', 'b': 's1'}],
+            'vip': '10.0.99.1:9000', 'weights': {}, 'thresholds': {}}},
+        {'type': 'topology_links', 'ts': 2.0, 'seq': 2, 'graph': {
+            'nodes': [{'id': 's0', 'kind': 'core_switch'}],
+            'links': [{'a': 's0', 'b': 's1', 'delay_ms': 5.0, 'bw_mbps': 1000.0}],
+            'vip': '10.0.99.1:9000', 'weights': {}, 'thresholds': {}}},
+    ]
+    graph = ReplayApp(events).topology_graph()
+    assert graph['links'][0]['delay_ms'] == 5.0
+
+
+def test_replay_still_works_on_a_recording_with_no_link_report():
+    # Older recordings, and live runs where the harness POST never landed.
+    events = [{'type': 'topology', 'ts': 1.0, 'seq': 1, 'graph': {
+        'nodes': [{'id': 's0', 'kind': 'core_switch'}], 'links': [],
+        'vip': '10.0.99.1:9000', 'weights': {}, 'thresholds': {}}}]
+    assert ReplayApp(events).topology_graph()['nodes'][0]['id'] == 's0'

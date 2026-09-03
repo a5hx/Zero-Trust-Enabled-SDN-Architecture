@@ -37,8 +37,8 @@ OpenFlow rules, not simulated.
   scorer both call (`controller/attack_classifier.py`,
   `controller/flood_detector.py`).
 - **Live dashboard** — topology, packet animation from real `OFPFlowStats`
-  counters, flow rules, trust, time-series metrics, and a trust-ledger ribbon
-  the browser re-verifies itself, over server-sent events (`dashboard/`).
+  counters, flow rules, trust, nine metric-vs-time charts and per-node
+  structural metrics, over server-sent events (`dashboard/`).
 - **Blockchain ledger** — SHA-256 + Merkle-tree trust record store
   (`blockchain/`). Tamper-evident: an edit is localised to the seam, not just
   reported as "chain invalid".
@@ -88,10 +88,9 @@ blockchain/              merkle.py, block.py, ledger.py, commit_backend.py,
                          raft.py, raft_transport.py, raft_replica.py, raft_demo.py
 security/                authenticator.py (PRESENT-80 + source-IP pin), present_cipher.py
 simulation/              topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
-evaluation/              baseline.py, stats.py, metrics.py, plots.py,
-                         nfr_report.py, interval_report.py, attack_report.py,
-                         availability_report.py, scalability_sweep.py,
-                         starvation_sweep.py, scale_compare.py
+evaluation/              metrics.py, plots.py, baseline.py, stats.py, starvation_sweep.py,
+                         interval_report.py, availability_report.py, attack_report.py,
+                         nfr_report.py, topology_metrics.py
 dashboard/               index.html, replay.py, generate_demo_recording.py
 docs/paper/              the research paper (.docx) — built by tools/paper/
 tools/paper/             paper build: figures, template, docx renderer (see its README)
