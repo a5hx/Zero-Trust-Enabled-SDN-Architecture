@@ -82,7 +82,23 @@ class EventBus:
             # Line-buffered: a run that is killed with Ctrl-C (the normal way
             # this controller exits) still leaves a complete, replayable file
             # rather than losing the tail to an unflushed buffer.
-            self._record_file = open(path, 'w', buffering=1)
+            try:
+                self._record_file = open(path, 'w', buffering=1)
+            except PermissionError as exc:
+                # Almost always leftover ownership rather than a real
+                # permissions problem: live mode runs under sudo for Mininet
+                # (see run_demo.run_mininet), so its recording lands owned by
+                # root, and the next controller started WITHOUT sudo cannot
+                # truncate it. Raise rather than record nothing -- the NFR
+                # report, every evaluation tool and replay all read this file,
+                # so a run that silently keeps no evidence is worse than one
+                # that refuses to start -- but say which file and how to fix it.
+                raise PermissionError(
+                    f"cannot open the event recording {path} for writing: "
+                    f"{exc.strerror}. A previous live run under sudo probably "
+                    f"left it owned by root -- `sudo chown $USER {path}` (or "
+                    "move it aside to keep it) and start the controller again."
+                ) from exc
             logger.info("EventBus recording to %s", path)
 
     def publish(self, event_type: str, **fields: Any) -> Dict[str, Any]:

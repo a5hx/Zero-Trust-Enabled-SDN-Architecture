@@ -2,8 +2,9 @@
 
     python3 -m dashboard.replay data/events.jsonl
 
-Serves the same four endpoints the live controller does (/, /api/topology,
-/api/events, /api/flows), but sourced from a recorded events.jsonl instead of a
+Serves the same dashboard endpoints the live controller does (/, /analysis,
+/api/topology, /api/events, /api/flows, /api/ports, /api/optimizer,
+/api/scale_compare), but sourced from a recorded events.jsonl instead of a
 running network. The dashboard cannot tell the difference and needs no changes.
 
 Two reasons this exists:
@@ -42,9 +43,12 @@ logger = logging.getLogger(__name__)
 class ReplayApp:
     """Duck-typed stand-in for TrustBalancerApp.
 
-    northbound_api.py only ever calls `app.bus`, `app.topology_graph()` and
-    `app.flow_table()` on the dashboard routes, so implementing exactly those
-    three is enough to serve the whole UI -- no os-ken, no OpenFlow, no root.
+    Every attribute northbound_api.py reaches for on `app` must exist here or
+    that route dies with an AttributeError inside the handler thread -- which
+    the browser sees as a dropped connection, not as a 500, so the panel just
+    stays empty with nothing in the log to point at. Adding an `/api/*` route
+    to northbound_api.py therefore means adding its stand-in here, and to
+    `_FakeApp` in tests/test_dashboard_api.py.
     """
 
     def __init__(self, events: List[Dict[str, Any]], speed: float = 1.0) -> None:
@@ -52,6 +56,10 @@ class ReplayApp:
         self.speed = speed
         self.bus = EventBus(record_path=None)   # replaying, don't re-record
         self._flows: List[Dict[str, Any]] = []
+        # (dpid, port) -> latest entry, exactly the keying and ordering
+        # controller/port_stats.py's snapshot() uses, so GET /api/ports returns
+        # the same shape live and on replay.
+        self._ports: Dict[Any, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._topology = self._recover_topology(events)
 
@@ -62,6 +70,30 @@ class ReplayApp:
     def flow_table(self) -> List[Dict[str, Any]]:
         with self._lock:
             return list(self._flows)
+
+    def port_table(self) -> List[Dict[str, Any]]:
+        """Per-port link load, accumulated from the recording's `port_stats`
+        events the same way `flow_table` accumulates `flow_stats`.
+
+        Empty until the first such event streams past -- a recording carries
+        one poll cycle per interval, not a starting snapshot, so an early
+        request legitimately has nothing to report.
+        """
+        with self._lock:
+            return sorted(self._ports.values(), key=lambda p: (p['dpid'], p['port']))
+
+    def record_link_params(self, links: List[Dict[str, Any]]) -> int:
+        """POST /topology/links, refused rather than applied.
+
+        The harness reports the links it actually built; on replay the graph
+        comes from the recording, which already carries whatever the harness
+        reported during the run it came from. Merging a live POST into it would
+        let a caller edit a finished recording's topology, so this accepts
+        nothing and says so in the response's `accepted: 0`.
+        """
+        logger.info("ignoring %d reported link(s): replay serves the recording's "
+                    "own topology", len(links) if isinstance(links, list) else 0)
+        return 0
 
     def optimizer_status(self) -> Dict[str, Any]:
         """Replay has no live optimizer to poll: report disabled and let the
@@ -146,6 +178,10 @@ class ReplayApp:
                     self._flows = [
                         f for f in self._flows if f['dpid'] != ev['dpid']
                     ] + ev['rules']
+            elif ev.get('type') == 'port_stats':
+                with self._lock:
+                    for entry in ev.get('ports') or []:
+                        self._ports[(entry['dpid'], entry['port'])] = entry
             elif ev.get('type') == 'flow_delete':
                 with self._lock:
                     self._flows = [f for f in self._flows if f.get('node') != ev['node']]

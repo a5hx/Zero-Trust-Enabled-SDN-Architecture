@@ -77,6 +77,37 @@ def _ensure_dirs() -> None:
     Path('logs').mkdir(exist_ok=True)
 
 
+def _give_back_to_invoking_user(*paths: Path) -> None:
+    """Hand files this run created back to the user who typed `sudo`.
+
+    Live mode needs root for Mininet, so everything downstream of it -- the
+    recording, the NFR report, every agent log -- lands owned by root. The next
+    command is almost never run under sudo (the controller alone doesn't need
+    it, nor does any evaluation tool), and it then dies on the recording it
+    cannot truncate:
+
+        PermissionError: [Errno 13] Permission denied: 'data/events.jsonl'
+
+    which reads as a broken controller rather than as leftover ownership.
+    Chowning back at the point of creation keeps root out of the working tree.
+
+    No-op when not under sudo, and best-effort: failing to chown an output is
+    never a reason to fail the run that produced it.
+    """
+    uid, gid = os.environ.get('SUDO_UID'), os.environ.get('SUDO_GID')
+    if not uid or not gid:
+        return
+    for path in paths:
+        try:
+            if path.is_dir():
+                for child in path.rglob('*'):
+                    os.chown(child, int(uid), int(gid))
+            if path.exists():
+                os.chown(path, int(uid), int(gid))
+        except OSError as exc:
+            logger.debug("could not hand %s back to uid %s: %s", path, uid, exc)
+
+
 def run_standalone(cfg: Dict[str, Any], duration: int, attack_mode: str) -> None:
     """Run the standalone simulation (no Mininet required).
 
@@ -478,6 +509,9 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
             controller_proc.kill()
             controller_proc.wait()
         controller_log.close()
+        # Mininet forced this whole run to be root; the artefacts it leaves
+        # behind must not be, or the next non-sudo command trips over them.
+        _give_back_to_invoking_user(Path(events_path), Path('logs'))
 
     logger.info("Live run complete. Computing the NFR report from %s...", events_path)
     if not Path(events_path).exists():
@@ -493,6 +527,7 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
     print('\n' + text)
     report_path = 'data/nfr_report.txt'
     Path(report_path).write_text(text)
+    _give_back_to_invoking_user(Path(report_path))
     print(f"NFR report saved to {report_path}")
 
 

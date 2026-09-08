@@ -111,7 +111,7 @@ import random
 import statistics
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from contracts.thresholds import DEFAULT_ANOMALY_GATE, DEFAULT_ISOLATION_THRESHOLD
 from contracts.trust_update import TrustUpdate
@@ -632,22 +632,50 @@ def run_experiment(
     return results
 
 
+#: The per-run result schema, in column order. One definition: `write_csv`
+#: writes it and `as_rows` returns it, so a consumer that reads the CSV and a
+#: consumer that gets the rows in-process cannot see different fields.
+CSV_FIELDS = (
+    'strategy', 'scenario', 'seed', 'offered', 'completed', 'failed',
+    'slo_violation_rate', 'failure_rate', 'malicious_share',
+    'mean_latency_ms', 'p95_latency_ms', 'gini', 'time_to_isolate_s',
+)
+
+
+def as_rows(results: Sequence[RunResult]) -> List[Dict[str, Any]]:
+    """The CSV's rows without the CSV -- same fields, same rounding.
+
+    For a caller that wants the sweep in memory (evaluation/build_analysis_page
+    --run-sweeps) rather than through a file. Rounded here, not at read time,
+    so an in-process row and a row parsed back out of the CSV carry the same
+    value to the same decimal place.
+
+    `time_to_isolate_s` stays '' rather than 0.0 when a run never isolated
+    anything: no isolation and isolation-at-zero-seconds are different facts,
+    and `evaluation/stats.py` skips the empty string on purpose.
+    """
+    return [
+        {
+            'strategy': r.strategy, 'scenario': r.scenario, 'seed': r.seed,
+            'offered': r.offered, 'completed': r.completed, 'failed': r.failed,
+            'slo_violation_rate': round(r.slo_violation_rate, 6),
+            'failure_rate': round(r.failure_rate, 6),
+            'malicious_share': round(r.malicious_share, 6),
+            'mean_latency_ms': round(r.mean_latency_ms, 3),
+            'p95_latency_ms': round(r.p95_latency_ms, 3),
+            'gini': round(r.gini, 4),
+            'time_to_isolate_s': ('' if r.time_to_isolate_s is None
+                                  else round(r.time_to_isolate_s, 3)),
+        }
+        for r in results
+    ]
+
+
 def write_csv(results: Sequence[RunResult], path: str) -> None:
     with open(path, 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow([
-            'strategy', 'scenario', 'seed', 'offered', 'completed', 'failed',
-            'slo_violation_rate', 'failure_rate', 'malicious_share',
-            'mean_latency_ms', 'p95_latency_ms', 'gini', 'time_to_isolate_s',
-        ])
-        for r in results:
-            w.writerow([
-                r.strategy, r.scenario, r.seed, r.offered, r.completed, r.failed,
-                round(r.slo_violation_rate, 6), round(r.failure_rate, 6),
-                round(r.malicious_share, 6), round(r.mean_latency_ms, 3),
-                round(r.p95_latency_ms, 3), round(r.gini, 4),
-                '' if r.time_to_isolate_s is None else round(r.time_to_isolate_s, 3),
-            ])
+        w = csv.DictWriter(f, fieldnames=list(CSV_FIELDS))
+        w.writeheader()
+        w.writerows(as_rows(results))
 
 
 def summarise(results: Sequence[RunResult], metric: str = 'slo_violation_rate') -> str:

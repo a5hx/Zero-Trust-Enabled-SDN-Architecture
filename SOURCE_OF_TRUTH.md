@@ -187,7 +187,7 @@ A confusion matrix on the then-current event stream could not have been honest:
 3. **Signals were free-text prose.** `anomaly` now carries a parallel
    machine-readable `signals` dict. `reasons` is untouched.
 
-### 3.4 Four analysis tools
+### 3.4 Five analysis tools, and the page that arranges them
 
 All read the same `data/events.jsonl` a live run writes; none needs the
 controller stack installed.
@@ -198,6 +198,19 @@ controller stack installed.
 | `evaluation/interval_report.py` | Every metric vs time, 10 s buckets |
 | `evaluation/attack_report.py` | Confusion matrix, per-class P/R/F1, detection latency |
 | `evaluation/availability_report.py` | Service availability / "network lifetime" |
+| `evaluation/topology_metrics.py` | Node degree and distance to the sink (structure, not traffic) |
+
+`evaluation/build_analysis_page.py` renders all five, plus the offline
+comparison sweeps, as one self-contained page served at `/analysis` (see
+SETUP.md "The analysis page"). It **imports and calls** the tools above rather
+than re-deriving their figures for presentation, and
+`tests/test_analysis_page.py` recomputes each headline number with the source
+module and looks for it in the rendered HTML -- the check that stops a summary
+page from quietly disagreeing with the tool it summarises, which is a defect
+this project has already paid for twice (panel_fix.md §6.3, and the demo
+recording's hand-written fields). Every block whose input is missing renders an
+empty state naming the command that fills it, never a zero: "not generated" and
+"measured zero" are different claims.
 
 **`attack_report.py` replays rather than tallies.** Live `classification` events
 record label *changes* (rising edge only), so counting them would weight a

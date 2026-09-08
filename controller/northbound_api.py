@@ -68,6 +68,13 @@ logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent.parent / 'dashboard'
 
+# Payload for the scaling-comparison panel, written by
+# evaluation/scale_compare.py. Not produced by a run and not live -- see
+# _serve_scale_compare for why it is served from here anyway.
+_SCALE_COMPARE_FILE = (
+    Path(__file__).resolve().parent.parent / 'data' / 'scale_compare.json'
+)
+
 #: URL path -> filename under _DASHBOARD_DIR. An explicit whitelist of literal
 #: filenames, never a path joined from the request: this handler has no
 #: path-traversal surface today and adding a generic static route would be the

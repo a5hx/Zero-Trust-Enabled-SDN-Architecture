@@ -88,12 +88,20 @@ def test_replay_reconstructs_topology_when_recording_has_no_topology_event():
 # Live HTTP surface                                                            #
 # --------------------------------------------------------------------------- #
 class _FakeApp:
-    """Minimal stand-in for TrustBalancerApp: the dashboard routes only ever use
-    these three members."""
+    """Minimal stand-in for TrustBalancerApp.
+
+    One method per thing the dashboard routes call on `app`. A missing one is
+    not a 500 -- the AttributeError escapes into the handler thread and the
+    client sees a dropped connection -- so this class and `ReplayApp` both have
+    to grow whenever northbound_api.py does."""
 
     def __init__(self):
         self.bus = EventBus(record_path=None)
         self.link_params = {}
+        self._ports = [{
+            'dpid': 2, 'port': 1, 'tx_bps': 800.0, 'rx_bps': 200.0,
+            'total_bps': 1000.0, 'tx_bytes': 2688, 'rx_bytes': 672,
+        }]
         self._flows = [{
             'dpid': 2, 'table': 0, 'priority': 300, 'cookie': 0x5A00000000000001,
             'node': 'srv1', 'match': 'ipv4_dst=10.0.99.1,tcp_dst=9000',
@@ -107,6 +115,9 @@ class _FakeApp:
 
     def flow_table(self):
         return self._flows
+
+    def port_table(self):
+        return self._ports
 
     def record_link_params(self, links):
         # Mirrors TrustBalancerApp.record_link_params' contract: store the
@@ -175,6 +186,41 @@ def test_api_optimizer_reports_arm_stats(server):
     assert body['active_weights']['w1_trust'] == 0.70
     active = [a for a in body['arms'] if a['active']]
     assert len(active) == 1 and active[0]['arm'] == 1
+
+
+def test_api_ports_is_served(server):
+    """Regression: /api/ports was added to northbound_api.py without a stub on
+    either stand-in, so it raised AttributeError inside the handler thread --
+    the client saw a dropped connection, and the link-load view stayed empty
+    with no 500 anywhere to explain it."""
+    _, _, base = server
+    with urllib.request.urlopen(f'{base}/api/ports', timeout=3) as r:
+        body = json.loads(r.read())
+
+    assert [p['port'] for p in body['ports']] == [1]
+    assert body['ports'][0]['total_bps'] == 1000.0
+
+
+def test_replay_serves_port_stats_from_the_recording():
+    """Same route under replay, sourced from the recorded events."""
+    app = ReplayApp([
+        {'type': 'topology', 'ts': 1.0, 'seq': 1,
+         'graph': {'nodes': [{'id': 's0'}], 'links': [], 'vip': 'v',
+                   'weights': {}, 'thresholds': {}}},
+    ])
+    assert app.port_table() == []          # nothing has streamed yet
+
+    app._ports[(3, 2)] = {'dpid': 3, 'port': 2, 'total_bps': 5.0}
+    app._ports[(2, 9)] = {'dpid': 2, 'port': 9, 'total_bps': 7.0}
+    # Sorted by (dpid, port), matching port_stats.PortStatsPoller.snapshot().
+    assert [(p['dpid'], p['port']) for p in app.port_table()] == [(2, 9), (3, 2)]
+
+
+def test_replay_refuses_to_rewrite_a_recordings_topology():
+    """A finished recording carries the links the harness reported during the
+    run it came from; a live POST must not edit them."""
+    app = ReplayApp([])
+    assert app.record_link_params([{'a': 's0', 'b': 's1', 'delay_ms': 5.0}]) == 0
 
 
 def test_dashboard_html_is_served(server):

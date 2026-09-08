@@ -14,10 +14,12 @@ import unittest
 
 from evaluation.scalability_sweep import (
     CONCURRENCY,
+    CSV_FIELDS,
     STRATEGIES,
     SweepPoint,
     format_table,
     run_sweep,
+    as_rows,
     simulate,
     write_csv,
 )
@@ -191,6 +193,38 @@ class TestSweepAndReporting(unittest.TestCase):
         self.assertEqual(
             main(['--ns', '2,4', '--sim-s', '20', '--load-factors', '0.3']), 0,
         )
+
+
+class TestRowsAndCsvAgree(unittest.TestCase):
+    """The CSV and the in-process rows (build_analysis_page --run-sweeps) are
+    one schema, written once. Two copies would let the same sweep render two
+    different pages."""
+
+    def test_row_keys_are_the_csv_columns_in_order(self):
+        rows = as_rows(run_sweep([2], labels=('p2c',), sim_s=20))
+        self.assertEqual(tuple(rows[0]), CSV_FIELDS)
+
+    def test_a_written_csv_reads_back_as_the_same_values(self):
+        import csv
+        import tempfile
+        from pathlib import Path as _Path
+
+        points = run_sweep([2, 4], labels=('p2c', 'argmax'), sim_s=20)
+        with tempfile.TemporaryDirectory() as d:
+            path = _Path(d) / 'sweep.csv'
+            write_csv(points, str(path))
+            with path.open(newline='') as f:
+                from_file = list(csv.DictReader(f))
+
+        for disk, mem in zip(from_file, as_rows(points)):
+            self.assertEqual(disk, {k: str(v) for k, v in mem.items()})
+
+    def test_an_unmeasurable_jain_stays_empty_not_zero(self):
+        """A gap in the fairness line, never a floor at 0."""
+        # No task completed, so there is no share vector to be fair about.
+        point = SweepPoint(n=4, strategy='p2c', epsilon=0.0)
+        self.assertIsNone(point.jain)
+        self.assertEqual(as_rows([point])[0]['jain_fairness'], '')
 
 
 if __name__ == '__main__':

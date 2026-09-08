@@ -235,6 +235,65 @@ Paste the two JSON dicts into the `figdatafix` block of
 `docs/study/trust-routing-study.html` to replace Figure 11's simulated numbers
 with live-run ones.
 
+### The analysis page (`/analysis`)
+
+The five tools above print tables for one run. `build_analysis_page` renders
+the same numbers -- plus the offline comparison half the live dashboard has no
+data source for -- as **one self-contained HTML file**: no CDN, no build step,
+so it is served at `http://localhost:8081/analysis` *and* opens over `file://`
+on a projector with no wifi.
+
+```bash
+python3 -m evaluation.build_analysis_page data/events.jsonl \
+    --comparison-csv data/results_rf.csv \
+    --out dashboard/analysis.html
+```
+
+It **calls** the modules above rather than re-deriving anything for
+presentation -- `nfr_report`, `attack_report`, `availability_report`,
+`interval_report`, `topology_metrics` and `stats` are imported and their
+returns arranged. `tests/test_analysis_page.py` recomputes each headline figure
+with the source module and looks for it in the rendered page, so the page
+cannot drift from the tool it claims to summarise.
+
+Thirteen sections, in two halves. From the recording: NFRs, detection,
+availability, metrics over time, **attack impact** (the same metrics before and
+after the first *timed* attack armed), and topology structure. From the sweep
+CSVs: comparison, significance, ablation, scalability, optimizer, and
+**losses** -- the comparisons a baseline wins, reported rather than omitted.
+Last is a cross-run history table read from `docs/run_history.json` (in `docs/`
+rather than `data/` on purpose: `data/` is gitignored, and a run history that
+vanishes on clone is not a history).
+
+The CSVs are optional and come from the sweeps:
+
+```bash
+python3 -m evaluation.baseline --runs 30 --csv data/results.csv     # 5 routers
+python3 -m evaluation.scalability_sweep --csv data/scalability.csv  # N = 4..64
+```
+
+**Every block whose input is missing renders an empty state naming the command
+that fills it** -- never a zero. "Not generated" and "measured zero" are
+different claims, and a fresh clone that has run nothing still gets a page that
+says what to run. Same rule for a run with no timed attack: the impact section
+says there is no clean window rather than inventing one.
+
+`--run-sweeps` regenerates both of those in-process instead (~1 min), so a
+fresh clone can fill the comparison half without managing CSV files. It does
+not cover the optimizer block, which needs the trained Random-Forest model --
+pass `--comparison-csv data/results_rf.csv` for that arm.
+
+Two more flags worth knowing: `--scalability-csv PATH` fills the scalability
+section, and `--append-history LABEL` (e.g. `--append-history run12`) adds this
+run to `docs/run_history.json` before rendering. The append is idempotent --
+re-running the same label replaces that entry rather than duplicating it -- and
+it only happens when you ask for it, so simply rebuilding the page never grows
+the run log.
+
+`dashboard/analysis.html` is a **generated file**; the controller serves
+whatever is checked in, so regenerate it after a run you want the page to
+describe rather than editing it by hand.
+
 ### 3b-extra. Verifying the Sprint 2 containment upgrades
 
 The quarantine path now does more than delete `srv3`'s VIP rules. Once you

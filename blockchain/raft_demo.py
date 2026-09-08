@@ -41,18 +41,26 @@ def _peers_arg(raft_peers: Dict[str, Tuple[str, int]]) -> str:
     return ','.join(f'{nid}={host}:{port}' for nid, (host, port) in raft_peers.items())
 
 
-def spawn_replicas(commit_timeout_s: float) -> Dict[str, subprocess.Popen]:
+def spawn_replica(nid: str, commit_timeout_s: float) -> subprocess.Popen:
+    """Start one replica process.
+
+    Split out of `spawn_replicas` so a caller that restarts a single killed
+    replica (blockchain/raft_timeline.py) builds the same command line rather
+    than its own copy of it -- two spellings of these arguments would drift,
+    and the first symptom is a "restarted" replica that quietly joined a
+    different peer set.
+    """
     raft_peers, http_ports = _addresses()
-    peers_arg = _peers_arg(raft_peers)
-    procs = {}
-    for nid in NODE_IDS:
-        procs[nid] = subprocess.Popen([
-            sys.executable, '-m', 'blockchain.raft_replica',
-            '--id', nid, '--peers', peers_arg,
-            '--http-port', str(http_ports[nid]),
-            '--commit-timeout-s', str(commit_timeout_s),
-        ])
-    return procs
+    return subprocess.Popen([
+        sys.executable, '-m', 'blockchain.raft_replica',
+        '--id', nid, '--peers', _peers_arg(raft_peers),
+        '--http-port', str(http_ports[nid]),
+        '--commit-timeout-s', str(commit_timeout_s),
+    ])
+
+
+def spawn_replicas(commit_timeout_s: float) -> Dict[str, subprocess.Popen]:
+    return {nid: spawn_replica(nid, commit_timeout_s) for nid in NODE_IDS}
 
 
 def status(nid: str, http_ports: Dict[str, int]) -> Optional[dict]:

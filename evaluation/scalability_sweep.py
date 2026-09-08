@@ -444,28 +444,51 @@ def format_table(results: Sequence[SweepPoint]) -> str:
     return "\n".join(lines)
 
 
+#: Sweep-point schema, in column order. Written by `write_csv` and returned by
+#: `as_rows`, so the file and the in-process path carry the same fields.
+CSV_FIELDS = (
+    'strategy', 'n', 'load_factor', 'offered', 'completed', 'timed_out',
+    'denied',
+    'throughput_hz', 'pdr', 'mean_latency_ms', 'p95_latency_ms',
+    'jain_fairness', 'used', 'starved', 'busiest_share',
+    'decision_us_mean', 'decision_us_p95',
+)
+
+
+def as_rows(results: Sequence[SweepPoint]) -> List[dict]:
+    """The CSV's rows without the CSV -- same fields, same rounding.
+
+    `jain_fairness` is '' rather than 0 when the sweep could not compute one
+    (no completed task to attribute): an unmeasurable fairness and a perfectly
+    unfair split are not the same reading, and the charts render the empty one
+    as a gap in the line rather than a floor.
+    """
+    return [
+        {
+            'strategy': r.strategy, 'n': r.n, 'load_factor': r.load_factor,
+            'offered': r.offered, 'completed': r.completed,
+            'timed_out': r.timed_out, 'denied': r.denied,
+            'throughput_hz': round(r.throughput_hz, 3),
+            'pdr': round(r.pdr, 5),
+            'mean_latency_ms': round(r.mean_latency_ms, 3),
+            'p95_latency_ms': round(r.p95_latency_ms, 3),
+            'jain_fairness': '' if r.jain is None else round(r.jain, 5),
+            'used': r.used, 'starved': r.starved,
+            'busiest_share': round(r.busiest_share, 5),
+            'decision_us_mean': round(r.decision_us_mean, 3),
+            'decision_us_p95': round(r.decision_us_p95, 3),
+        }
+        for r in results
+    ]
+
+
 def write_csv(results: Sequence[SweepPoint], path: str) -> None:
     import csv
 
     with open(path, 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow([
-            'strategy', 'n', 'load_factor', 'offered', 'completed', 'timed_out',
-            'denied',
-            'throughput_hz', 'pdr', 'mean_latency_ms', 'p95_latency_ms',
-            'jain_fairness', 'used', 'starved', 'busiest_share',
-            'decision_us_mean', 'decision_us_p95',
-        ])
-        for r in results:
-            w.writerow([
-                r.strategy, r.n, r.load_factor, r.offered, r.completed,
-                r.timed_out, r.denied,
-                round(r.throughput_hz, 3), round(r.pdr, 5),
-                round(r.mean_latency_ms, 3), round(r.p95_latency_ms, 3),
-                '' if r.jain is None else round(r.jain, 5),
-                r.used, r.starved, round(r.busiest_share, 5),
-                round(r.decision_us_mean, 3), round(r.decision_us_p95, 3),
-            ])
+        w = csv.DictWriter(f, fieldnames=list(CSV_FIELDS))
+        w.writeheader()
+        w.writerows(as_rows(results))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
