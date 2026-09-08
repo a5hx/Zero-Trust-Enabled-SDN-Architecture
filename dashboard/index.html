@@ -1315,6 +1315,25 @@ function handle(ev) {
       paintNodes();
       break;
 
+    // Blocks arrive every max_updates_per_block-th report -- a few per second
+    // under load -- so the ledger panel is throttled like the charts rather
+    // than redrawn per event.
+    case 'block':
+      ledgerIngest(ev);
+      scheduleLedgerRender();
+      break;
+
+    // Each report contributes one TrustUpdate to the batch that is waiting to
+    // be committed. Counted here rather than polled from the controller: there
+    // is no endpoint for the pending queue, and inferring it from the event
+    // stream is exactly as accurate for a page that has seen every report
+    // since it connected. A page that connected mid-batch starts low and
+    // self-corrects at the next commit, which resets the count to zero.
+    case 'report':
+      LEDGER.pending++;
+      scheduleLedgerRender();
+      break;
+
     // The harness reporting the link parameters it actually built
     // (POST /topology/links -> trust_balancer.record_link_params). Same graph
     // shape as 'topology', plus delay_ms/bw_mbps on the links -- which is the
@@ -1433,6 +1452,7 @@ const CH = {
   vipBps: {},                     // rule key -> {bps, node}  (sum at read time)
   prevDropPkts: {},               // rule key -> last cumulative packet count
   lastBps: 0,
+  lastBpsByNode: {},              // node -> latest summed bps, for forward-fill
   // 'client_ip:client_port' -> {i: originating bucket index, counted: bool}.
   // Same key controller/trust_state.py's _dispatches uses; a re-steer changes
   // which node serves a request, never the client port it came from.
@@ -1444,6 +1464,25 @@ const CH = {
 // a bucket that still exists. Insertion-ordered Map, so evicting from the front
 // evicts the oldest.
 const MAX_ROUTE_ORIGIN = 4000;
+
+// Per-node slot inside a bucket. Every event this panel bins already carries
+// the serving node (`route.chosen`, `report.node`, `flow_stats.rules[].node`),
+// so the cluster split needs NO controller change -- it is a different
+// aggregation of the same evidence, not new instrumentation.
+//
+// Kept per NODE rather than per cluster on purpose: cluster membership is
+// resolved at render time from the topology event's server roster, which may
+// arrive after the first events have already been binned. Binning straight
+// into clusters would silently drop everything that landed before the roster
+// was known.
+function nodeSlot(b, node) {
+  if (!node) return null;
+  if (!b.byNode[node]) {
+    b.byNode[node] = { total: 0, success: 0, timeout: 0, failure: 0,
+                       lat: [], dropPkts: 0, served: 0 };
+  }
+  return b.byNode[node];
+}
 
 function bucketFor(ts) {
   if (CH.t0 === null) CH.t0 = ts;
@@ -1525,7 +1564,10 @@ function chartIngest(ev) {
   switch (ev.type) {
     case 'route': {
       b.offered++; b.served++;
-      if (ev.chosen) b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
+      if (ev.chosen) {
+        b.share[ev.chosen] = (b.share[ev.chosen] || 0) + 1;
+        nodeSlot(b, ev.chosen).served++;
+      }
       if (ev.client_ip && ev.client_port !== undefined) {
         CH.routeOrigin.set(`${ev.client_ip}:${ev.client_port}`, { i: b.i, counted: false });
         while (CH.routeOrigin.size > MAX_ROUTE_ORIGIN) {
@@ -1578,7 +1620,7 @@ function chartIngest(ev) {
       push(roster.attacker, b.trustA, b.containedA, true);
       break;
     }
-    case 'report':
+    case 'report': {
       b.taskTotal++;
       const n = nodeSlot(b, ev.node);
       if (n) n.total++;
@@ -1654,6 +1696,10 @@ function jainOver(shareMap, roster) {
   return sq > 0 ? (total * total) / (xs.length * sq) : null;
 }
 
+function jain(shareMap) {
+  return jainOver(shareMap, serverRoster());
+}
+
 function mean(xs) {
   return xs.length ? xs.reduce((a, v) => a + v, 0) / xs.length : null;
 }
@@ -1678,6 +1724,46 @@ function serverGroundTruth() {
     attacker: servers.filter(n => n.attack && n.attack !== 'none').map(n => n.id),
   };
   return _groundTruth;
+}
+
+// ------------------------------------------------------------- clusters ----
+// Two clusters, split positionally down the middle of the server roster.
+//
+// STATE PLAINLY WHAT THIS IS: the split is ARBITRARY. This topology gives
+// every server its own edge switch hanging off one core switch (s0 -> s1..s8,
+// one server each), so there is no physical cluster structure to follow --
+// srv1-4 and srv5-8 are not two racks, two sites or two failure domains. The
+// halves are a positional convention, and the panel says so rather than
+// letting a reader infer a locality that is not there.
+//
+// The roster order comes off the topology event, which is the same order
+// topology.py builds the fleet in, so membership is stable across a run and
+// across a replay of the same recording.
+function clusterDefs() {
+  const roster = serverRoster();
+  if (roster.length < 2) return [];
+  const half = Math.ceil(roster.length / 2);
+  const a = roster.slice(0, half), b = roster.slice(half);
+  return [
+    { key: 'A', name: `cluster A (${a[0]}–${a[a.length - 1]})`, color: SERIES_1, members: a },
+    { key: 'B', name: `cluster B (${b[0]}–${b[b.length - 1]})`, color: SERIES_2, members: b },
+  ];
+}
+
+// Sum one per-node field across a cluster's members for a bucket.
+function clusterSum(b, members, field) {
+  let t = 0;
+  for (const id of members) t += (b.byNode[id] || {})[field] || 0;
+  return t;
+}
+
+function clusterLat(b, members) {
+  const xs = [];
+  for (const id of members) {
+    const s = b.byNode[id];
+    if (s) xs.push(...s.lat);
+  }
+  return xs;
 }
 
 // Ground-truth attack onsets, for the shaded bands. Comes off the topology

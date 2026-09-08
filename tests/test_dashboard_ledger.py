@@ -36,6 +36,18 @@ def source():
     return HTML.read_text()
 
 
+def handle_body():
+    """The SSE dispatch switch only -- the function every live event enters.
+
+    Panel state lives or dies on whether a case here calls into it, and a
+    grep of the whole file cannot tell a live call site from a leftover
+    definition or a same-named case in the log formatter.
+    """
+    src = source()
+    return src[src.index('function handle(ev) {'):
+               src.index('// ------------------------------------------------------- time series ----')]
+
+
 def js_context():
     """Evaluate the page's script under quickjs with a minimal DOM stub."""
     try:
@@ -304,10 +316,39 @@ class TestLedgerPanelStructure(unittest.TestCase):
 
     def test_the_block_event_is_actually_handled(self):
         """It was published for months and dropped on the floor -- the panel
-        exists because nothing consumed it."""
+        exists because nothing consumed it.
+
+        Sliced to `handle()` rather than the whole file. The first version of
+        this test looked for "case 'block':" and "ledgerIngest" anywhere in
+        the source, and both survive the bug it was written to catch: the log
+        line formatter has its own `case 'block':`, and `ledgerIngest` is
+        still *defined* when nothing calls it. Merge 5e5cee7 dropped the two
+        cases out of `handle()` and this test stayed green while the panel
+        read "waiting for the first block to commit" against a chain hundreds
+        of blocks long.
+        """
+        h = handle_body()
+        self.assertIn("case 'block':", h)
+        self.assertIn('ledgerIngest(ev);', h)
+        self.assertIn('scheduleLedgerRender();', h)
+
+    def test_the_pending_gauge_is_fed_by_report_events(self):
+        """The denominator comes from config, but the numerator only moves if
+        `handle()` counts reports. Dropped in the same merge as the block
+        case, which left the gauge pinned at 0/10 for a whole run."""
+        h = handle_body()
+        self.assertIn("case 'report':", h)
+        self.assertIn('LEDGER.pending++;', h)
+
+    def test_the_ledger_helpers_are_reachable(self):
+        """A defined-but-uncalled function is the shape both panel outages in
+        this file took. `dashboard/index.html` has no build step and no
+        linter, so nothing else notices."""
         src = source()
-        self.assertIn("case 'block':", src)
-        self.assertIn('ledgerIngest', src)
+        for fn in ('ledgerIngest', 'scheduleLedgerRender', 'renderLedger',
+                   'verifyChain'):
+            calls = len(re.findall(rf'(?<!function ){fn}\s*\(', src))
+            self.assertGreater(calls, 0, f'{fn}() is defined but never called')
 
     def test_the_two_verdicts_are_reported_separately(self):
         """The controller auditing itself and this page re-deriving the chain
@@ -372,9 +413,8 @@ class TestLedgerPanelStructure(unittest.TestCase):
         """Blocks commit every max_updates_per_block-th report -- a few per
         second under load. Rebuilding the ribbon per event would let traffic
         slow the dashboard, the same self-inflicted DoS the charts avoid."""
-        src = source()
-        self.assertIn('scheduleLedgerRender', src)
-        self.assertIn('_ledgerTimer', src)
+        self.assertIn('scheduleLedgerRender();', handle_body())
+        self.assertIn('_ledgerTimer', source())
 
 
 class TestBlockEventCarriesTheHashPreimage(unittest.TestCase):

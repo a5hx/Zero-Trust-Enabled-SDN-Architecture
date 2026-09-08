@@ -1,0 +1,196 @@
+# base_model/config/params_base_full.yaml
+#
+# THE CONTROL ARM. Same network, same workload, same attackers as
+# config/params_trust_full.yaml -- and none of this project's defences.
+#
+# Everything above the "baseline:" block below is COPIED VERBATIM from
+# config/params_trust_full.yaml and must stay that way. If the two ever
+# disagree on topology, workload or attack schedule, the comparison stops
+# being a controlled experiment and becomes two unrelated runs. That
+# invariant is not a convention here, it is enforced:
+# base_model/tests/test_base_config_parity.py diffs the shared keys against
+# the treatment config and fails on any drift.
+#
+# What differs, and only this:
+#   * routing            static nearest-edge binding, decided once from the
+#                        client's address -- never from trust, load or latency
+#   * quarantine         none. A node that is detected is still served.
+#   * rate limiting      none. No OpenFlow meters are installed.
+#   * re-steering        none. A client stays on its bound server for the run.
+#   * admission control  none. Every device is admitted, wrong key included.
+#   * source-IP pinning  none. A spoofed identity is accepted.
+#   * blockchain ledger  none. Trust is held in memory and never committed.
+#   * AI optimiser       none. There are no EdgeScore weights to tune.
+#
+# Trust is still COMPUTED, by base_model/trust_observer.py, from the same
+# formula and the same weights as the treatment arm -- and never acted on.
+# That is the whole point of this arm: it produces a trust curve for every
+# node under attack that nothing defended, so the two curves can be put on
+# one axis. See base_model/README.md section "Why trust is still computed".
+
+# ---------------------------------------------------------------------------
+# SHARED WITH config/params_trust_full.yaml -- keep byte-comparable
+# ---------------------------------------------------------------------------
+
+trust:
+  alpha: 0.35
+  beta: 0.25
+  gamma: 0.25
+  delta: 0.15
+  lambda_decay: 0.85
+  initial_score: 0.5
+
+  # Present so the OBSERVER can report which side of the line a node's trust
+  # fell on, and so both arms score "would have been isolated" with the same
+  # ruler. The baseline never enforces either of them -- crossing these lines
+  # has no consequence in this arm, which is exactly what is being measured.
+  isolation_threshold: 0.3
+  anomaly_gate: 0.5
+
+  rate_limit_trust: 0.5
+  anomaly_warn: 0.25
+
+simulation:
+  num_edge_nodes: 8
+  num_iot_devices: 40
+  num_malicious: 4
+  duration_s: 300
+
+  malicious_edge_nodes:
+    - node: srv3
+      attack: sybil
+      start_s: 20
+    - node: srv6
+      attack: drop            # reported as 'blackhole' -- see attack_classifier
+      start_s: 30
+    - node: srv1
+      attack: grayhole
+      start_s: 40
+      grayhole_drop_rate: 0.5
+    - node: srv8
+      attack: onoff
+      start_s: 50
+      onoff_period_s: 20.0
+      onoff_duty: 0.5
+
+  malicious_flood_devices:
+    - device: iot37
+      start_s: 60
+      concurrency: 3
+      interval_s: 0.25
+
+  # Kept identical to the treatment arm even though this arm has no source-IP
+  # pin to defeat. That is the point: in the treatment arm iot38's spoof is
+  # REFUSED, here it SUCCEEDS, and the comparison is only meaningful if the
+  # same device attempts the same thing at the same second in both.
+  malicious_spoof_devices:
+    - device: iot38
+      target: iot1
+      start_s: 15
+
+security:
+  auth_scheme: present80
+  shared_key_hex: "00112233445566778899"
+
+  # iot39/iot40 still get the deliberately wrong key from the launcher, exactly
+  # as in the treatment arm. The difference is downstream: this arm's
+  # /auth/verify does not check the response, so they are ADMITTED and go on to
+  # generate real traffic. Their events are what "no admission control" costs.
+  malicious_iot_devices:
+    - iot39
+    - iot40
+
+controller:
+  vip: 10.0.99.1
+  vip_port: 9000
+
+  api_host: 0.0.0.0
+  api_port: 8081
+
+  flow_idle_timeout_s: 10
+  flow_hard_timeout_s: 30
+  monitor_interval_s: 1.0
+
+  # Consumed by the observer's anomaly tells only (see baseline.observe_anomaly
+  # below). Same values as the treatment arm so the two arms flag the same
+  # behaviour at the same instant -- one of them then does something about it.
+  latency_liar_ratio: 3.0
+  latency_liar_floor_ms: 40.0
+  idle_claim_threshold: 0.25
+  latency_liar_persist: 3
+
+  honesty_deviation_threshold: 0.40
+
+  dashboard:
+    enabled: true
+    record_path: data/base_events.jsonl
+
+agents:
+  report_interval_s: 2.0
+  task_timeout_s: 4.0
+  task_work_ms: 15
+  node_port: 8000
+
+# ---------------------------------------------------------------------------
+# BASELINE-ONLY -- has no counterpart in the treatment config
+# ---------------------------------------------------------------------------
+baseline:
+  # How a client is bound to a server. The binding is computed ONCE per client
+  # address and never revisited, so no strategy here is adaptive.
+  #
+  #   static_nearest  (default) -- serve from the edge server hanging off the
+  #       client's own edge switch: srv[((j - 1) mod n_edge) + 1] for iotJ.
+  #       This is the conventional non-adaptive edge assignment: it needs no
+  #       measurement, no controller state and no feedback. It is also exactly
+  #       the attachment rule ZeroTrustTopo.build() already uses, so a client's
+  #       traffic never leaves its own edge switch.
+  #
+  #       Note it is uniform BY CONSTRUCTION -- 40 devices over 8 servers is 5
+  #       each, forever. That is deliberate: an unfair static map would let a
+  #       reader attribute the treatment arm's win to fairness alone. This
+  #       control is a priori perfectly balanced and still loses, and it loses
+  #       for the one reason that matters -- five devices are bound to a
+  #       blackhole and stay bound to it.
+  #
+  #   round_robin -- rotate a counter over the whole server list per new
+  #       connection. Spreads a client's own traffic across the fleet but is
+  #       still blind to trust, load and liveness. Use this arm if a reviewer
+  #       objects that static_nearest conflates "no load balancing" with
+  #       "no failover".
+  #
+  #   random -- uniform choice per connection, seeded by baseline.seed.
+  strategy: static_nearest
+  seed: 1
+
+  # Compute the anomaly rail (the two evidence-only tells: the latency tell and
+  # the timeout-rate tell) and feed A into T, WITHOUT ever acting on it.
+  #
+  # true (default): the baseline SEES the attacks and does nothing. This is the
+  #   sharper control and the one the paper should use -- it separates
+  #   detection from response, so the treatment arm's advantage cannot be
+  #   dismissed as "it simply had a detector".
+  #
+  # false: A is pinned to 0, T collapses to alpha*R + beta*B + gamma*H, and the
+  #   arm becomes a fully blind legacy controller. Useful as a third arm; note
+  #   the delta term then contributes nothing and the two arms' trust values
+  #   are no longer computed from the same formula. Say which one you ran.
+  observe_anomaly: true
+
+  # Little's-Law occupancy window, seconds. The observer's own dispatch
+  # accounting -- it installed the flow rule, so it knows which server each
+  # connection went to. This is bookkeeping, not a defence: it is the
+  # observed-load half of the H term and nothing reads it to make a decision.
+  #
+  # MUST equal controller/trust_state.py's TrustState.load_window_s default.
+  # The treatment arm never overrides that attribute, so its window IS the
+  # default -- and this key is the only place the two arms could silently
+  # disagree about it, since there is no counterpart in the treatment config
+  # for test_base_config_parity.py to diff against.
+  #
+  # It is load-bearing in four places at once: observed_load's integral,
+  # claimed_load's time-average, the completion rate behind
+  # expected_duty_cycle, and the packet-drop tell's stale-evidence horizon
+  # (2x this). Two arms on different windows are not measuring the same H term
+  # or the same occupancy. Pinned by
+  # test_observer_parity.py::test_load_window_matches_the_treatment_arm.
+  load_window_s: 3.0
