@@ -50,6 +50,10 @@ from evaluation.topology_metrics import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / 'dashboard' / 'analysis.html'
 
+#: Server counts for --run-sweeps, matching scalability_sweep's own CLI default
+#: so the flag and the CSV describe the same sweep.
+_SWEEP_NS = (4, 8, 16, 32, 64)
+
 
 # --------------------------------------------------------------------------- #
 # Page shell                                                                   #
@@ -1434,19 +1438,30 @@ def _load_rows(path: Optional[str]) -> Optional[List[dict]]:
         return None
 
 
-def build(events_path: str, comparison_csv: Optional[str] = None,
-          scalability_csv: Optional[str] = None,
-          append_label: Optional[str] = None) -> str:
-    events = load_events(events_path)
+def build_from_events(events: Sequence[Dict[str, Any]], events_path: str,
+                      comparison_rows: Optional[Sequence[dict]] = None,
+                      scalability_rows: Optional[Sequence[dict]] = None,
+                      history: Optional[Sequence[Dict[str, Any]]] = None) -> str:
+    """Render the whole page from events already in memory.
+
+    Split out from `build()` so the page can be assembled without touching the
+    filesystem: the tests drive it with a synthetic recording, and a caller
+    that already holds a parsed run (a replay, a batch that builds several
+    pages from one load) does not pay to re-read a 100 MB-1 GB recording.
+
+    `events_path` is provenance only -- it is printed, never opened -- so a
+    caller that never had a file can pass whatever names the source.
+
+    History is READ here and never appended: appending is a side effect of
+    finishing a run, which is `build()`'s job via --append-history. A function
+    that silently grew docs/run_history.json every time a page was rendered
+    would make the run log a record of how often the page was built.
+    """
     if not events:
         raise SystemExit(f'{events_path}: no events to analyse')
     graph = topology_graph(events)
-    comparison_rows = _load_rows(comparison_csv)
-    scalability_rows = _load_rows(scalability_csv)
-
-    if append_label:
-        append_history(run_summary(events, events_path, append_label))
-    history = load_history()
+    if history is None:
+        history = load_history()
 
     nav = ''.join(f'<a href="#{sid}">{C.esc(label)}</a>' for sid, label in _NAV)
     sections = ''.join([
@@ -1485,6 +1500,61 @@ def build(events_path: str, comparison_csv: Optional[str] = None,
     )
 
 
+def run_sweeps() -> Tuple[List[dict], List[dict]]:
+    """Regenerate both sweeps in-process, instead of reading their CSVs.
+
+    Imported lazily: `evaluation.baseline` and `evaluation.scalability_sweep`
+    pull in the whole selector stack, and the far more common case is a page
+    built from a recording and a CSV that already exists.
+
+    The rows come from each sweep's own `as_rows`, which is what its
+    `write_csv` writes, so `--run-sweeps` and `--comparison-csv` feed this page
+    identical input. Deriving the rows here instead would be a second copy of
+    those schemas, and a second copy is how the two paths start disagreeing.
+
+    Takes about a minute (600 baseline runs, then N = 4…64), which is why it is
+    a flag rather than the default.
+
+    Does NOT cover the optimizer block: the `zt_sdn_rf` arm needs a trained
+    Random-Forest model, so it comes from `evaluation/rf_comparison.py` and a
+    CSV, not from this sweep. That block keeps rendering the empty state naming
+    the three commands that produce it.
+    """
+    from evaluation import baseline, scalability_sweep
+    return (
+        baseline.as_rows(baseline.run_experiment()),
+        scalability_sweep.as_rows(scalability_sweep.run_sweep(_SWEEP_NS)),
+    )
+
+
+def build(events_path: str, comparison_csv: Optional[str] = None,
+          scalability_csv: Optional[str] = None,
+          append_label: Optional[str] = None,
+          regenerate_sweeps: bool = False) -> str:
+    """Read a recording (and any sweep CSVs) off disk and render the page.
+
+    The history append lives here rather than in `build_from_events`: it is
+    part of finishing a run, not part of drawing it.
+    """
+    events = load_events(events_path)
+    if not events:
+        raise SystemExit(f'{events_path}: no events to analyse')
+    if append_label:
+        append_history(run_summary(events, events_path, append_label))
+
+    if regenerate_sweeps:
+        comparison_rows, scalability_rows = run_sweeps()
+    else:
+        comparison_rows = _load_rows(comparison_csv)
+        scalability_rows = _load_rows(scalability_csv)
+
+    return build_from_events(
+        events, events_path,
+        comparison_rows=comparison_rows,
+        scalability_rows=scalability_rows,
+    )
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('events', nargs='?', default='data/events.jsonl')
@@ -1494,6 +1564,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                          'naming the command that produces it.')
     ap.add_argument('--scalability-csv', default=None,
                     help='scalability sweep CSV (evaluation.scalability_sweep --csv)')
+    ap.add_argument('--run-sweeps', action='store_true',
+                    help='regenerate the comparison and scalability sweeps '
+                         'in-process instead of reading the CSVs (~1 min). '
+                         'Overrides --comparison-csv and --scalability-csv. '
+                         'Not the optimizer arm, which needs a trained model '
+                         '-- pass --comparison-csv data/results_rf.csv for that.')
     ap.add_argument('--append-history', metavar='LABEL', default=None,
                     help='append this run to docs/run_history.json under LABEL '
                          '(e.g. run12). Idempotent: re-running replaces the entry.')
@@ -1502,7 +1578,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     html_out = build(args.events, comparison_csv=args.comparison_csv,
                      scalability_csv=args.scalability_csv,
-                     append_label=args.append_history)
+                     append_label=args.append_history,
+                     regenerate_sweeps=args.run_sweeps)
     Path(args.out).write_text(html_out, encoding='utf-8')
     print(f'Wrote {args.out} ({len(html_out) / 1000:.0f} kB) from {args.events}')
     return 0

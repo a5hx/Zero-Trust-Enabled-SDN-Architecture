@@ -348,5 +348,55 @@ class TestRunHistory(unittest.TestCase):
         self.assertIn('is-bad', out)
 
 
+class TestRunSweeps(unittest.TestCase):
+    """`--run-sweeps` regenerates the sweeps instead of reading their CSVs.
+
+    The sweep itself takes about a minute and is covered by
+    tests/test_baseline.py and tests/test_scalability_sweep.py; what is pinned
+    here is the wiring -- that the flag reaches the page and that a CSV passed
+    alongside it does not silently win.
+    """
+
+    def setUp(self):
+        self.calls = []
+        self.orig = B.run_sweeps
+        B.run_sweeps = self._fake
+        self.events = Path(__file__).parent / '_run_sweeps.jsonl'
+        self.events.write_text(
+            '\n'.join(json.dumps(e) for e in _events(2)) + '\n')
+
+    def tearDown(self):
+        B.run_sweeps = self.orig
+        self.events.unlink(missing_ok=True)
+
+    def _fake(self):
+        self.calls.append('run_sweeps')
+        return list(TestComparisonSections.ROWS), []
+
+    def test_the_flag_regenerates_rather_than_reading_the_csv(self):
+        html = B.build(str(self.events), regenerate_sweeps=True)
+        self.assertEqual(self.calls, ['run_sweeps'])
+        # Rows arrived, so the comparison block is real rather than an empty state.
+        self.assertNotIn('fig-empty', _section(html, 'comparison'))
+
+    def test_it_is_off_by_default(self):
+        B.build(str(self.events))
+        self.assertEqual(self.calls, [])
+
+    def test_a_csv_passed_alongside_it_does_not_win(self):
+        html = B.build(str(self.events), comparison_csv='does/not/exist.csv',
+                       regenerate_sweeps=True)
+        self.assertEqual(self.calls, ['run_sweeps'])
+        self.assertNotIn('fig-empty', _section(html, 'comparison'))
+
+    def test_an_empty_scalability_sweep_still_renders_its_empty_state(self):
+        """The fake returns no scalability rows -- that block must say so and
+        name its command, not vanish and not show zeros."""
+        html = B.build(str(self.events), regenerate_sweeps=True)
+        body = _section(html, 'scalability')
+        self.assertIn('fig-empty', body)
+        self.assertIn('evaluation.scalability_sweep', body)
+
+
 if __name__ == '__main__':
     unittest.main()
