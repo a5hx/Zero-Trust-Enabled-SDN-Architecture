@@ -386,6 +386,9 @@
     <p class="meta print-only" style="margin-top:.55rem">
       <span>Figures generated from the controller event bus (<code>data/events.jsonl</code>). Sections 1&ndash;4 and the appendix describe run A, one continuous 498&nbsp;s run; Sections 6&ndash;8 describe run B, 2,832&nbsp;s on the same topology; Section&nbsp;5 references an earlier 24-minute run. Each is labelled where it appears.</span>
     </p>
+    <p class="meta" style="margin-top:.55rem">
+      <span><b>Status</b> &middot; Sections 1&ndash;8 record the system <i>as it behaved when the findings were made</i>, and are kept as measured. <b>Findings 1, 5 and 6 have since been fixed and re-measured on live telemetry from current code &mdash; see &sect;&thinsp;11 for the fix and &sect;&thinsp;12 for the validation.</b> Read the two together; nothing in Sections 1&ndash;8 describes code that still ships.</span>
+    </p>
   </header>
 
   <!-- ============ SUMMARY ============ -->
@@ -756,7 +759,8 @@
         <li><b>Offered load is low.</b> At roughly 8.7 tasks per second across four nodes, queue occupancy stays under 0.4. The CPU-honesty check depends on occupancy being informative, and at this load it is only marginally so — which is why the sybil's queue-based tell never fires and its latency tell does all the work. It also means the honesty tax in Section 7 is measured over a narrow occupancy range and extrapolates poorly.</li>
         <li><b>One attack of each kind.</b> The drop-attack analysis in Section 4 is derived from the agent implementation and threshold contract, not observed in this run — no node was configured to drop during it.</li>
         <li><b>Emulated timing.</b> Mininet link delays are synthetic and the controller shares a host with the data plane, so absolute latencies are not meaningful. Only the separation between nodes is, and that is what the argument rests on.</li>
-        <li><b>The observer is the system.</b> All measurements come from the controller's own event bus. Section 5 is a direct demonstration that this instrument can be wrong, and Section 7 argues that a related mismatch is still live. The figures here postdate the Section 5 fixes but are not independently corroborated.</li>
+        <li><b>The observer is the system.</b> All measurements come from the controller's own event bus. Section 5 is a direct demonstration that this instrument can be wrong, and Section 7 argues that a related mismatch is still live. The figures here postdate the Section 5 fixes but are not independently corroborated. <i>Section 7's mismatch was subsequently traced to comparing service time against residence time &mdash; two different physical quantities &mdash; and is closed; &sect;&thinsp;12 re-measures it.</i></li>
+        <li><b>&sect;&thinsp;12 is also a single run.</b> The validation run is one 327.9&nbsp;s run on one topology, so it establishes that the fixes hold under a realistic six-attack workload, not a distribution. Multiple seeds with confidence intervals are the obvious next step; <code>evaluation/stats.py</code> already implements the paired-comparison machinery and has simply never been pointed at the live runs.</li>
         <li><b>The optimiser confounds everything.</b> Weights were being cycled every ten seconds throughout both runs (Section 8), so no figure in this study describes a fixed scoring function. That the findings survive the cycling is evidence of robustness, but a controlled comparison would need the optimiser pinned to one arm.</li>
       </ul>
     </div>
@@ -780,6 +784,40 @@
         <div class="plot" id="p-fix"></div>
         <figcaption><b>Figure 11</b> Same nodes, same weights, same load — only the selection rule differs. Argmax starves srv2 and srv3 (a healthy pair) exactly as the live runs starved srv2/srv3; power-of-two-choices spreads across all four, cutting the busiest node's share from ~50% to ~27%.</figcaption>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ §12 — VALIDATION ON CURRENT CODE ============ -->
+  <section id="sec-validation">
+    <div class="rail">§ 12</div>
+    <div class="col">
+      <p class="eyebrow">Section twelve · live telemetry, current code</p>
+      <h2>Both findings, re-tested on a live run of the shipped system</h2>
+      <p>Sections 6–8 measured code that no longer ships. Section 11's fix was a simulation over the real selector, not a live run, and the honesty finding of §7 had no re-test at all. This section closes both against <b>live run 11</b> (2026-08-09, 327.9&nbsp;s, 8 edge servers, 40 IoT devices, six concurrent attacks, 6,432 routing decisions) — the same topology and config as the runs above, on current <code>main</code>.</p>
+      <p><b>Finding 1 and Finding 5 (starvation, and its rotation) are closed.</b> Run&nbsp;A had half the fleet never receive a single task; run&nbsp;B had srv2 starved for 2,238.8&nbsp;s and then srv1 take its place. In run 11 <b>no node received zero tasks</b>, and the four honest servers split the load 21.0 / 21.5 / 22.5 / 23.2&nbsp;% — <b>Jain 0.9985</b> across the honest fleet, against 0.176 for argmax at low load in the sweep.</p>
+      <p><b>Read the all-node figure with the attacker/honest split in mind.</b> Jain over all eight nodes is 0.6253, and that number is the system <i>working</i>, not a residual fairness problem: srv3, srv6, srv1 and srv8 are the four attackers, and they hold a small share because they were quarantined 11, 1, 3 and 17 times respectively. A single fleet-wide fairness figure would average two quantities that are supposed to move in opposite directions — the same reason <code>evaluation/availability_report.py</code> refuses to print a combined availability number.</p>
+      <p><b>Finding 6 (the honesty tax) is closed.</b> The defect signature was <code>dev/occ&nbsp;=&nbsp;1.000</code> in every bin — the node's claim was 0.00 in 98.5&nbsp;% of samples, so the deviation <i>was</i> the occupancy and H fell as <code>1&nbsp;−&nbsp;2·occupancy</code> on perfectly honest nodes. Two things fixed it: wiring the time-averaged claim into the trust formula as well as the gate, and then the real repair — the controller building its own <code>expected_duty_cycle</code> from completions × fleet-median service time, so both sides of the comparison are <i>service time</i> rather than one being residence time. Measured on run 11's 5,664 honest-node reports:</p>
+    </div>
+    <div class="wide">
+      <div class="fig">
+        <div class="fig-head">
+          <span class="fig-title">Routing share, live run 11</span>
+          <span class="fig-unit">8 edge servers · 6,432 decisions · 4 honest, 4 under attack</span>
+        </div>
+        <div class="plot" id="p-val"></div>
+        <figcaption><b>Figure 12</b> The four honest servers (blue) take 21.0–23.2&nbsp;% each — Jain 0.9985, and no node starved. The four attackers (red) hold what they were served before each quarantine; their low share is containment, not unfairness. Compare Figure 1, where half the fleet never received a task at all.</figcaption>
+      </div>
+      <div class="fig">
+        <div class="fig-head">
+          <span class="fig-title">The honesty comparison, before and after</span>
+          <span class="fig-unit">honest-node reports only · gate = 0.40</span>
+        </div>
+        <div class="tbl-wrap" id="t-val"></div>
+        <figcaption><b>Table 12</b> The tax is gone: mean deviation is 0.0033 against a 0.40 gate, and <code>dev/occ</code> — 1.000 when the finding was written — is now 0.092 at the median. Six of 5,664 honest reports exceed the gate. The <code>expected_duty</code> estimator, which run 7 could compute for only 70&nbsp;% of reports and which supplied <i>none</i> of that run's 175 false quarantines, now engages on 99.4&nbsp;%.</figcaption>
+      </div>
+    </div>
+    <div class="col">
+      <p><b>What this section does not claim.</b> One run per configuration, so these are measurements and not confidence intervals (see Limitations). The attacker share depends on when each attack armed and how fast it was contained, so Figure 12's red bars are not a stable quantity across runs — the honest bars are the claim. And the p2c comparison in §11 remains a simulation: run 11 shows the fixed selector behaving well live, not a live A/B against argmax, which would mean deliberately running the known-bad configuration for 300&nbsp;s.</p>
     </div>
   </section>
 
@@ -1459,5 +1497,79 @@
     });
   });
   host.appendChild(svg);
+})();
+</script>
+
+<script type="application/json" id="figdata11">{"meta":{"run":"live run 11","date":"2026-08-09","duration_s":327.9,"decisions":6432,"nodes":8,"honest":4},"truth":{"srv1":"grayhole","srv2":"none","srv3":"sybil","srv4":"none","srv5":"none","srv6":"drop","srv7":"none","srv8":"onoff"},"share":{"srv1":169,"srv2":1383,"srv3":64,"srv4":1350,"srv5":1493,"srv6":112,"srv7":1445,"srv8":416},"share_pct":{"srv1":2.63,"srv2":21.5,"srv3":1.0,"srv4":20.99,"srv5":23.21,"srv6":1.74,"srv7":22.47,"srv8":6.47},"quar":{"srv1":3,"srv2":0,"srv3":11,"srv4":0,"srv5":0,"srv6":1,"srv7":0,"srv8":17},"jain_all":0.6253,"jain_honest":0.9985,"honesty":{"reports":5664,"claimed_nonzero_pct":99.56,"expected_duty_pct":99.4,"mean_claimed":0.0196,"mean_reference":0.0194,"mean_dev":0.0033,"dev_over_occ_mean":0.1519,"dev_over_occ_median":0.0921,"over_gate":6,"gate":0.4}}</script>
+<script>
+// ===== FIG 12 + TABLE 12 - live run 11 validation (self-contained) ========
+(() => {
+  const host = document.getElementById('p-val');
+  const thost = document.getElementById('t-val');
+  if (!host || !thost) return;
+  const F = JSON.parse(document.getElementById('figdata11').textContent);
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const el = (n, a = {}) => { const e = document.createElementNS(SVGNS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const fmt = n => n.toLocaleString('en-US');
+  const isHonest = n => F.truth[n] === 'none';
+
+  // Honest first, then attackers - the grouping IS the argument, so it is
+  // encoded in the order and the colour rather than left to the reader.
+  const NODES = Object.keys(F.share).sort((a, b) => {
+    if (isHonest(a) !== isHonest(b)) return isHonest(a) ? -1 : 1;
+    return F.share[b] - F.share[a];
+  });
+  const max = Math.max(...NODES.map(n => F.share[n])) || 1;
+
+  const W = 760, rowH = 30, padL = 62, padR = 200, headH = 22;
+  const H = headH * 2 + NODES.length * rowH + 26;
+  const svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
+    'aria-label': 'Routing share per edge server on live run 11, honest servers versus attackers' });
+  const scale = v => (v / max) * (W - padL - padR);
+
+  let y = 6, drewSplit = false;
+  const groupLabel = (txt, yy) => {
+    const t = el('text', { x: 4, y: yy + 14, class: 'axis-txt' });
+    t.setAttribute('font-weight', '600');
+    t.textContent = txt;
+    svg.appendChild(t);
+  };
+  groupLabel('honest \u00b7 Jain ' + F.jain_honest.toFixed(4), y);
+  y += headH;
+
+  NODES.forEach(n => {
+    if (!isHonest(n) && !drewSplit) {
+      drewSplit = true;
+      y += 10;
+      groupLabel('under attack \u00b7 share reflects containment, not unfairness', y);
+      y += headH;
+    }
+    const bh = 15, v = F.share[n];
+    svg.appendChild(el('text', { x: padL - 12, y: y + bh - 3, 'text-anchor': 'end', class: 'axis-txt' })).textContent = n;
+    svg.appendChild(el('rect', { x: padL, y: y, width: W - padL - padR, height: bh, rx: 3, fill: 'var(--raised)' }));
+    svg.appendChild(el('rect', { x: padL, y: y, width: Math.max(4, scale(v)), height: bh, rx: 4,
+      fill: isHonest(n) ? 'var(--s1)' : 'var(--crit)' }));
+    const lbl = el('text', { x: padL + scale(v) + 10, y: y + bh - 3, class: 'mark-lbl' });
+    lbl.textContent = isHonest(n)
+      ? fmt(v) + ' \u00b7 ' + F.share_pct[n].toFixed(1) + '%'
+      : fmt(v) + ' \u00b7 ' + F.share_pct[n].toFixed(1) + '% \u00b7 ' + F.truth[n] + ', ' + F.quar[n] + '\u00d7 quarantined';
+    svg.appendChild(lbl);
+    y += rowH;
+  });
+  host.appendChild(svg);
+
+  const hs = F.honesty;
+  const rows = [
+    ['claimed_cpu non-zero', '1.51 % (run 5)', hs.claimed_nonzero_pct.toFixed(2) + ' %'],
+    ['expected_duty computed', '70 % (run 7)', hs.expected_duty_pct.toFixed(1) + ' %'],
+    ['mean |deviation|', '0.0804 (run 6)', hs.mean_dev.toFixed(4)],
+    ['dev / occupancy \u2014 median', '1.000', hs.dev_over_occ_median.toFixed(4)],
+    ['dev / occupancy \u2014 mean', '1.000', hs.dev_over_occ_mean.toFixed(4)],
+    ['honest reports over the 0.40 gate', '175 firings (run 7)', hs.over_gate + ' of ' + fmt(hs.reports)],
+  ];
+  thost.innerHTML =
+    '<table><thead><tr><th>quantity</th><th>when the finding was written</th><th>live run 11</th></tr></thead><tbody>' +
+    rows.map(r => '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td><td><b>' + r[2] + '</b></td></tr>').join('') +
+    '</tbody></table>';
 })();
 </script>

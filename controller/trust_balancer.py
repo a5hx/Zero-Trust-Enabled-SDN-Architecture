@@ -23,7 +23,7 @@ import yaml
 from contracts.trust_update import TrustUpdate
 from trust_engine.trust_calculator import TrustCalculator
 from blockchain.block import build_block
-from blockchain.commit_backend import LocalLedgerBackend
+from blockchain.commit_backend import LocalLedgerBackend, TimingCommitBackend
 from blockchain.ledger import Ledger
 
 from os_ken.base import app_manager
@@ -33,14 +33,25 @@ from os_ken.lib import hub
 from os_ken.lib.packet import arp, ethernet, ether_types, ipv4, packet, tcp
 from os_ken.ofproto import inet, ofproto_v1_3
 
-from contracts.thresholds import DEFAULT_ANOMALY_WARN, DEFAULT_RATE_LIMIT_TRUST
+from contracts.thresholds import (
+    DEFAULT_ANOMALY_WARN, DEFAULT_PROBATION_INTERVAL_S,
+    DEFAULT_RATE_LIMIT_TRUST, DEFAULT_TASK_TIMEOUT_S,
+)
 from controller.edge_selector import (
     BAND_RATE_LIMITED, DEFAULT_D_CHOICES, DEFAULT_EPSILON,
     DEFAULT_SELECTION_STRATEGY, EdgeWeights, NodeState,
     select_edge_node as _select_edge_node,
 )
 from trust_engine.ai_optimizer import build_optimizer
+from controller.attack_classifier import (
+    SIG_AUTH_BAD_RESPONSE,
+    SIG_AUTH_IP_PIN,
+    SIG_FLOOD,
+    AttackEvidence,
+)
 from controller.event_bus import EventBus, NullBus
+from controller.flood_detector import evaluate_flood_tell
+from security.authenticator import AUTH_DENY_BAD_RESPONSE, AUTH_DENY_IP_PIN
 from controller.trust_state import TrustState
 from security.authenticator import (
     HmacAuthenticator, NullAuthenticator, Present80Authenticator,
@@ -244,19 +255,51 @@ def _build_authenticator(cfg: Dict[str, Any]):
     if not sec:
         return HmacAuthenticator(shared_key=_DEMO_HMAC_KEY)
 
+    expected_ips = _device_roster(cfg)
     scheme = sec.get('auth_scheme', 'present80')
     if scheme == 'null':
-        return NullAuthenticator()
+        return NullAuthenticator(expected_ips=expected_ips)
     if scheme == 'hmac':
         key_hex = sec.get('shared_key_hex')
         key = bytes.fromhex(key_hex) if key_hex else _DEMO_HMAC_KEY
-        return HmacAuthenticator(shared_key=key)
+        return HmacAuthenticator(shared_key=key, expected_ips=expected_ips)
     if scheme == 'present80':
         key_hex = sec.get('shared_key_hex')
         if not key_hex:
             raise ValueError("security.auth_scheme=present80 requires shared_key_hex (10 bytes)")
-        return Present80Authenticator(shared_key=bytes.fromhex(key_hex))
+        return Present80Authenticator(
+            shared_key=bytes.fromhex(key_hex), expected_ips=expected_ips,
+        )
     raise ValueError(f"unknown security.auth_scheme: {scheme!r}")
+
+
+def _device_roster(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """device_id -> the source IP entitled to it, derived from the topology.
+
+    This is what turns the source-IP pin from trust-on-first-use into a
+    provisioned binding, closing the spoofing race live run 9 found (an
+    identity nobody has claimed yet is free for the taking -- see
+    security.IdentityBinding).
+
+    Derived rather than configured, from `simulation/addressing.py`, which is
+    already the single source of truth both topology.py and this module use to
+    assign addresses. A separately-maintained roster in YAML would be a second
+    place for the same fact to live and a new way for the two to disagree.
+
+    Returns {} when the config does not describe a device count, which leaves
+    every identity on the old TOFU path -- so this cannot break a deployment
+    whose population is genuinely not known ahead of time. That fallback is
+    also why this needs a test that the roster is actually POPULATED for the
+    live config: a mis-keyed lookup here does not fail, it silently reverts to
+    the behaviour 6.10 exists to remove. The first version of this function
+    read `cfg['topology']`, which does not exist -- the block is `simulation:`
+    -- and would have shipped a no-op fix into a live run.
+    """
+    sim = cfg.get('simulation') or {}
+    num_iot = sim.get('num_iot_devices')
+    if not num_iot:
+        return {}
+    return {f'iot{j}': iot_ip(j) for j in range(1, int(num_iot) + 1)}
 
 # Overridable so tests / alternate demo scales can point at a different file
 # without editing code.
@@ -293,6 +336,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # Ā back down, so dropping it too makes quarantine a one-way door and
     # contradicts flow_monitor's own contract ("Ā decays back down ... once
     # misbehaviour stops"). Service traffic is still fully cut.
+    # A probation trial has to out-rank the drop rules for the same reason the
+    # health check does, and more so: the whole point is to let one task reach a
+    # quarantined node so it can earn trust back. Installed below
+    # PRIO_QUARANTINE_DROP it would be black-holed by the very rules it exists
+    # to escape, and every trial would read as a timeout -- turning probation
+    # into a machine for confirming the verdict it is meant to re-test.
+    # These flows carry a short hard_timeout (see _install_vip_pair) so the hole
+    # closes on its own within about one task.
+    PRIO_PROBATION = 460
     PRIO_HEALTH_CHECK = 450
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
@@ -310,6 +362,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         n = cfg['simulation']['num_edge_nodes']
         node_ids = [f'srv{i}' for i in range(1, n + 1)]
+
+        # The clients' own give-up time. Read once here because two separate
+        # things need it: the dispatch reaper's horizon (TrustState) and the
+        # lifetime of a probation trial's flow rules (_install_vip_pair).
+        self.task_timeout_s = float(
+            cfg.get('agents', {}).get('task_timeout_s', DEFAULT_TASK_TIMEOUT_S)
+        )
 
         trust_cfg = cfg['trust']
         trust_calc = TrustCalculator(
@@ -340,10 +399,32 @@ class TrustBalancerApp(app_manager.OSKenApp):
         optimizer_cfg = cfg.get('optimizer')
         reward_cfg = (optimizer_cfg or {}).get('reward', {})
 
+        # Dashboard event bus. Absent/disabled config -> NullBus, so every
+        # self.bus.publish() below is a no-op and the controller behaves
+        # bit-for-bit as it did before the dashboard existed. Built before
+        # TrustState (below) so TimingCommitBackend can publish 'block'
+        # events straight onto it -- see _on_block_committed.
+        dash_cfg = cfg['controller'].get('dashboard', {})
+        self.dashboard_enabled: bool = bool(dash_cfg.get('enabled', False))
+        if self.dashboard_enabled:
+            self.bus: Any = EventBus(
+                record_path=dash_cfg.get('record_path', 'data/events.jsonl'),
+            )
+        else:
+            self.bus = NullBus()
+
+        # Times every real commit() call so the live full-scale demo can
+        # measure the blockchain-overhead NFR (<15%, evaluation/nfr_report.py)
+        # -- see TimingCommitBackend's docstring for why this can't be
+        # inferred from TrustState alone.
+        self._commit_backend = TimingCommitBackend(
+            LocalLedgerBackend(), on_commit=self._on_block_committed,
+        )
+
         self.state = TrustState(
             node_ids=node_ids,
             trust_calculator=trust_calc,
-            commit_backend=LocalLedgerBackend(),
+            commit_backend=self._commit_backend,
             authenticator=_build_authenticator(cfg),
             edge_weights=edge_weights,
             optimizer=build_optimizer(optimizer_cfg, fallback=edge_weights),
@@ -360,6 +441,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
             epsilon=selection_epsilon,
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
+            # The clients' own give-up time, so the dispatch reaper tracks it
+            # rather than out-living it (see TrustState._dispatch_reap_after_s).
+            task_timeout_s=self.task_timeout_s,
+            # How often a trust-quarantined node with a clear anomaly rail may
+            # be offered a trial task, so quarantine is recoverable rather than
+            # absorbing (see TrustState._probation_candidate_locked).
+            probation_interval_s=cfg.get('controller', {}).get(
+                'probation_interval_s', DEFAULT_PROBATION_INTERVAL_S,
+            ),
         )
 
         ctrl_cfg = cfg['controller']
@@ -389,21 +479,44 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self.monitor_interval_s: float = ctrl_cfg['monitor_interval_s']
         self.honesty_deviation_threshold: float = ctrl_cfg['honesty_deviation_threshold']
 
+        # Flood/DDoS tell (controller/flood_detector.py) -- keyed on the
+        # requesting CLIENT, not on whichever edge node the request lands on
+        # (see that module's docstring). expected_rate_hz defaults from
+        # agents.report_interval_s: what one honestly-configured device sends.
+        report_interval_s = float(cfg.get('agents', {}).get('report_interval_s', 1.0))
+        default_expected_rate_hz = 1.0 / report_interval_s if report_interval_s > 0 else 1.0
+        self.flood_expected_rate_hz: float = float(
+            ctrl_cfg.get('flood_expected_rate_hz', default_expected_rate_hz)
+        )
+        self.flood_ratio: float = float(ctrl_cfg.get('flood_ratio', 5.0))
+        self.flood_floor_hz: float = float(ctrl_cfg.get('flood_floor_hz', 3.0))
+        self.flood_persist: int = int(ctrl_cfg.get('flood_persist', 3))
+        self.flood_window_s: float = float(ctrl_cfg.get('flood_window_s', 2.0))
+        # client_ip -> leaky-bucket strike count, mirroring FlowMonitor's
+        # self._latency_strikes (which is per-node; this is per-client).
+        self._flood_strikes: Dict[str, int] = {}
+        # Client-side attack classification (plan_adv.md Phase 2). Separate
+        # from FlowMonitor's node-side AttackEvidence on purpose: the subjects
+        # are different kinds of thing (a device vs. an edge node) and the two
+        # must never be merged into one namespace, or a flooding client would
+        # end up scored against the node it happened to overwhelm -- the exact
+        # misattribution controller/flood_detector.py's docstring exists to
+        # prevent.
+        self._client_evidence = AttackEvidence()
+        self._client_labels: Dict[str, Optional[str]] = {}
+
         self._datapaths: Dict[int, Any] = {}
         self._mac_to_port: Dict[int, Dict[str, int]] = {}
         self._cookie_base = 0x5A00000000000000
 
-        # Dashboard event bus. Absent/disabled config -> NullBus, so every
-        # self.bus.publish() below is a no-op and the controller behaves
-        # bit-for-bit as it did before the dashboard existed.
-        dash_cfg = ctrl_cfg.get('dashboard', {})
-        self.dashboard_enabled: bool = bool(dash_cfg.get('enabled', False))
-        if self.dashboard_enabled:
-            self.bus: Any = EventBus(
-                record_path=dash_cfg.get('record_path', 'data/events.jsonl'),
-            )
-        else:
-            self.bus = NullBus()
+        # Real link parameters reported by simulation/topology.py over
+        # POST /topology/links, keyed on the UNORDERED endpoint pair -- the
+        # harness reports the link in whatever order it called addLink(), and
+        # topology_graph() writes it in its own order. Merged into
+        # topology_graph()['links'] by record_link_params(). Empty until (and
+        # unless) the harness reports; every consumer must treat a missing
+        # delay_ms as "not measured", never as zero.
+        self._link_params: Dict[frozenset, Dict[str, float]] = {}
 
         # Imported here (not at module scope) because FlowMonitor is built and
         # wired in the same Sprint 1 pass as this class -- avoids a hard
@@ -608,7 +721,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         client_ip = ip_pkt.src
         client_port = tcp_pkt.src_port
 
-        chosen = self.state.choose_edge_node()
+        self._check_flood(client_ip)
+
+        chosen, probation = self.state.choose_edge_node_ex()
         if chosen is None:
             logger.warning(
                 "No eligible edge node for %s:%d -- all quarantined, denying",
@@ -621,13 +736,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
             return
 
         self.state.register_dispatch(client_ip, client_port, chosen)
-        self._install_vip_pair(dp, client_ip, client_port, chosen)
+        self._install_vip_pair(
+            dp, client_ip, client_port, chosen, probation=probation,
+        )
         self._resend_packet(dp, msg, in_port)
 
         decision_ms = (time.monotonic() - decision_start) * 1000.0
         logger.info(
-            "Routed %s:%d -> %s (decision took %.2fms)",
-            client_ip, client_port, chosen, decision_ms,
+            "Routed %s:%d -> %s%s (decision took %.2fms)",
+            client_ip, client_port, chosen,
+            " [PROBATION TRIAL]" if probation else "", decision_ms,
         )
 
         # The ranked list is what makes the decision explicable on screen: the
@@ -639,7 +757,118 @@ class TrustBalancerApp(app_manager.OSKenApp):
             client_ip=client_ip, client_port=client_port, chosen=chosen,
             edge_score=last.get('score'), ranked=last.get('ranked'),
             decision_ms=round(decision_ms, 2), dpid=dp.id,
+            probation=probation,
         )
+
+    def _check_flood(self, client_ip: str) -> None:
+        """Flood/DDoS tell for one VIP request arrival (controller/flood_detector.py).
+
+        Publishes 'flood' only on the rising edge (strikes just reached
+        flood_persist), not on every PacketIn while it stays tripped -- a
+        sustained flood is itself hundreds of PacketIns per second, and
+        publishing one dashboard event per packet would let the attack DoS
+        the event bus/dashboard too. Mirrors 'quarantine'/'recovered' only
+        firing on the transition, not every poll.
+        """
+        prev_strikes = self._flood_strikes.get(client_ip, 0)
+        self.state.record_client_request(client_ip)
+        rate_hz = self.state.client_request_rate(client_ip, self.flood_window_s)
+        tell = evaluate_flood_tell(
+            rate_hz, self.flood_expected_rate_hz, strikes=prev_strikes,
+            flood_ratio=self.flood_ratio, flood_floor_hz=self.flood_floor_hz,
+            flood_persist=self.flood_persist,
+        )
+        self._flood_strikes[client_ip] = tell.strikes
+        if tell.tripped and prev_strikes < self.flood_persist:
+            logger.warning(
+                "%s: flood tell -- rate %.1f req/s is %.1fx expected %.1f req/s (sustained)",
+                client_ip, rate_hz, tell.ratio or 0.0, self.flood_expected_rate_hz,
+            )
+            self.bus.publish(
+                'flood', client_ip=client_ip, rate_hz=round(rate_hz, 2),
+                ratio=round(tell.ratio, 2) if tell.ratio is not None else None,
+                expected_rate_hz=round(self.flood_expected_rate_hz, 2),
+            )
+            # Feed classification on the same rising edge, for the same
+            # reason -- one observation per sustained flood, not one per
+            # packet.
+            self._record_client_signal(
+                client_ip, {SIG_FLOOD: round(tell.ratio, 4) if tell.ratio else 0.0},
+            )
+
+    def _record_client_signal(self, client: str, signals: Dict[str, float]) -> None:
+        """Record one client-side observation and publish a 'classification'
+        event if that changed the device's label.
+
+        Rising-edge only, same as FlowMonitor._publish_classification -- see
+        there for why restating an unchanged verdict every cycle is a bug and
+        not merely noise.
+        """
+        now = time.time()
+        self._client_evidence.record_client(client, now, signals)
+        result = self._client_evidence.classify_client(client, now=now)
+        label = result.attack_type if result is not None else None
+        # See FlowMonitor._publish_classification: .get()'s None default is
+        # also the "no opinion" label, so an unclassified subject that stays
+        # unclassified publishes nothing.
+        if self._client_labels.get(client) == label:
+            return
+        self._client_labels[client] = label
+
+        if result is None:
+            self.bus.publish(
+                'classification', subject=client, kind='client', attack_type=None,
+            )
+            return
+
+        logger.warning(
+            "%s CLASSIFIED as %s (confidence %.2f): %s",
+            client, result.attack_type, result.confidence, result.rationale,
+        )
+        self.bus.publish(
+            'classification', subject=client, kind='client',
+            attack_type=result.attack_type,
+            confidence=round(result.confidence, 3),
+            rationale=result.rationale,
+            evidence_cycles=result.evidence_cycles,
+            first_flagged_t=result.first_flagged_t,
+        )
+
+    def record_auth_denial(self, device_id: str, source_ip: str, kind: Optional[str]) -> None:
+        """Feed an auth denial into client classification.
+
+        Called by northbound_api.py's /auth/verify handler. The subject is the
+        SOURCE IP -- the host that actually sent the request -- never the
+        claimed device_id.
+
+        An earlier version keyed on device_id, reasoning that a spoofer's whole
+        method is to present someone else's identity so filing under the IP
+        would lose the connection to the identity it tried to steal. Live run 7
+        showed that gets it exactly backwards: iot38 impersonated iot1, the
+        defence correctly refused it, and the resulting `spoof` label landed on
+        **iot1 -- the victim** -- while iot38, the actual attacker, scored as
+        clean. A classifier that blames the impersonated party is worse than no
+        classifier, and the stolen identity does not need to be the key to be
+        preserved: it travels in the event payload as `device_id`, which is
+        evidence, exactly where the source IP used to sit.
+
+        The IP is folded back to a device id for reporting by
+        evaluation/attack_report.subject_aliases, the same way flood evidence
+        already is.
+        """
+        signal = {
+            AUTH_DENY_IP_PIN: SIG_AUTH_IP_PIN,
+            AUTH_DENY_BAD_RESPONSE: SIG_AUTH_BAD_RESPONSE,
+        }.get(kind or '')
+        subject = source_ip or device_id
+        if signal is None:
+            # 'no_challenge' / 'nonce_expired' are protocol-sequencing
+            # failures, not evidence of either modelled auth attack. Recording
+            # them as a clean observation still counts the cycle without
+            # accusing anyone.
+            self._record_client_signal(subject, {})
+            return
+        self._record_client_signal(subject, {signal: 1.0})
 
     def _send_arp_reply(self, dp, in_port, arp_pkt, eth) -> None:
         parser = dp.ofproto_parser
@@ -668,12 +897,27 @@ class TrustBalancerApp(app_manager.OSKenApp):
         )
         dp.send_msg(out)
 
-    def _install_vip_pair(self, dp, client_ip: str, client_port: int, node_id: str) -> None:
+    def _install_vip_pair(
+        self, dp, client_ip: str, client_port: int, node_id: str,
+        probation: bool = False,
+    ) -> None:
         parser = dp.ofproto_parser
         idx = srv_index(node_id)
         s_ip = srv_ip(idx)
         s_mac = srv_mac(idx)
         cookie = self._cookie_for(node_id)
+
+        # A probation trial goes in above the quarantine drop rules and expires
+        # after roughly one task, so the exception it carves out is both
+        # necessary (otherwise the trial cannot reach the node) and temporary.
+        if probation:
+            priority = self.PRIO_PROBATION
+            idle_timeout = 0
+            hard_timeout = max(2, int(round(self.task_timeout_s)))
+        else:
+            priority = self.PRIO_CONNECTION
+            idle_timeout = self.flow_idle_timeout
+            hard_timeout = self.flow_hard_timeout
 
         forward_match = parser.OFPMatch(
             eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
@@ -695,9 +939,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # rate-limiting the *load offered to* a suspect node is the point.
         meter_id = self._meter_for_node(dp, node_id)
         self._install_goto_l2(
-            dp, self.TABLE_VIP, self.PRIO_CONNECTION, forward_match, forward_actions,
-            cookie=cookie, idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout, meter_id=meter_id,
+            dp, self.TABLE_VIP, priority, forward_match, forward_actions,
+            cookie=cookie, idle_timeout=idle_timeout,
+            hard_timeout=hard_timeout, meter_id=meter_id,
         )
 
         # Reverse direction is installed on the SAME datapath (the client's
@@ -719,9 +963,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
             parser.OFPActionSetField(tcp_src=self.vip_port),
         ]
         self._install_goto_l2(
-            dp, self.TABLE_VIP, self.PRIO_CONNECTION, reverse_match, reverse_actions,
-            cookie=cookie, idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout,
+            dp, self.TABLE_VIP, priority, reverse_match, reverse_actions,
+            cookie=cookie, idle_timeout=idle_timeout,
+            hard_timeout=hard_timeout,
         )
 
         # Rendered as text here rather than in the browser: this is the exact
@@ -730,9 +974,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # what was actually installed.
         self.bus.publish(
             'flow_install', dpid=dp.id, node=node_id, cookie=cookie,
-            table=self.TABLE_VIP, priority=self.PRIO_CONNECTION,
-            idle_timeout=self.flow_idle_timeout,
-            hard_timeout=self.flow_hard_timeout,
+            table=self.TABLE_VIP, priority=priority,
+            idle_timeout=idle_timeout,
+            hard_timeout=hard_timeout,
+            probation=probation,
             rate_limited=meter_id is not None,
             rate_limit_kbps=self.rate_limit_kbps if meter_id is not None else None,
             rules=[
@@ -1108,21 +1353,81 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         Returns the node's new trust score, or None if this report can't be
         attributed to any known dispatch (stale, duplicate, or reaped)."""
-        node_id = self.state.complete_dispatch(client_ip, vip_src_port)
-        if node_id is None:
+        completed = self.state.complete_dispatch(client_ip, vip_src_port)
+        if completed is None:
             logger.warning(
                 "Unattributable /report from %s:%d (device=%s) -- stale or duplicate",
                 client_ip, vip_src_port, device_id,
             )
             return None
+        node_id = completed.node_id
 
-        claimed_cpu = self.state.get_claimed_cpu(node_id)
+        if not completed.chargeable:
+            # This flow was re-steered onto node_id by _redispatch_after_quarantine,
+            # and quarantine's drop rules killed the connection it was riding.
+            # The client stayed blocked on the dead socket until its own
+            # task_timeout_s expired; node_id never saw the task. Publish the
+            # outcome -- the client really did lose it, so service availability
+            # and PDR must keep counting it -- but do not let it reach
+            # record_task_outcome, where it would move node_id's trust and enter
+            # the packet-drop tell's window as evidence about a node that was
+            # never asked. See panel_fix.md §3.17 / §6.9.
+            self.bus.publish(
+                'report', device=device_id, node=node_id, status=status,
+                latency_ms=round(latency_ms, 2),
+                trust=round(self.state.trust_calc.get_score(node_id), 4),
+                charged=False, attribution='resteer_inherited',
+                resteered_from=completed.resteered_from,
+                held_for_s=round(
+                    completed.resteered_at - completed.dispatched_at, 3,
+                ) if completed.resteered_at else None,
+            )
+            logger.info(
+                "Report: %s task=%s on %s NOT CHARGED -- inherited from %s "
+                "(connection killed by that node's quarantine)",
+                device_id, status, node_id, completed.resteered_from,
+            )
+            return None
+
+        # The *time-averaged* claim, not the raw one. `honesty_delta()` compares
+        # this against `observed`, which is an integral over load_window_s, so
+        # feeding it the instantaneous `get_claimed_cpu()` compares two different
+        # quantities -- the same defect flow_monitor.py:297 already fixed on the
+        # anomaly-gate side, left behind here on the trust side.
+        #
+        # It is not a false-quarantine bug (this path never gates), it is a
+        # steady tax: the node samples active/concurrency the moment its handler
+        # runs, so at task_work_ms=15 it truthfully claims 0.00 in 98.49% of
+        # samples (measured, live run 5). The deviation then *is* the occupancy
+        # -- dev/occ = 1.000 in every bin -- making h_raw = 1 - 2*occupancy, so a
+        # busy honest node loses trust for being busy. That is the study's
+        # Finding 6 (docs/study §7), and it survived because claimed_load() was
+        # only ever wired into one of its two consumers.
+        claimed_cpu = self.state.claimed_load(node_id)
         observed = self.state.observed_load(node_id)
+        # H compares these two as `|reported_cpu - cpu_usage|`, so they must be
+        # the same quantity. `observed_load` is residence time and the claim is
+        # service time (~6x apart, live run 6), which made H fall as
+        # 1 - 2*occupancy on perfectly honest nodes. Use the controller's
+        # service-time duty-cycle estimate when it has enough evidence, and fall
+        # back to observed_load only when it does not -- an imperfect H beats no
+        # H, and the fallback is what every pre-busy-seconds agent still gets.
+        expected = self.state.expected_duty_cycle(node_id)
+        honesty_reference = expected if expected is not None else observed
         upd = TrustUpdate(
             device_id=device_id, edge_node_id=node_id, task_status=status,
-            cpu_usage=observed, reported_cpu=claimed_cpu, latency_ms=latency_ms,
+            cpu_usage=honesty_reference, reported_cpu=claimed_cpu,
+            latency_ms=latency_ms,
         )
+        # Timed for the blockchain-overhead NFR: `commit_count` before/after
+        # tells us whether *this* report happened to trigger a block commit
+        # (every max_updates_per_block-th one does, via _flush_pending_locked)
+        # without record_task_outcome's return type needing to say so.
+        commits_before = self._commit_backend.commit_count
+        t0 = time.monotonic()
         score = self.state.record_task_outcome(upd)
+        report_ms = (time.monotonic() - t0) * 1000.0
+        committed = self._commit_backend.commit_count > commits_before
         logger.info(
             "Report: %s task=%s from %s -> %s trust=%.4f",
             device_id, status, node_id, node_id, score,
@@ -1131,12 +1436,79 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'report', device=device_id, node=node_id, status=status,
             latency_ms=round(latency_ms, 2), trust=round(score, 4),
             claimed_cpu=round(claimed_cpu, 4), observed_load=round(observed, 4),
+            # Both sides of the H comparison, recorded so a run's honesty
+            # behaviour can be re-derived offline. `expected_duty` is None when
+            # the estimator abstained, and `honesty_reference` is what actually
+            # reached the trust formula -- keep both, since the gap between them
+            # is exactly what Defect 8 was invisible inside of.
+            expected_duty=None if expected is None else round(expected, 4),
+            honesty_reference=round(honesty_reference, 4),
+            report_ms=round(report_ms, 4), committed=committed,
         )
         return score
+
+    def _on_block_committed(
+        self, block: Optional[Any], elapsed_ms: float, num_updates: int,
+    ) -> None:
+        """TimingCommitBackend's on_commit hook -- publishes one 'block' event
+        per real commit() call, success or rejection.
+
+        Two consumers with different needs:
+
+        * `evaluation/nfr_report.py` wants `commit_ms` and `num_updates` for the
+          blockchain-overhead NFR. That is what this event originally carried.
+        * The dashboard's ledger panel wants to **re-derive the chain itself**
+          rather than trust a `valid: true` flag from the process that built it.
+          For that it needs the exact header `Block.compute_hash()` hashes --
+          index, timestamp, previous_hash, merkle_root, proposer_id, raft_term
+          -- plus the resulting `hash` to check against.
+
+        The header fields are sent because they ARE the hash preimage, not for
+        display: a panel given only `hash` could redraw the chain but could
+        never contradict the controller about it, which is the one thing worth
+        having a second implementation for. `timestamp` in particular is not
+        decoration -- omit it and the browser cannot reproduce the digest.
+
+        A rejected block (`accepted: False`) has no header at all: `commit()`
+        returned None, so there is nothing to hash and every header field is
+        None rather than a plausible-looking blank.
+        """
+        self.bus.publish(
+            'block',
+            index=(block.index if block is not None else None),
+            commit_ms=round(elapsed_ms, 4),
+            num_updates=num_updates,
+            accepted=block is not None,
+            # The hash preimage, verbatim. NOT rounded -- `timestamp` is inside
+            # the digest, so a rounded copy would hash to something else and
+            # every browser-side check would fail on a chain that is fine.
+            timestamp=(block.timestamp if block is not None else None),
+            previous_hash=(block.previous_hash if block is not None else None),
+            merkle_root=(block.merkle_root if block is not None else None),
+            proposer_id=(block.proposer_id if block is not None else None),
+            raft_term=(block.raft_term if block is not None else None),
+            hash=(block.hash if block is not None else None),
+        )
 
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py -- dashboard                            #
     # ------------------------------------------------------------------ #
+    def pause_monitor(self) -> bool:
+        """Stop the /status polling loop. Called by the harness immediately
+        before it kills the agents, so the fleet going away on purpose is not
+        recorded as eight simultaneous unreachability anomalies.
+
+        Idempotent, and one-way for the life of the process -- there is no
+        resume, because the only caller is teardown. Returns True if a monitor
+        was running to stop.
+        """
+        monitor = getattr(self, 'flow_monitor', None)
+        if monitor is None:
+            return False
+        logger.info("Monitor paused for teardown -- no further /status polls")
+        monitor.stop()
+        return True
+
     def topology_graph(self) -> Dict[str, Any]:
         """The node/link graph the dashboard draws.
 
@@ -1153,6 +1525,43 @@ class TrustBalancerApp(app_manager.OSKenApp):
             m['node']: m.get('attack', 'none')
             for m in self.cfg['simulation'].get('malicious_edge_nodes', [])
         }
+        # Ground-truth ONSET, not just the attack kind. Without it,
+        # evaluation/attack_report.py can say an attack was classified
+        # correctly but not how long that took -- and inferring onset from the
+        # first anomaly instead would make every detector look infinitely fast
+        # by construction, which is precisely the kind of self-flattering
+        # measurement this project keeps finding and removing.
+        onset = {
+            m['node']: float(m.get('start_s', 0.0))
+            for m in self.cfg['simulation'].get('malicious_edge_nodes', [])
+        }
+        # IoT-side ground truth, same "surfaced for post-hoc marking only"
+        # contract as the server `attack` field below. Without this, the two
+        # attacks that live on the device side rather than the node side
+        # (plan_adv.md Phase 1's DDoS/flooding and identity spoofing) have no
+        # ground truth anywhere on the bus, so evaluation/attack_report.py
+        # could score four of the six attacks and would have to silently drop
+        # the other two -- a confusion matrix missing the rows it finds
+        # inconvenient is worse than no confusion matrix.
+        #
+        # Precedence matches simulation/topology.py's own wiring exactly: a
+        # spoof entry beats a flood entry for the same device (--malicious is
+        # a single choice and spoof is the more specific ask), and the
+        # wrong-key devices in security.malicious_iot_devices are a separate
+        # mechanism again (denied at admission, never admitted at all). If
+        # that precedence ever changes there, it must change here too, or
+        # ground truth and behaviour drift apart without anything failing.
+        iot_mal: Dict[str, str] = {
+            d: 'bad_credentials'
+            for d in self.cfg.get('security', {}).get('malicious_iot_devices', []) or []
+        }
+        iot_onset: Dict[str, float] = {}
+        for m in self.cfg['simulation'].get('malicious_flood_devices', []) or []:
+            iot_mal[m['device']] = 'flood'
+            iot_onset[m['device']] = float(m.get('start_s', 0.0))
+        for m in self.cfg['simulation'].get('malicious_spoof_devices', []) or []:
+            iot_mal[m['device']] = 'spoof'
+            iot_onset[m['device']] = float(m.get('start_s', 5.0))
 
         nodes: List[Dict[str, Any]] = [
             {'id': 's0', 'kind': 'core_switch', 'dpid': 1, 'label': 's0 (core)'},
@@ -1171,6 +1580,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 # the controller catches it -- never used to pre-emptively
                 # colour a node, which would give the detection away for free.
                 'attack': mal.get(f'srv{i}', 'none'),
+                'attack_start_s': onset.get(f'srv{i}', 0.0),
             })
             links.append({'a': f's{i}', 'b': f'srv{i}', 'kind': 'server_link'})
             links.append({'a': 's0', 'b': f's{i}', 'kind': 'core_link'})
@@ -1180,8 +1590,29 @@ class TrustBalancerApp(app_manager.OSKenApp):
             nodes.append({
                 'id': f'iot{j}', 'kind': 'iot', 'ip': iot_ip(j),
                 'label': f'iot{j}',
+                # Ground truth only -- see iot_mal above. Same rule as the
+                # server nodes: never used to colour a device before the
+                # controller has caught it on its own evidence.
+                'attack': iot_mal.get(f'iot{j}', 'none'),
+                'attack_start_s': iot_onset.get(f'iot{j}', 0.0),
             })
             links.append({'a': f'iot{j}', 'b': f's{sw_idx + 1}', 'kind': 'iot_link'})
+
+        # Attach the parameters the harness actually applied, where it has
+        # reported them. A link with no reported entry keeps no delay_ms key at
+        # all rather than a zero: "not measured" and "zero delay" are different
+        # claims, and evaluation/topology_metrics.distance_to_sink() reports
+        # None for the first so an un-plumbed run shows a dash on screen.
+        # getattr, not attribute access: this method is deliberately callable
+        # against a duck-typed stand-in that implements only what the dashboard
+        # needs (dashboard/replay.py::ReplayApp, and the fakes in
+        # tests/test_attack_report.py). Requiring the attribute would make the
+        # graph un-derivable outside a live controller.
+        measured_links = getattr(self, '_link_params', None) or {}
+        for lk in links:
+            measured = measured_links.get(frozenset((lk['a'], lk['b'])))
+            if measured:
+                lk.update(measured)
 
         return {
             'nodes': nodes,
@@ -1206,6 +1637,78 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'epsilon': self.state.epsilon,
             },
         }
+
+    def record_link_params(self, links: List[Dict[str, Any]]) -> int:
+        """Store the link parameters simulation/topology.py reported.
+
+        Descriptive only: these numbers annotate a graph this class already
+        derives from config, and nothing here feeds routing, trust or
+        enforcement. Returns how many entries were usable.
+
+        Malformed entries are skipped rather than raising -- the harness sends
+        this best-effort during startup and a bad row must not be able to abort
+        a run over a cosmetic annotation.
+
+        Also diffs the reported link set against the config-derived one and
+        logs the difference. topology_graph()'s docstring warns that it
+        hand-duplicates ZeroTrustTopo.build()'s `sw_idx = (j - 1) % n_edge`
+        attachment rule and must be kept in sync by hand; comparing the two
+        here is the cheapest way to make that drift visible instead of silent.
+        The reported table is still stored either way -- the harness built what
+        it built, and the controller's derived graph is the copy more likely to
+        be wrong.
+        """
+        accepted = 0
+        for lk in links:
+            if not isinstance(lk, dict):
+                continue
+            a, b = lk.get('a'), lk.get('b')
+            if not isinstance(a, str) or not isinstance(b, str) or a == b:
+                continue
+            entry: Dict[str, float] = {}
+            for key in ('delay_ms', 'bw_mbps'):
+                val = lk.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    entry[key] = float(val)
+            if not entry:
+                continue
+            self._link_params[frozenset((a, b))] = entry
+            accepted += 1
+
+        if accepted:
+            self._warn_on_link_drift()
+            if self.dashboard_enabled:
+                # A separate event rather than re-publishing 'topology': that
+                # one is contracted as the FIRST event in every recording and
+                # dashboard/replay.py::_recover_topology() reads it as such, so
+                # a second copy would give replay two competing graphs.
+                self.bus.publish('topology_links', graph=self.topology_graph())
+        return accepted
+
+    def _warn_on_link_drift(self) -> None:
+        """Log any disagreement between the reported and derived link sets."""
+        derived = {
+            frozenset((lk['a'], lk['b']))
+            for lk in self.topology_graph()['links']
+        }
+        reported = set(self._link_params)
+        # The harness also builds the cx <-> s0 management link after
+        # net.start(); it is deliberately absent from the derived graph (it
+        # carries no VIP traffic and is not part of the topology the dashboard
+        # draws), so it is not drift.
+        only_reported = {
+            pair for pair in reported - derived if 'cx' not in pair
+        }
+        only_derived = derived - reported
+        if only_reported or only_derived:
+            fmt = lambda pairs: sorted('-'.join(sorted(p)) for p in pairs)  # noqa: E731
+            logger.warning(
+                "Topology link drift: topology_graph() and the harness disagree. "
+                "Only reported by the harness: %s. Only derived from config: %s. "
+                "topology_graph() duplicates ZeroTrustTopo.build()'s attachment "
+                "rule by hand -- one of the two copies is now stale.",
+                fmt(only_reported), fmt(only_derived),
+            )
 
     def optimizer_status(self) -> Dict[str, Any]:
         """AI weight-optimizer state for GET /api/optimizer and the dashboard: the

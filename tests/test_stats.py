@@ -18,6 +18,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from evaluation import stats as S
 
 
+def _scipy_p(*samples, null: str) -> float:
+    """scipy's own Wilcoxon p-value, kept as the independent oracle these tests
+    check against. Only the *name* of the null-distribution argument is
+    translated for scipy < 1.9 (`mode=`, renamed to `method=` in 1.9); the value
+    is passed through unchanged, so scipy still computes the comparison figure.
+    """
+    try:
+        return float(wilcoxon(*samples, method=null).pvalue)
+    except TypeError:
+        return float(wilcoxon(*samples, mode=null).pvalue)
+
+
 def _rows(scenario: str, strategy: str, values, metric='slo_violation_rate'):
     return [
         {'scenario': scenario, 'strategy': strategy, 'seed': str(i), metric: str(v)}
@@ -101,7 +113,7 @@ class TestComparison:
         c = S.compare_pair(system, baseline, 'drop', 'slo_violation_rate',
                            'zt_sdn', 'round_robin')
         assert c.p_raw == pytest.approx(
-            float(wilcoxon(system, baseline, method='exact').pvalue)
+            _scipy_p(system, baseline, null='exact')
         )
         assert c.n_pairs == 8
         assert c.wins == 8 and c.losses == 0
@@ -164,7 +176,7 @@ class TestComparison:
         c = S.compare_pair(system, baseline, 'drop', 'failure_rate', 'zt', 'b')
         diffs = [round(b - s, 6) for s, b in zip(system, baseline)]
         assert len({abs(d) for d in diffs}) == len(diffs), "fixture must be tie-free"
-        assert c.p_raw == pytest.approx(float(wilcoxon(diffs, method='exact').pvalue))
+        assert c.p_raw == pytest.approx(_scipy_p(diffs, null='exact'))
 
         # Repeated magnitudes, so the ranks tie. Built against a zero baseline so
         # the differences are exactly these values: computing them as `v + 0.1`
@@ -174,7 +186,7 @@ class TestComparison:
         t = S.compare_pair(tied_system, tied_diffs, 'drop', 'failure_rate', 'zt', 'b')
         assert len({abs(d) for d in tied_diffs}) < len(tied_diffs), "fixture must tie"
         assert t.p_raw == pytest.approx(
-            float(wilcoxon(tied_diffs, method='approx').pvalue)
+            _scipy_p(tied_diffs, null='approx')
         )
 
     def test_s11_rejects_unpaired_or_empty_input(self) -> None:

@@ -8,16 +8,31 @@ trust, packet drops, and the AI weight optimizer learning in real time. Routing
 now spreads load across **all** healthy servers via power-of-two-choices, not just
 the top two — the starvation fix (§5b).
 
-> This is the demo-day runbook. For install/environment details and per-feature
-> deep dives see **`SETUP.md`**; for the optimizer design see
-> **`docs/AI_OPTIMIZER.md`**; for the flow-rule scheme see **`docs/FLOW_RULES.md`**;
-> for the load-balancing starvation fix see **`docs/LOAD_BALANCING_STARVATION.md`**.
+> This is the demo-day runbook. For the consolidated state of the project — what
+> was built, what the live runs measured, and what is still open — see
+> **`SOURCE_OF_TRUTH.md`**. For install/environment details and per-feature deep
+> dives see **`SETUP.md`**; for the optimizer design see **`docs/AI_OPTIMIZER.md`**;
+> for the flow-rule scheme see **`docs/FLOW_RULES.md`**; for the load-balancing
+> starvation fix see **`docs/LOAD_BALANCING_STARVATION.md`**.
 >
 > **Platform note:** this box ships only Python 3.14, so the controller uses
 > **os-ken** (a maintained Ryu fork), and `sudo` needs an interactive password —
 > every **(sudo)** step must be run by you, in your own terminal. No venv/pip.
 
-You will use **four terminals** plus a browser. Keep them in this layout:
+**Two runs, two purposes — pick one before you start:**
+
+| | **Narrated demo** (§1–§8) | **Full-scale panel run** (§10) |
+|---|---|---|
+| Config | `params_trust_demo.yaml` | `params_trust_full.yaml` |
+| Scale | 4 servers / 12 devices / 1 attack | **8 servers / 40 devices / 6 attacks** |
+| Terminals | 4 + browser, driven by hand | **1 command**, unattended |
+| For | showing the mechanism live, on screen | producing the numbers you quote |
+
+Do the narrated demo when someone is watching, and the full-scale run when you
+need measurements. §9 is the no-Mininet fallback if the network misbehaves in
+front of an examiner. **Everything, in one place: §12.**
+
+The narrated demo uses **four terminals** plus a browser. Keep them in this layout:
 
 | Terminal | Role | sudo? |
 |----------|------|-------|
@@ -42,10 +57,29 @@ mn --version                                            # 2.3.0
 python3 -c "import os_ken; print(os_ken.__version__)"   # 4.1.1
 
 # Everything green before you demo anything live:
-python3 -m pytest tests/ -q                             # expect: all passing
+python3 -m pytest tests/ -q     # expect: 624 pass, 8 fail in test_stats.py
+#   Those 8 are a known scipy-version mismatch (needs >=1.9, box has 1.8.0)
+#   in evaluation/stats.py. Nothing in the live path imports it. Any OTHER
+#   failure means stop and fix before spending a sudo run.
 
 # Confirm the demo config has the features on (they are, by default):
 grep -E "enabled|auth_scheme|rate_limit|selection|epsilon" config/params_trust_demo.yaml
+```
+
+**Once per WSL2 session** (the kernel modules and OVS daemon do not survive a
+reboot, and Mininet's `tc` shaping fails without them):
+
+```bash
+sudo service openvswitch-switch start
+sudo modprobe -a sch_htb sch_netem sch_tbf sch_prio ifb
+```
+
+**Archive the previous recording before you run anything.** `data/` is
+gitignored and `run_demo.py --mode mininet` **unlinks `data/events.jsonl` at
+startup** — once it is gone, the run's numbers cannot be re-derived:
+
+```bash
+cp data/events.jsonl data/events_runN.jsonl     # do this FIRST, every time
 ```
 
 `config/params_trust_demo.yaml` is the demo scenario: **4 edge servers, 12 IoT
@@ -146,6 +180,64 @@ stream over SSE. The header pill should read **live** (green dot), not replay.
 
 Keep this on screen next to Wireshark. It is the plain-English view of exactly the
 same events Wireshark shows at the protocol level.
+
+**The "Trust ledger" panel sits directly under the topology.** Every trust
+update is batched (10 per block) into a hash-linked block; the ribbon shows the
+last 10. Two things to point at:
+
+- **The hash chips line up.** Each block's `prev` chip carries the same eight
+  characters as the previous block's `hash` chip. Read it left to right — that
+  is the chain, on screen, not asserted in a slide.
+- **Two verdicts, not one.** `✓ controller: chain valid` is the controller
+  auditing its own ledger. `✓ browser: N recomputed` is **this page** having
+  recomputed every SHA-256 itself from the block header, anchored on a genesis
+  block it built locally. They are independent, which is the whole point.
+
+**The demo move:** click **tamper with a block**. It flips one hex digit of a
+block's `merkle_root` *in the browser's copy only* — the controller's ledger is
+untouched and nothing is sent anywhere. That block immediately reads `hash
+mismatch` and the next one reads `broken link`, with a red arrow at the seam.
+Say this precisely: **the break localises to where the edit happened** — blocks
+further right still chain correctly to their own untouched predecessors. That is
+better than "everything goes red": the chain tells you *where* it was altered.
+Click **restore** to put it back.
+
+The footer carries the live blockchain-overhead NFR (commit cost amortised over
+the batch, against task latency, target <15%) and a pending gauge showing the
+batch filling toward 10.
+
+**Three chart panels sit below that.** The first two are live time-series on
+10 s buckets; the third is not live and is labelled so on the panel:
+
+- **Metrics over time** — the whole fleet: throughput, task delay (mean + p95),
+  PDR, Jain fairness, offered-vs-served load, packet drop. Shaded bands mark the
+  *configured* attack onsets, so the gap between a band's left edge and the line
+  reacting is your detection latency, visually.
+- **Metrics over time — by cluster** — the same buckets split into two halves of
+  the server roster (srv1–4, srv5–8), attributed by serving node. Use it to show
+  that an attack's damage is **localised**: when a blackhole arms in cluster B,
+  B's PDR drops while A holds flat — a separation the fleet panel averages away.
+  Membership is printed on the panel; the split is positional, not physical
+  (every server has its own edge switch here), so say so if asked.
+- **Client load — 20→40 IoT devices** — six charts, x = the device count, with
+  the roster held at the deployed 8 servers. **Say "this one is not live"
+  before you point at it**; the panel says so too, and says what *is* real (the
+  selector) versus modelled (the servers, the network).
+
+  The point to make, in one sentence: **throughput and PDR are identical for
+  both strategies across the whole sweep, and argmax is running the entire
+  workload on 3 of the 8 servers.** Then show why that costs something —
+  argmax's mean delay climbs 300→670 ms as devices are added while p2c holds
+  ~200 ms flat, because every new device piles onto the same three queues.
+  Fairness is the leading indicator here; PDR is the lagging one, and it has
+  not moved yet.
+
+  The right-hand edge (40 devices, 8 servers) is exactly the topology you just
+  ran live, which is the reason to trust the shape of it more than a projection.
+
+  If the panel says "no scaling sweep generated yet", run
+  `python3 -m evaluation.scale_compare` (~20 s) and reload — `data/` is
+  gitignored, so a fresh clone never ships one.
 
 ---
 
@@ -343,3 +435,201 @@ python3 -m dashboard.replay data/events.jsonl --loop        # open http://localh
 
 Keep this ready in a spare terminal as a safety net. Prefer the **live** run
 (§1–6) when the network cooperates.
+
+> Careful: this **overwrites `data/events.jsonl`**. If a real run is sitting
+> there unarchived, copy it out first (§0).
+
+---
+
+## 10. The full-scale panel run (8 servers / 40 devices / 6 attacks)
+
+This is the run that produces the numbers in `SOURCE_OF_TRUTH.md` — every attack
+the system implements, in one 300 s run, scored against ground truth afterwards.
+Unlike §1–6 it is **one command in one terminal**: `run_demo.py` launches the
+controller as a subprocess itself, then builds the network, then tears both down.
+Nothing to narrate live; you read the result from the four reports in §11.
+
+```bash
+# 1. Archive the previous recording (data/ is gitignored, and this run deletes it)
+cp data/events.jsonl data/events_runN.jsonl
+
+# 2. Clean state
+sudo service openvswitch-switch start
+sudo modprobe -a sch_htb sch_netem sch_tbf sch_prio ifb
+sudo mn -c
+
+# 3. Run it (~5 minutes; needs root; the controller starts itself)
+sudo python3 run_demo.py --mode mininet --config config/params_trust_full.yaml
+```
+
+**Let it finish.** The configured length is `simulation.duration_s: 300` and the
+run tears itself down; interrupting it early costs the on-off attacker (`srv8`,
+20 s period) most of its evidence, which is exactly what shortened run 11 to
+213 s and pushed srv8's detection latency to 50 s.
+
+While it runs, the live dashboard is still on **`http://localhost:8081/`** and
+the controller's own log is **`logs/controller.log`**; per-host logs land in
+`logs/srvN_agent.log` and `logs/iotN_client.log`.
+
+**What is attacking, and when** (all from `config/params_trust_full.yaml`):
+
+| Subject | Attack | Onset | Caught by |
+|---|---|---|---|
+| `iot38` | identity spoof (targets `iot1`) | 15 s | source-IP pin → `auth_denied kind=ip_pin` |
+| `srv3` | sybil — claims idle, burns CPU | 20 s | latency tell |
+| `srv6` | blackhole — accepts, never replies | 30 s | timeout-rate tell |
+| `srv1` | grayhole — drops 50% | 40 s | timeout-rate tell (weaker) |
+| `srv8` | on-off — 20 s period, 0.5 duty | 50 s | latency tell + sustained intermittency |
+| `iot37` | DDoS flood — 3 workers @ 0.25 s | 60 s | client-keyed flood tell |
+| `iot39`, `iot40` | bad credentials (wrong key) | at admission | `auth_denied kind=bad_response` |
+
+Spot-checks while it runs or straight after:
+
+```bash
+grep "SPOOFING DENIED"  logs/iot38_client.log      # the spoof was refused
+grep -c "Connection reset by peer" logs/*_client.log | grep -v ":0"   # expect nothing
+grep "QUARANTINE\|Re-dispatched" logs/controller.log | head -40
+grep -c '"charged": false' data/events.jsonl       # re-steered timeouts not charged (§3.17)
+```
+
+---
+
+## 11. Analysing a finished run
+
+All four read the same `data/events.jsonl` and **none of them needs root, Mininet,
+or the controller stack**. Run them from the repo root:
+
+```bash
+python3 -m evaluation.nfr_report          data/events.jsonl   # the four NFRs, pass/fail
+python3 -m evaluation.interval_report     data/events.jsonl   # every metric vs time, 10s buckets
+python3 -m evaluation.attack_report       data/events.jsonl   # confusion matrix + detection latency
+python3 -m evaluation.availability_report data/events.jsonl   # availability / "network lifetime"
+```
+
+Each also takes options worth knowing:
+
+```bash
+python3 -m evaluation.interval_report     data/events.jsonl --bucket-s 5 --csv buckets.csv
+python3 -m evaluation.attack_report       data/events.jsonl --window-cycles 120 --csv subjects.csv
+python3 -m evaluation.availability_report data/events.jsonl --quorum 0.5 --csv nodes.csv
+python3 -m evaluation.nfr_report          data/events.jsonl --out data/nfr_report.txt
+```
+
+`attack_report` and `availability_report` score against the ground truth carried
+on the run's `topology` event, so they need a recording that **includes the start
+of the run** — they will tell you so rather than guess.
+
+**Read the two reports together, and read them the right way round:**
+- `availability_report` splits **honest** nodes from **attackers** and never
+  prints a combined figure. An isolated attacker is enforcement working; an
+  isolated honest node is the system's real cost. The headline is honest-only.
+- `attack_report`'s detection latency is an **upper bound** — it is measured from
+  controller start, which precedes agent launch by the Mininet build.
+- A `FAMILY` row means the attack was caught and placed in the right family but
+  the magnitude/intermittency was not resolved. The response was identical; only
+  the label degraded.
+
+**Route-denial and re-steer counts**, which no report prints directly:
+
+```bash
+echo "routes: $(grep -c '\"type\": \"route\"' data/events.jsonl)  denied: $(grep -c '\"type\": \"route_denied\"' data/events.jsonl)"
+grep -c '"type": "quarantine"' data/events.jsonl
+grep -c '"type": "recovered"'  data/events.jsonl
+```
+
+**No root required, and no live run needed** — the two simulation sweeps that
+drive the *real* selector:
+
+```bash
+python3 -m evaluation.starvation_sweep                                  # argmax starves, p2c does not
+python3 -m evaluation.scalability_sweep --ns 4,8,16,32,64 --load-factors 0.1,0.6
+python3 -m evaluation.scalability_sweep --csv scaling.csv --seed 1      # same, to CSV
+python3 -m evaluation.tally_route_share data/events.jsonl               # per-server share of a real run
+```
+
+Sweep the **load factor** as well as N: argmax *starves* nodes at 10% load and
+*loses tasks* at 60%, and either end alone tells only half the story.
+
+---
+
+## 12. Command index — everything, in one place
+
+**Checks (no root):**
+```bash
+python3 -m pytest tests/ -q                                  # 624 pass, 8 known scipy fails
+python3 -m pytest tests/test_live_config_preflight.py -q      # config sound before you spend sudo
+mn --version && python3 -c "import os_ken; print(os_ken.__version__)"
+```
+
+**Once per WSL2 session (root):**
+```bash
+sudo service openvswitch-switch start
+sudo modprobe -a sch_htb sch_netem sch_tbf sch_prio ifb
+xhost +si:localuser:root                                     # as your normal user, for Wireshark
+```
+
+**Narrated demo — 4 servers / 12 devices / 1 attack (§1–§8):**
+```bash
+# Terminal A (no sudo)
+python3 -m controller.osken_manager controller.trust_balancer
+# Terminal C (sudo)
+sudo wireshark -i lo -k -f "tcp port 6653" &                 # filter: openflow_v4
+# Terminal B (sudo)
+sudo mn -c
+sudo python3 -m simulation.topology --config config/params_trust_demo.yaml --interactive
+# Browser
+#   http://localhost:8081/
+```
+
+**Two-attacker variant (§5c):**
+```bash
+ZTSDN_CONFIG=config/params_attacks_demo.yaml python3 -m controller.osken_manager controller.trust_balancer
+sudo python3 -m simulation.topology --config config/params_attacks_demo.yaml --interactive
+```
+
+**Full-scale panel run — 8 / 40 / 6 attacks (§10):**
+```bash
+cp data/events.jsonl data/events_runN.jsonl                  # archive first
+sudo mn -c
+sudo python3 run_demo.py --mode mininet --config config/params_trust_full.yaml
+```
+
+**Standalone, no Mininet and no root** (the trust engine on its own):
+```bash
+python3 run_demo.py --mode standalone --attack both --duration 120
+```
+
+**Analysis (no root, §11):**
+```bash
+python3 -m evaluation.nfr_report          data/events.jsonl
+python3 -m evaluation.interval_report     data/events.jsonl
+python3 -m evaluation.attack_report       data/events.jsonl
+python3 -m evaluation.availability_report data/events.jsonl
+python3 -m evaluation.scalability_sweep --ns 4,8,16,32,64 --load-factors 0.1,0.6
+python3 -m evaluation.starvation_sweep
+python3 -m evaluation.tally_route_share   data/events.jsonl
+```
+
+**Replay fallback (§9):**
+```bash
+python3 -m dashboard.generate_demo_recording --out data/events.jsonl --seed 7
+python3 -m dashboard.replay data/events.jsonl --speed 8 --loop        # http://localhost:8082/
+```
+
+**From the `mininet>` prompt (§5):**
+```
+mininet> dpctl dump-flows -O OpenFlow13 | grep cookie=0x5a
+mininet> dpctl dump-flows -O OpenFlow13 | grep priority=400
+mininet> dpctl dump-flows -O OpenFlow13 | grep meter
+mininet> iot1 curl -s http://10.0.99.254:8081/node/status   | python3 -m json.tool
+mininet> iot1 curl -s http://10.0.99.254:8081/trust/score   | python3 -m json.tool
+mininet> iot1 curl -s http://10.0.99.254:8081/api/optimizer | python3 -m json.tool
+mininet> iot1 wireshark &
+mininet> exit
+```
+
+**Teardown:**
+```bash
+mininet> exit          # then Ctrl-C in Terminal A
+sudo mn -c             # before the next run, always
+```

@@ -29,8 +29,14 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from blockchain.commit_backend import CommitBackend, LocalLedgerBackend
 from contracts.thresholds import (
     DEFAULT_ANOMALY_GATE, DEFAULT_ANOMALY_WARN,
-    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_RATE_LIMIT_TRUST,
+    DEFAULT_ISOLATION_THRESHOLD, DEFAULT_MIN_BUSY_SPAN_S,
+    DEFAULT_MIN_FLEET_SERVICE_SAMPLES, DEFAULT_PROBATION_INTERVAL_S,
+    DEFAULT_RATE_LIMIT_TRUST, DEFAULT_TASK_TIMEOUT_S,
+    DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR,
 )
+
+_MIN_BUSY_SPAN_S = DEFAULT_MIN_BUSY_SPAN_S
+_MIN_FLEET_SAMPLES = DEFAULT_MIN_FLEET_SERVICE_SAMPLES
 from contracts.trust_update import TrustUpdate
 from controller.edge_selector import (
     DEFAULT_D_CHOICES, DEFAULT_EPSILON, DEFAULT_SELECTION_STRATEGY,
@@ -54,6 +60,56 @@ class _Dispatch:
 
     node_id: str
     dispatched_at: float
+    # Set by reassign_dispatches when quarantine re-steers this flow onto a
+    # survivor, and never by register_dispatch -- a fresh PacketIn builds a new
+    # _Dispatch, so a client's *next* connection starts unmarked. What these
+    # two fields buy is the ability to tell an outcome the receiving node
+    # actually produced from one it merely inherited; see CompletedDispatch.
+    resteered_from: Optional[str] = None
+    resteered_at: Optional[float] = None
+
+
+@dataclass
+class CompletedDispatch:
+    """What complete_dispatch() hands back: which node the flow was mapped to,
+    plus whether that mapping was inherited from a re-steer rather than earned.
+
+    `chargeable` is the whole point. A re-steered entry can only ever collect
+    the corpse of a connection the controller itself killed: quarantine
+    installs drop rules, which tear down the in-flight TCP connections, and
+    reassign_dispatches says so in its own docstring -- "it is each client's
+    *next* connection that this fast-path serves". The client, however, is
+    still blocked on the dead socket, and when its own task_timeout_s expires
+    it reports a timeout for a task the receiving node never saw.
+
+    Measured across three live runs (data/events_run{8,9,10}.jsonl, matching
+    each report to its flow via report.ts - latency_ms): 12/29, 9/13 and 26/68
+    timeouts were charged this way. In run 10 it was the receiving node's
+    ENTIRE timeout signal -- srv7 11 of 11, srv5 8 of 8, srv2 3 of 3, srv4 2
+    of 2 -- and srv7 was quarantined twice, for 26.4 s, on nothing else. The
+    two attackers earned every one of theirs (srv1 and srv6 inherit zero in
+    all three runs), which is why abstaining here costs no detection power.
+    """
+
+    node_id: str
+    dispatched_at: float
+    resteered_from: Optional[str] = None
+    resteered_at: Optional[float] = None
+
+    @property
+    def chargeable(self) -> bool:
+        """May this outcome be attributed to node_id at all?
+
+        Deliberately not a budget comparison. panel_fix.md §6.9 proposed
+        excusing an outcome that "arrived with less than the node's typical
+        service time remaining", but the recordings say the budget was never
+        the problem: the median re-steered flow still had 2.86 s of its 4.0 s
+        left at handover (min 0.15 s) against successful tasks that complete
+        in 103-437 ms end to end. A budget rule would have excused 0 of 26.
+        The flow was not short of time, it was on a dead socket -- which makes
+        this structural, and is why it carries no tuned threshold.
+        """
+        return self.resteered_at is None
 
 
 class TrustState:
@@ -82,6 +138,8 @@ class TrustState:
         epsilon: float = DEFAULT_EPSILON,
         selection_rng: Optional[random.Random] = None,
         time_source: Optional[Callable[[], float]] = None,
+        task_timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
+        probation_interval_s: float = DEFAULT_PROBATION_INTERVAL_S,
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
         # can drive observed_load's averaging window from its simulated clock.
@@ -139,6 +197,22 @@ class TrustState:
         self._claimed_hist: Dict[str, Deque[Tuple[float, float]]] = {
             nid: deque() for nid in self.node_ids
         }
+        # Trailing (timestamp, cumulative_busy_seconds) from the agent's
+        # /status. The counter is monotonic, so differencing two samples gives
+        # the node's *duty cycle* over exactly the window we choose -- a time
+        # integral, the same shape as observed_load, which is the whole point.
+        # Empty when the agent predates the field; every consumer falls back.
+        self._busy_hist: Dict[str, Deque[Tuple[float, float]]] = {
+            nid: deque() for nid in self.node_ids
+        }
+        # Trailing (timestamp, cumulative_completions) counted by the controller
+        # itself. Pairs with _busy_hist to give busy-seconds-per-completed-task,
+        # i.e. the node's implied service time -- the quantity a liar has to
+        # distort and cannot hide, because the completion count is ours.
+        self._completions: Dict[str, int] = {nid: 0 for nid in self.node_ids}
+        self._completion_hist: Dict[str, Deque[Tuple[float, int]]] = {
+            nid: deque() for nid in self.node_ids
+        }
         self._latency_ms: Dict[str, float] = {nid: 50.0 for nid in self.node_ids}
         # Smoothed anomaly Ā(n) in [0, 1].
         self._anomaly: Dict[str, float] = {nid: 0.0 for nid in self.node_ids}
@@ -172,17 +246,62 @@ class TrustState:
         self.load_window_s: float = 3.0
         # (client_ip, client_port) -> which node that specific flow was routed to.
         self._dispatches: Dict[Tuple[str, int], _Dispatch] = {}
-        # Dispatches older than this are assumed abandoned (client crashed rather
-        # than reporting) and get reaped so _inflight doesn't leak upward forever.
-        self._dispatch_reap_after_s = 30.0
+        # Dispatches older than this are assumed abandoned (the client gave up
+        # rather than reporting) and get reaped so _inflight doesn't leak upward
+        # forever.
+        #
+        # DERIVED from the client's own task_timeout_s, never hardcoded: a client
+        # that times out at task_timeout_s never sends /report at all, so any
+        # fixed value larger than it keeps counting a task the client already
+        # abandoned. This was a real, load-dependent defect -- at 30.0s against a
+        # 2.0s client timeout, the 8/40/3 live run accumulated 15 cycles of
+        # phantom inflight on every node under saturation, so observed_load read
+        # 0.75 on nodes that were genuinely idle (real inflight 0, RTT 31ms).
+        # flow_monitor's honesty check then compared that against their truthful
+        # claimed_cpu of 0.00, branded five *honest* nodes liars, and each
+        # quarantine re-dispatched its clients onto the survivors until all 8
+        # were quarantined and 91.7% of routing attempts were denied. The
+        # detectors were correct throughout; the load they were fed was not.
+        # The 1.5x margin covers the report's own network return trip.
+        self._dispatch_reap_after_s = max(1.0, task_timeout_s * 1.5)
 
         # Recent task_status history per node, for flow_monitor's packet-drop
         # tell: a drop attacker can self-report CPU honestly (the CPU-honesty
         # check misses it entirely — see contracts/thresholds.py), but it cannot
         # avoid a high timeout rate among its own recent task outcomes.
-        self._recent_statuses: Dict[str, Deque[str]] = {
+        #
+        # Entries are (timestamp, status), not bare statuses. The window is
+        # count-based (last 10), so once a node stops receiving tasks it stops
+        # turning over and freezes whatever verdict was in it — which is exactly
+        # what quarantine does. The timestamps let recent_timeout_rate() notice
+        # that and abstain instead of re-asserting stale evidence forever.
+        self._recent_statuses: Dict[str, Deque[Tuple[float, str]]] = {
             nid: deque(maxlen=10) for nid in self.node_ids
         }
+        self._timeout_evidence_max_age_s = max(
+            2.0, task_timeout_s * DEFAULT_TIMEOUT_EVIDENCE_AGE_FACTOR
+        )
+
+        # When each node's trust most recently fell below isolation_threshold,
+        # cleared when it climbs back. Marks the boundary isolation_evidence()
+        # reads from: the outcomes that describe the node the trust rail
+        # condemned, rather than the honest life it had before.
+        self._trust_collapsed_at: Dict[str, float] = {}
+
+        # Probation ("half-open"): the last time each node was offered a trial
+        # task while quarantined. See _probation_candidate_locked().
+        self.probation_interval_s = probation_interval_s
+        self._last_probation: Dict[str, float] = {}
+
+        # Request arrival timestamps per CLIENT ip (not per edge node -- see
+        # controller/flood_detector.py's module docstring for why flood
+        # detection is keyed on the requester, not on whichever node the
+        # request lands on). Populated lazily since the client roster, unlike
+        # node_ids, is not known up front. maxlen is a hard safety cap against
+        # a pathological flood between reads, not the primary bound --
+        # client_request_rate() prunes by age on every call, and callers call
+        # it right after every record_client_request().
+        self._client_request_times: Dict[str, Deque[float]] = {}
 
         self._pending_updates: List[TrustUpdate] = []
         self._routing_decisions: List[Dict[str, Any]] = []
@@ -207,7 +326,10 @@ class TrustState:
     # ------------------------------------------------------------------ #
     # Telemetry ingestion                                                 #
     # ------------------------------------------------------------------ #
-    def report_claimed_status(self, node_id: str, cpu_load: float, measured_rtt_ms: float) -> None:
+    def report_claimed_status(
+        self, node_id: str, cpu_load: float, measured_rtt_ms: float,
+        busy_seconds: Optional[float] = None,
+    ) -> None:
         """Ingest one poll of a node's telemetry.
 
         Deliberate honesty asymmetry between the two values:
@@ -237,19 +359,47 @@ class TrustState:
             while len(hist) > 1 and hist[0][0] < cutoff:
                 hist.popleft()
 
+            if busy_seconds is not None:
+                bh = self._busy_hist.setdefault(node_id, deque())
+                # Monotonic by contract. A counter that goes *backwards* means
+                # the agent restarted (or is fabricating carelessly); drop the
+                # history rather than difference across the discontinuity and
+                # report a nonsense negative duty cycle.
+                if bh and float(busy_seconds) < bh[-1][1]:
+                    bh.clear()
+                bh.append((now, float(busy_seconds)))
+                while len(bh) > 1 and bh[0][0] < cutoff:
+                    bh.popleft()
+
     def get_claimed_cpu(self, node_id: str) -> float:
         with self._lock:
             return self._claimed_cpu.get(node_id, 0.5)
 
     def claimed_load(self, node_id: str) -> float:
-        """The node's self-reported CPU, time-averaged over the same window as
-        observed_load, so the honesty check compares like with like.
+        """The node's self-reported CPU as a *duty cycle* over load_window_s.
+
+        Preferred form, when the agent reports cumulative busy-seconds:
+
+            (B(t1) - B(t0)) / ((t1 - t0) * concurrency)
+
+        which is literally "fraction of available worker-time the node says it
+        spent working" -- a time integral of the same shape as observed_load,
+        and the only form that makes the honesty comparison dimensionally sound.
+
+        Falls back to time-averaging the instantaneous `cpu_load` samples for
+        agents that do not report busy-seconds. That fallback is *better than
+        sampling* but still not commensurable with a residence-time occupancy;
+        see LIVE_RUN_8_40_3 Defect 8 for why that distinction cost four runs.
 
         The raw claim stays available via get_claimed_cpu() and still drives the
         EdgeScore CPU term, where reacting to the latest reading is wanted --
-        it is only the *honesty* comparison that needs both sides smoothed.
+        it is only the *honesty* comparison that needs both sides integrated.
         """
         with self._lock:
+            duty = self._busy_duty_cycle_locked(node_id)
+            if duty is not None:
+                return duty
+
             hist = self._claimed_hist.get(node_id)
             if not hist:
                 return self._claimed_cpu.get(node_id, 0.5)
@@ -275,6 +425,150 @@ class TrustState:
             if weight <= 0:
                 return prev_v
             return max(0.0, min(1.0, total / weight))
+
+    # -- busy-time honesty: two integrals of the same quantity -------------- #
+    #
+    # The node reports service time S (in-handler seconds). The controller's
+    # observed_load() measures residence time L (dispatch -> report), which
+    # includes flow install, transit and the client's own reporting. L >> S --
+    # measured at ~6x in live run 6 -- so comparing a claim against
+    # observed_load taxes a busy honest node no matter how well either side is
+    # smoothed. These build the controller's own estimate in *service-time*
+    # units so both sides of the comparison are duty cycles.
+
+    def _busy_duty_cycle_locked(self, node_id: str) -> Optional[float]:
+        """Claimed duty cycle from the cumulative busy-second counter, or None
+        if the agent does not report it (or the window is too short to
+        difference meaningfully)."""
+        hist = self._busy_hist.get(node_id)
+        if not hist or len(hist) < 2:
+            return None
+        now = self._now()
+        target = now - self.load_window_s
+        t0, b0 = hist[0]
+        for ts, b in hist:
+            if ts > target:
+                break
+            t0, b0 = ts, b
+        t1, b1 = hist[-1]
+        span = t1 - t0
+        if span < _MIN_BUSY_SPAN_S:
+            return None
+        concurrency = max(1, self._concurrency.get(node_id, 4))
+        return max(0.0, min(1.0, (b1 - b0) / (span * concurrency)))
+
+    def _completion_rate_locked(self, node_id: str) -> Optional[Tuple[float, float]]:
+        """(completions per second, span) over load_window_s, or None."""
+        hist = self._completion_hist.get(node_id)
+        if not hist or len(hist) < 2:
+            return None
+        now = self._now()
+        target = now - self.load_window_s
+        t0, c0 = hist[0]
+        for ts, c in hist:
+            if ts > target:
+                break
+            t0, c0 = ts, c
+        t1, c1 = hist[-1]
+        span = t1 - t0
+        if span < _MIN_BUSY_SPAN_S:
+            return None
+        return (c1 - c0) / span, span
+
+    def implied_service_time_s(self, node_id: str) -> Optional[float]:
+        """Busy-seconds the node claims *per task the controller saw it finish*.
+
+        This is the quantity a liar has to distort: the numerator is the node's
+        own counter, the denominator is the controller's completion count. A
+        node that under-reports busy time while completing tasks at a normal
+        rate produces an implausibly small per-task service time, and that is
+        visible without trusting anything it said about its load.
+        """
+        with self._lock:
+            return self._implied_service_time_locked(node_id)
+
+    def _implied_service_time_locked(self, node_id: str) -> Optional[float]:
+        hist = self._busy_hist.get(node_id)
+        rate = self._completion_rate_locked(node_id)
+        if not hist or len(hist) < 2 or rate is None:
+            return None
+        completions_per_s, span = rate
+        if completions_per_s <= 0:
+            return None
+        duty = self._busy_duty_cycle_locked(node_id)
+        if duty is None:
+            return None
+        concurrency = max(1, self._concurrency.get(node_id, 4))
+        # busy_seconds/s = duty * concurrency; divide by tasks/s -> s per task.
+        return (duty * concurrency) / completions_per_s
+
+    def fleet_service_time_s(self) -> Optional[float]:
+        """Median implied service time across nodes that have enough data.
+
+        The median, not the mean, and for the same reason the latency tell uses
+        one: it survives a minority of liars. The threat model is 3 malicious of
+        8, so a statistic that needs >50% of the fleet to be honest is sound
+        here and its assumption is worth stating rather than hiding.
+        """
+        with self._lock:
+            return self._fleet_service_time_locked()
+
+    def _fleet_service_time_locked(self) -> Optional[float]:
+        vals = []
+        for nid in self.node_ids:
+            s = self._implied_service_time_locked(nid)
+            if s is not None and s > 0:
+                vals.append(s)
+        if len(vals) < _MIN_FLEET_SAMPLES:
+            return None
+        vals.sort()
+        mid = len(vals) // 2
+        if len(vals) % 2:
+            return vals[mid]
+        return (vals[mid - 1] + vals[mid]) / 2.0
+
+    def reports_busy_seconds(self, node_id: str, max_age_s: Optional[float] = None) -> bool:
+        """Is this node currently supplying the `busy_seconds` counter?
+
+        Exists to tell apart the two very different reasons
+        expected_duty_cycle() can return None, which the honesty check used to
+        conflate (live run 7):
+
+          * the NODE withholds its counter -- attacker-controlled, so the check
+            must not simply go quiet or a liar could disable it by omission;
+          * the CONTROLLER has too few recent completions to build a fleet
+            median -- nothing to do with the node, and blaming it for our own
+            missing evidence is what produced 175 false quarantines.
+
+        Recency matters, so this is not merely "has ever reported": a node that
+        sent the counter early and then stopped must read as NOT reporting, or
+        stopping would become a way to buy permanent abstention. Defaults to
+        the same 2 x load_window_s horizon the history is pruned to.
+        """
+        horizon = 2 * self.load_window_s if max_age_s is None else max_age_s
+        with self._lock:
+            hist = self._busy_hist.get(node_id)
+            if not hist:
+                return False
+            return (self._now() - hist[-1][0]) <= horizon
+
+    def expected_duty_cycle(self, node_id: str) -> Optional[float]:
+        """What this node's duty cycle *should* be, in service-time units, from
+        quantities the controller owns: its own completion count for the node,
+        times the fleet's median per-task service time, over the window.
+
+        Returns None when there is not enough evidence, and None means "no
+        opinion" -- the honesty check must abstain rather than guess, the same
+        discipline stale-evidence abstention established in Defect 6.
+        """
+        with self._lock:
+            rate = self._completion_rate_locked(node_id)
+            fleet_s = self._fleet_service_time_locked()
+            if rate is None or fleet_s is None:
+                return None
+            completions_per_s, _span = rate
+            concurrency = max(1, self._concurrency.get(node_id, 4))
+            return max(0.0, min(1.0, completions_per_s * fleet_s / concurrency))
 
     def set_anomaly_raw(self, node_id: str, anomaly_raw: float) -> float:
         """EMA-smooth a 0/1 anomaly signal (deviation or drop detected this poll)
@@ -306,24 +600,81 @@ class TrustState:
     # numerator that flow_monitor turns into `inflight / concurrency`)       #
     # ------------------------------------------------------------------ #
     def register_dispatch(self, client_ip: str, client_port: int, node_id: str) -> None:
-        """Called by the OpenFlow app the instant it installs a VIP rewrite pair."""
+        """Called by the OpenFlow app the instant it installs a VIP rewrite pair.
+
+        The class invariant this has to preserve is
+        `sum(_inflight.values()) == len(_dispatches)`: every count is owned by
+        exactly one dict entry. Every *decrement* is paired with a
+        `_dispatches.pop()` (complete_dispatch, the reaper) or a matching
+        increment (reassign_dispatches), so the only way to break it is here --
+        by incrementing while overwriting a key that was already present.
+        """
         with self._lock:
             self._reap_stale_dispatches_locked()
-            self._dispatches[(client_ip, client_port)] = _Dispatch(node_id, time.time())
+            key = (client_ip, client_port)
+            prev = self._dispatches.get(key)
+            if prev is not None:
+                # This flow already had an outstanding dispatch, and the
+                # assignment below is about to drop that entry on the floor.
+                # Releasing its count first is what keeps the invariant: without
+                # it the old holder carries a phantom inflight *forever* -- no
+                # dict entry survives for the reaper to find, and no completion
+                # report will ever reference it.
+                #
+                # Measured in the 8/40/3 live run 4: 57 keys were re-registered
+                # while still outstanding, and srv1 -- a healthy node with zero
+                # probation trials -- sat at exactly its 2 orphaned dispatches
+                # for 976 s. That pinned observed_load at 0.50 against a
+                # truthful claimed 0.00, one decisive tick over the 0.40 honesty
+                # gate, and produced 707 quarantine-triggering anomalies on a
+                # node that was behaving perfectly.
+                #
+                # Re-registration is legitimate: a PacketIn means a genuinely
+                # new connection (the client may reuse an ephemeral port, and
+                # the re-steer path reinstalls rules that draw fresh PacketIns),
+                # so the new entry correctly stamps `now` -- unlike
+                # reassign_dispatches, which moves the *same* task and must keep
+                # the original clock.
+                self._accrue_inflight_locked(prev.node_id)
+                self._inflight[prev.node_id] = max(
+                    0, self._inflight.get(prev.node_id, 0) - 1
+                )
+                logger.info(
+                    "Re-registered dispatch %s:%d (was on %s, now %s) -- "
+                    "released the superseded inflight",
+                    client_ip, client_port, prev.node_id, node_id,
+                )
+            self._dispatches[key] = _Dispatch(node_id, time.time())
             self._accrue_inflight_locked(node_id)
             self._inflight[node_id] = self._inflight.get(node_id, 0) + 1
 
-    def complete_dispatch(self, client_ip: str, client_port: int) -> Optional[str]:
-        """Called when the client's completion report arrives. Returns the node_id
-        that flow was routed to, or None if it was never registered (e.g. this
-        report is stale / duplicated, or arrived after the reaper cleaned it up)."""
+    def complete_dispatch(
+        self, client_ip: str, client_port: int,
+    ) -> Optional[CompletedDispatch]:
+        """Called when the client's completion report arrives. Returns the
+        mapping that flow was routed under, or None if it was never registered
+        (e.g. this report is stale / duplicated, or arrived after the reaper
+        cleaned it up).
+
+        The inflight release below is unconditional and stays that way: the
+        occupancy invariant `sum(_inflight) == len(_dispatches)` is about
+        whether a task is outstanding, which is true regardless of whom the
+        outcome may be blamed on. Attribution is a separate axis -- see
+        CompletedDispatch.chargeable -- and conflating the two is what run 4's
+        register_dispatch leak did in the other direction.
+        """
         with self._lock:
             entry = self._dispatches.pop((client_ip, client_port), None)
             if entry is None:
                 return None
             self._accrue_inflight_locked(entry.node_id)
             self._inflight[entry.node_id] = max(0, self._inflight.get(entry.node_id, 0) - 1)
-            return entry.node_id
+            return CompletedDispatch(
+                node_id=entry.node_id,
+                dispatched_at=entry.dispatched_at,
+                resteered_from=entry.resteered_from,
+                resteered_at=entry.resteered_at,
+            )
 
     def reassign_dispatches(self, from_node_id: str, to_node_id: str) -> List[Tuple[str, int]]:
         """Move every still-active dispatch mapped to from_node_id onto
@@ -342,7 +693,34 @@ class TrustState:
             moved: List[Tuple[str, int]] = []
             for key, d in list(self._dispatches.items()):
                 if d.node_id == from_node_id:
-                    self._dispatches[key] = _Dispatch(to_node_id, time.time())
+                    # Carry the ORIGINAL dispatched_at across, never time.time().
+                    # dispatched_at answers "has the client given up on this task
+                    # yet?", and re-steering does not restart the client's own
+                    # timer -- it dispatched at T and abandons at
+                    # T + task_timeout_s no matter how many times the controller
+                    # re-points its flow. Stamping `now` here made every
+                    # re-dispatch rejuvenate the entry, so under quarantine churn
+                    # (exactly when this path runs) dispatches never reached the
+                    # reap horizon at all: the 8/40/3 live run held inflight
+                    # pinned at 7 for its entire length with only 50 reaps, which
+                    # pinned observed_load at 1.00 against a truthful claimed_cpu
+                    # of 0.00 and re-tripped the honesty check on every survivor
+                    # the load was moved to.
+                    #
+                    # The re-steer marks, by contrast, ARE stamped now: they
+                    # record that to_node_id inherited this flow rather than
+                    # being routed it, which is what stops the receiving node
+                    # being charged for the killed connection's timeout (see
+                    # CompletedDispatch). dispatched_at answers "has the client
+                    # given up?"; resteered_at answers "whose outcome is this?"
+                    # -- two different questions that shared one field until
+                    # panel_fix.md §6.9.
+                    self._dispatches[key] = _Dispatch(
+                        node_id=to_node_id,
+                        dispatched_at=d.dispatched_at,
+                        resteered_from=d.resteered_from or from_node_id,
+                        resteered_at=d.resteered_at or time.time(),
+                    )
                     self._accrue_inflight_locked(from_node_id)
                     self._accrue_inflight_locked(to_node_id)
                     self._inflight[from_node_id] = max(0, self._inflight.get(from_node_id, 0) - 1)
@@ -457,9 +835,30 @@ class TrustState:
             upd.anomaly_flag = self._anomaly.get(upd.edge_node_id, 0.0) >= self.anomaly_gate
             score = self.trust_calc.update(upd)
             self._pending_updates.append(upd)
+            now_c = self._now()
             self._recent_statuses.setdefault(
                 upd.edge_node_id, deque(maxlen=10)
-            ).append(upd.task_status)
+            ).append((now_c, upd.task_status))
+            # Track the edge of trust-rail condemnation. Trust only moves on a
+            # task outcome, so this is the only place it can change, and doing
+            # it here keeps isolation_evidence() a pure read.
+            if score < self.isolation_threshold:
+                self._trust_collapsed_at.setdefault(upd.edge_node_id, now_c)
+            else:
+                self._trust_collapsed_at.pop(upd.edge_node_id, None)
+            # Cumulative completions, counted by us. This is the denominator of
+            # implied_service_time_s -- the half of the honesty comparison the
+            # node cannot touch. Only successes count: a timeout means the node
+            # never finished, so charging it busy-time for one would understate
+            # its service time and make a slow node look honest.
+            if upd.task_status == 'success':
+                nid = upd.edge_node_id
+                self._completions[nid] = self._completions.get(nid, 0) + 1
+                ch = self._completion_hist.setdefault(nid, deque())
+                ch.append((now_c, self._completions[nid]))
+                cutoff_c = now_c - 2 * self.load_window_s
+                while len(ch) > 1 and ch[0][0] < cutoff_c:
+                    ch.popleft()
             if self._optimizer_enabled:
                 # Credit this outcome to the arm currently active, for the reward
                 # of the window it lands in (window-granularity attribution).
@@ -473,15 +872,110 @@ class TrustState:
     def recent_timeout_rate(self, node_id: str, min_samples: int = 4) -> Optional[float]:
         """Fraction of the last (up to 10) task outcomes that were timeouts.
 
-        Returns None if fewer than min_samples outcomes have been recorded yet —
-        callers should not trigger on that little data, to avoid false positives
-        during a node's first few interactions.
+        Returns None — "no opinion" — in two cases, and callers must not trigger
+        on either:
+
+        1. Fewer than min_samples outcomes recorded, to avoid false positives
+           during a node's first few interactions.
+        2. The newest outcome is older than _timeout_evidence_max_age_s. The
+           window is count-based, so it only turns over when tasks arrive; a
+           quarantined node receives none, and without this its last verdict
+           would stand forever and hold it in quarantine on evidence that has
+           stopped being observed. See contracts/thresholds.py.
         """
         with self._lock:
             history = self._recent_statuses.get(node_id)
             if not history or len(history) < min_samples:
                 return None
-            return sum(1 for s in history if s == 'timeout') / len(history)
+            newest_at = history[-1][0]
+            if self._now() - newest_at > self._timeout_evidence_max_age_s:
+                return None
+            return sum(1 for _, s in history if s == 'timeout') / len(history)
+
+    def isolation_evidence(self, node_id: str) -> Optional[Tuple[float, int]]:
+        """(failure rate, sample count) for a node the TRUST rail condemned.
+
+        Returns None -- no opinion -- unless all three hold: trust is currently
+        under isolation_threshold, at least one task outcome has been recorded
+        since it fell there, and the newest of those is fresh by the same rule
+        recent_timeout_rate() uses.
+
+        WHY THIS EXISTS, AND WHY IT IS NOT A DETECTOR
+        ----------------------------------------------
+        Live run 8's srv6 was a blackhole quarantined 9.7 s after onset, on the
+        trust rail, with anomaly exactly 0.0 -- only three timeouts were ever
+        reported against it, below the packet-drop tell's _MIN_TIMEOUT_SAMPLES
+        of 4, so the anomaly rail never fired once in 250 cycles. The classifier
+        reads anomaly signals, so it had nothing and correctly abstained, and
+        the attack went unlabelled despite being contained perfectly. An
+        attacker isolated faster than the anomaly rail reaches its minimum
+        sample count is invisible to reporting, and that blind spot grows as
+        detection gets BETTER.
+
+        This closes it by handing the classifier the evidence the trust rail
+        acted on. It deliberately adds NO isolation power: nothing here feeds
+        anomaly_raw, the gate, or any flow rule. A node is only ever asked
+        about after the trust rail has already condemned it, so the worst a
+        wrong answer costs is a wrong label in a report -- not an outage.
+
+        WHY THE OUTCOMES ARE COUNTED FROM THE COLLAPSE
+        -----------------------------------------------
+        _recent_statuses is the last 10 outcomes regardless of era, and for a
+        node isolated seconds after onset most of those are its honest life
+        before it turned. srv6's window at the moment of collapse held nine
+        pre-onset successes and one timeout -- a 0.10 rate for a node that was
+        by then dropping everything. Counting only from the collapse asks the
+        question that is actually being asked: not "how has this node behaved",
+        but "what has it done since we decided it was bad".
+        """
+        with self._lock:
+            if self.trust_calc.get_score(node_id) >= self.isolation_threshold:
+                return None
+            since = self._trust_collapsed_at.get(node_id)
+            if since is None:
+                return None
+            history = self._recent_statuses.get(node_id)
+            if not history:
+                return None
+            post = [(ts, s) for ts, s in history if ts >= since]
+            if not post:
+                return None
+            if self._now() - post[-1][0] > self._timeout_evidence_max_age_s:
+                # Stale: abstain rather than re-assert. Same rule as
+                # recent_timeout_rate, and for the same reason -- a quarantined
+                # node stops producing outcomes, so without this its last
+                # verdict would stand for the rest of the run.
+                return None
+            failures = sum(1 for _, s in post if s != 'success')
+            return failures / len(post), len(post)
+
+    def record_client_request(self, client_ip: str) -> None:
+        """Record one VIP request arrival from client_ip, for the flood/DDoS
+        tell (controller/flood_detector.py). Owned here alongside TrustState's
+        other request-facing counters (register_dispatch, occupancy) since
+        this is driven by every PacketIn, not the 1Hz poll loop that owns the
+        per-node health tells."""
+        with self._lock:
+            dq = self._client_request_times.setdefault(client_ip, deque(maxlen=1000))
+            dq.append(self._now())
+
+    def client_request_rate(self, client_ip: str, window_s: float) -> float:
+        """Requests/second from client_ip within the trailing window_s.
+
+        Unlike recent_timeout_rate, there is no "stale evidence, must
+        abstain" case here: an idle or never-seen client genuinely has a
+        rate of 0.0 right now, which is the correct answer, not a stand-in
+        for "no opinion" -- arrival events either happened inside the window
+        or they didn't.
+        """
+        with self._lock:
+            dq = self._client_request_times.get(client_ip)
+            if not dq or window_s <= 0:
+                return 0.0
+            cutoff = self._now() - window_s
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            return len(dq) / window_s
 
     def _flush_pending_locked(self) -> None:
         if self._pending_updates:
@@ -566,10 +1060,91 @@ class TrustState:
         only one of the two may be called per cycle."""
         return self.poll_quarantine_transitions()[0]
 
-    def choose_edge_node(self) -> Optional[str]:
-        """n* = argmax EdgeScore(n) among non-quarantined nodes, or None if all
-        candidates are quarantined (deny by default)."""
+    def _probation_candidate_locked(self) -> Optional[str]:
+        """The node most deserving of a trial task right now, or None.
+
+        Eligible = quarantined on the TRUST rail only, with Ā already back below
+        the anomaly gate, and not probed within the last probation_interval_s.
+        Among those, the highest-trust node goes first (closest to earning its
+        way out). Must be called with the lock held.
+
+        Why this is needed at all: quarantine cuts service traffic, task
+        outcomes are the only thing that raises R and B, so a node quarantined
+        on trust can never recover on its own — the 8/40/3 live run left three
+        provably healthy servers (Ā = 0.0, 29ms RTT, zero inflight) isolated for
+        the rest of the run at trust ~0.18. A trial task is the only evidence
+        that can settle the question.
+
+        Why this does not weaken the model: Ā >= gate is still an absolute bar,
+        so nothing the anomaly rail has flagged is ever probed; and the trial is
+        one task per node per interval, which is a trickle, not a route back to
+        service. A node that fails its trial simply stays where it is.
+        """
+        now = self._now()
+        best: Optional[str] = None
+        best_trust = -1.0
+        for nid in self.node_ids:
+            if not self._is_on_probation_locked(nid):
+                # Either the anomaly rail has it flagged (never probed) or it is
+                # not quarantined at all (the normal path already has it).
+                continue
+            trust = self.trust_calc.get_score(nid)
+            last = self._last_probation.get(nid)
+            if last is not None and now - last < self.probation_interval_s:
+                continue
+            if trust > best_trust:
+                best_trust = trust
+                best = nid
+        return best
+
+    def _is_on_probation_locked(self, node_id: str) -> bool:
+        return (
+            self._anomaly.get(node_id, 0.0) < self.anomaly_gate
+            and self.trust_calc.get_score(node_id) < self.isolation_threshold
+        )
+
+    def is_on_probation(self, node_id: str) -> bool:
+        """True if this node is quarantined but currently eligible for trials."""
         with self._lock:
+            return self._is_on_probation_locked(node_id)
+
+    def choose_edge_node(self) -> Optional[str]:
+        """Back-compat wrapper for choose_edge_node_ex(), dropping the
+        probation flag."""
+        return self.choose_edge_node_ex()[0]
+
+    def choose_edge_node_ex(self) -> Tuple[Optional[str], bool]:
+        """(chosen, is_probation_trial).
+
+        n* = argmax EdgeScore(n) among non-quarantined nodes. Returns
+        (None, False) if no node is eligible and none is due a trial — deny by
+        default is otherwise unchanged.
+
+        A due probation trial takes precedence over the normal pick. That
+        ordering looks aggressive but is self-limiting: each node is probed at
+        most once per probation_interval_s, so the trials this can divert are
+        capped at |nodes| / probation_interval_s decisions per second regardless
+        of load, and when nothing is quarantined there are no candidates and the
+        path is inert — routing is then byte-for-byte what it was before.
+        """
+        with self._lock:
+            probe = self._probation_candidate_locked()
+            if probe is not None:
+                self._last_probation[probe] = self._now()
+                logger.info(
+                    "%s: probation trial (trust %.3f < %.2f, anomaly clear)",
+                    probe, self.trust_calc.get_score(probe),
+                    self.isolation_threshold,
+                )
+                self._routing_decisions.append({
+                    'timestamp': time.time(),
+                    'chosen': probe,
+                    'score': None,
+                    'ranked': [],
+                    'probation': True,
+                })
+                return probe, True
+
             states = [
                 NodeState(
                     node_id=nid,
@@ -599,8 +1174,9 @@ class TrustState:
                 'chosen': chosen,
                 'score': score,
                 'ranked': ranked,
+                'probation': False,
             })
-            return chosen
+            return chosen, False
 
     def optimizer_tick(self) -> Optional[Dict[str, Any]]:
         """Drive the AI optimizer one step. Call ~1 Hz (flow_monitor's poll loop).
@@ -697,6 +1273,12 @@ class TrustState:
                     'latency_ms': round(self._latency_ms.get(nid, 50.0), 2),
                     'anomaly': round(self._anomaly.get(nid, 0.0), 4),
                     'quarantined': self.is_quarantined(nid),
+                    # Quarantined, but on the trust rail only and with Ā back
+                    # under the gate -- i.e. being offered trial tasks to earn
+                    # its way out. Distinguishing this on screen matters: it is
+                    # the difference between "isolated and under active
+                    # suspicion" and "isolated and being re-tested".
+                    'probation': self._is_on_probation_locked(nid),
                 }
                 for nid in self.node_ids
             }

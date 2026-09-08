@@ -8,12 +8,15 @@ greenthread/OS thread, started by TrustBalancerApp.start().
 Endpoints:
     POST /auth/challenge  {device_id} -> {nonce: hex}
     POST /auth/verify     {device_id, response: hex} -> {token} | 403
+        A 403 also publishes an 'auth_denied' event carrying the structured
+        AuthError.kind, so a refused admission is visible to the event
+        recording rather than only to the device that got refused.
     GET  /trust/score     [?node_id=] -> {node_id: score} or {node_id: score, ...}
     POST /offload/request -> advisory only, installs nothing (see
         TrustBalancerApp.handle_offload_advisory -- the real routing decision
         happens on the VIP data-plane path)
     GET  /node/status     [?node_id=] -> TrustState.snapshot(), full or one node
-    GET  /ledger/verify   -> {valid, chain_length}
+    GET  /ledger/verify   -> {valid, chain_length, max_updates_per_block}
     POST /report          {device_id, vip_src_port, status, latency_ms} -- a
         client's task-completion report. Not one of the deck's original five
         endpoints, but required for the demo to function: this is how
@@ -23,13 +26,25 @@ Endpoints:
         that way, since the /report POST originates from the same host as the
         /task connection it's completing (see simulation/iot_client.py).
     POST /register        {node_id, concurrency} -- agent startup registration.
+    POST /topology/links  {links: [{a, b, delay_ms, bw_mbps}]} -- the link
+        parameters simulation/topology.py actually built. The controller's own
+        graph is derived from config and cannot know the per-IoT link delay
+        (unseeded RNG in ZeroTrustTopo.build()), so the harness reports it.
 
 Dashboard routes (added alongside the five deck endpoints above; all read-only,
 and all inert unless controller.dashboard.enabled is set in the config):
     GET  /                -> dashboard/index.html
+    GET  /analysis        -> dashboard/analysis.html, the generated offline
+        analysis and comparison report (evaluation/build_analysis_page.py).
+        404 with a `hint` naming the build command when it has not been
+        generated yet.
     GET  /api/topology    -> the node/link graph the dashboard draws
     GET  /api/events      -> Server-Sent Events stream of controller events
     GET  /api/flows       -> current flow tables with live counters ("rules")
+    GET  /api/scale_compare -> pre-computed node-count sweep for the scaling
+                            panel. The ONLY dashboard route that serves
+                            something this run did not produce -- see
+                            _serve_scale_compare.
 
 SSE rather than WebSockets deliberately: it is one-way (controller -> browser,
 which is all this needs), it is plain HTTP so it works on the stdlib
@@ -52,6 +67,35 @@ from controller.trust_state import TrustState
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent.parent / 'dashboard'
+
+# Payload for the scaling-comparison panel, written by
+# evaluation/scale_compare.py. Not produced by a run and not live -- see
+# _serve_scale_compare for why it is served from here anyway.
+_SCALE_COMPARE_FILE = (
+    Path(__file__).resolve().parent.parent / 'data' / 'scale_compare.json'
+)
+
+#: URL path -> filename under _DASHBOARD_DIR. An explicit whitelist of literal
+#: filenames, never a path joined from the request: this handler has no
+#: path-traversal surface today and adding a generic static route would be the
+#: first one. Adding a page here is a one-line change; serving arbitrary files
+#: is not something this API should ever do.
+_HTML_ROUTES = {
+    '/': 'index.html',
+    '/index.html': 'index.html',
+    '/dashboard': 'index.html',
+    '/analysis': 'analysis.html',
+    '/analysis.html': 'analysis.html',
+}
+
+#: Shown when a generated page has not been built yet. Naming the command is
+#: the difference between a dead link and a next step.
+_HOW_TO_BUILD = {
+    'analysis.html': (
+        'python3 -m evaluation.build_analysis_page data/events.jsonl '
+        '--comparison-csv data/results_rf.csv'
+    ),
+}
 
 # How long an idle SSE stream waits before emitting a keepalive comment. Without
 # this, a proxy or an asleep laptop can silently drop a connection that simply
@@ -92,8 +136,8 @@ def _make_handler(app: Any, state: TrustState):
             # Dashboard routes are handled first and return early. /api/events
             # in particular never returns until the client disconnects, so it
             # must not fall through to the JSON paths below.
-            if path in ('/', '/index.html', '/dashboard'):
-                self._serve_dashboard()
+            if path in _HTML_ROUTES:
+                self._serve_html(_HTML_ROUTES[path])
                 return
             if path == '/api/events':
                 self._serve_events()
@@ -109,6 +153,9 @@ def _make_handler(app: Any, state: TrustState):
                 return
             if path == '/api/optimizer':
                 self._write_json(200, app.optimizer_status())
+                return
+            if path == '/api/scale_compare':
+                self._serve_scale_compare()
                 return
 
             try:
@@ -129,9 +176,21 @@ def _make_handler(app: Any, state: TrustState):
                     else:
                         self._write_json(200, snapshot)
                 elif path == '/ledger/verify':
+                    # `valid` is the controller auditing its own ledger with
+                    # the code that built it. The dashboard shows it beside a
+                    # verdict it computes itself from the streamed block
+                    # headers, and the two are deliberately not merged -- see
+                    # the ledger panel in dashboard/index.html.
+                    #
+                    # `max_updates_per_block` rides along rather than getting
+                    # its own route: it is the batch size this same ledger
+                    # commits at, the panel's pending gauge needs a denominator,
+                    # and a second endpoint for one integer is not worth the
+                    # served surface.
                     self._write_json(200, {
                         'valid': state.commit_backend.verify(),
                         'chain_length': state.commit_backend.chain_length(),
+                        'max_updates_per_block': state.max_updates_per_block,
                     })
                 else:
                     self._write_json(404, {'error': 'not found'})
@@ -158,6 +217,22 @@ def _make_handler(app: Any, state: TrustState):
                     self._handle_report(body)
                 elif path == '/register':
                     self._handle_register(body)
+                elif path == '/topology/links':
+                    self._handle_topology_links(body)
+                elif path == '/monitor/pause':
+                    # Teardown ordering, not a security control. The harness
+                    # kills the agents at end of run while the controller is
+                    # still polling every second, so the last two sweeps score
+                    # eight live-until-a-moment-ago nodes as unreachable and the
+                    # final recorded frame shows the whole fleet quarantined --
+                    # a run that served 16,586 tasks cleanly ends looking like a
+                    # collapse (live runs 5 and 6, t=1719s / t=1770s).
+                    #
+                    # This does NOT relax "seen-then-dark is anomalous", which
+                    # is a real Sprint 1 finding: polling stops entirely, so no
+                    # verdict is softened -- there is simply no sweep after the
+                    # operator says the fleet is going away on purpose.
+                    self._write_json(200, {'paused': app.pause_monitor()})
                 else:
                     self._write_json(404, {'error': 'not found'})
             except KeyError as exc:
@@ -174,9 +249,40 @@ def _make_handler(app: Any, state: TrustState):
         def _handle_auth_verify(self, body: Dict[str, Any]) -> None:
             device_id = body['device_id']
             response = bytes.fromhex(body['response'])
+            # Same discipline as _handle_report below: identity comes from the
+            # request's own socket, never the JSON body, so a claim about
+            # who's asking can't be forged in the body -- this is what
+            # Authenticator's source-IP pinning checks against (see
+            # security/authenticator.py's spoofing defence).
+            source_ip = self.client_address[0]
             try:
-                token = state.authenticator.verify_response(device_id, response)
+                token = state.authenticator.verify_response(device_id, response, source_ip)
             except AuthError as exc:
+                # Publish the denial. Until this existed, a refused admission
+                # left no trace on the event bus at all -- the controller did
+                # the right thing and then forgot it, so the JSONL recording
+                # (and anything scoring it, e.g. evaluation/attack_report.py)
+                # could never see an identity-spoofing attempt. `kind` is the
+                # structured tag from security/authenticator.py, which is what
+                # separates a spoofer (correct key, wrong source -- 'ip_pin')
+                # from a device that never held the key ('bad_response').
+                #
+                # Safe to publish on every denial rather than only a rising
+                # edge, unlike the flood tell: a denied device authenticates
+                # once and then sends nothing (simulation/iot_client.py's
+                # admission path never retries), so this cannot become a
+                # bus-flooding event source.
+                kind = getattr(exc, 'kind', None)
+                app.bus.publish(
+                    'auth_denied', device_id=device_id, source_ip=source_ip,
+                    kind=kind, reason=str(exc),
+                )
+                # ...and into classification, which turns 'ip_pin' into the
+                # discrete label `spoof` and 'bad_response' into
+                # `bad_credentials` (plan_adv.md Phase 2).
+                record = getattr(app, 'record_auth_denial', None)
+                if record is not None:
+                    record(device_id, source_ip, kind)
                 self._write_json(403, {'error': str(exc)})
                 return
             self._write_json(200, {'token': token})
@@ -197,18 +303,74 @@ def _make_handler(app: Any, state: TrustState):
             state.set_concurrency(node_id, concurrency)
             self._write_json(200, {'ok': True})
 
+        def _handle_topology_links(self, body: Dict[str, Any]) -> None:
+            """The harness reporting what it actually wired up.
+
+            Descriptive, not a control: it attaches measured parameters to a
+            graph the controller already has and never changes routing,
+            trust, or enforcement. A malformed entry is dropped rather than
+            failing the request -- the harness sends this best-effort during
+            startup and a rejected link table must not be able to abort a run.
+            """
+            links = body.get('links')
+            if not isinstance(links, list):
+                self._write_json(400, {'error': 'links must be a list'})
+                return
+            accepted = app.record_link_params(links)
+            self._write_json(200, {'accepted': accepted, 'received': len(links)})
+
         # -------------------------------------------------------------- #
         # Dashboard                                                       #
         # -------------------------------------------------------------- #
-        def _serve_dashboard(self) -> None:
-            index = _DASHBOARD_DIR / 'index.html'
+        def _serve_html(self, filename: str) -> None:
+            """Serve one of the pages named in _HTML_ROUTES.
+
+            `filename` is always a literal value from that dict, never anything
+            derived from the request path.
+            """
             try:
-                body = index.read_bytes()
+                body = (_DASHBOARD_DIR / filename).read_bytes()
             except OSError:
-                self._write_json(404, {'error': 'dashboard/index.html not found'})
+                error = {'error': f'dashboard/{filename} not found'}
+                build_cmd = _HOW_TO_BUILD.get(filename)
+                if build_cmd:
+                    error['hint'] = f'This page is generated. Build it with: {build_cmd}'
+                self._write_json(404, error)
                 return
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _serve_scale_compare(self) -> None:
+            """Serve the pre-computed node-count sweep, or 404 with the command
+            that produces it.
+
+            Every other dashboard route reports something the CURRENT run
+            observed. This one does not: it is a simulation sweep across five
+            fleet sizes and five client counts, which no single run can contain
+            (a run has one roster). It is served from here rather than fetched
+            as a static file because the dashboard has no static route at all
+            and giving it one would expose the whole repo over HTTP for a
+            single JSON file. Routing it explicitly keeps the served surface
+            enumerable, and dashboard/replay.py gets the panel for free since
+            it reuses this handler.
+
+            A missing file is NOT an error condition -- a clone that has never
+            run the sweep is the normal case. The 404 body carries the command,
+            and the panel prints it rather than showing an empty chart grid.
+            """
+            try:
+                body = _SCALE_COMPARE_FILE.read_bytes()
+            except OSError:
+                self._write_json(404, {
+                    'error': 'no scaling sweep has been generated',
+                    'hint': 'python3 -m evaluation.scale_compare',
+                })
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -259,7 +421,30 @@ class NorthboundAPI(ThreadingHTTPServer):
     themselves. `app` is a TrustBalancerApp (duck-typed here -- not imported,
     to avoid a circular import with controller/trust_balancer.py)."""
 
+    #: Kernel accept backlog. The stdlib default is 5, and that is what evicted
+    #: a legitimate device in live run 9.
+    #:
+    #: ThreadingHTTPServer spawns a thread per connection, so the SERVING side
+    #: scales fine -- but threads are only spawned after accept(), and every
+    #: host in the topology comes up at once. 40 IoT clients and 8 edge agents
+    #: all open their first connection within milliseconds of net.start(), and
+    #: past 5 pending accepts the kernel starts refusing, which the client sees
+    #: as `Connection reset by peer`. Run 9: iot1 and iot40 were both reset
+    #: inside the same 20 ms window at t+0.4 s.
+    #:
+    #: That is not merely a lost request. iot1 treated the reset as a denial and
+    #: sat out the entire run, which left the identity "iot1" unclaimed -- and
+    #: the spoofer took it (panel_fix.md 5.13). A five-deep queue on a 48-host
+    #: fleet was the first link in that chain.
+    #:
+    #: 128 is well clear of any plausible fleet here and costs nothing: the
+    #: backlog is a queue bound, not a preallocation.
+    request_queue_size = 128
+
     def __init__(self, app: Any, state: TrustState, host: str, port: int) -> None:
         handler_cls = _make_handler(app, state)
         super().__init__((host, port), handler_cls)
-        logger.info("NorthboundAPI listening on %s:%d", host, port)
+        logger.info(
+            "NorthboundAPI listening on %s:%d (accept backlog %d)",
+            host, port, self.request_queue_size,
+        )

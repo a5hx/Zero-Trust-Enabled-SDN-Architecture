@@ -17,6 +17,21 @@ This client never learns which edge server actually served it — that mapping
 lives only in the controller (see controller/trust_state.py's dispatch
 tracking), which is what makes the routing decision genuinely enforced in the
 data plane rather than just advisory.
+
+--malicious flood: ignores --interval-s's pacing and hammers the VIP from
+                   --flood-concurrency parallel workers instead of one,
+                   each looping as fast as --flood-interval-s allows
+                   (default 0.0 -- no pacing at all). A different attack
+                   SURFACE from every node_agent.py --malicious kind: this
+                   targets the fleet's/controller's capacity to absorb
+                   requests, not any one edge node's honesty. Caught by
+                   controller/flood_detector.py's request-rate tell, keyed
+                   on the requesting client, never on whichever node the
+                   flood happens to land on -- see that module's docstring
+                   for why blaming the node would be the wrong target.
+                   Supports the same delayed-onset design as
+                   node_agent.py's --malicious-start-s, for the same reason
+                   (a clean pre-attack baseline interval).
 """
 
 import argparse
@@ -24,6 +39,7 @@ import http.client
 import json
 import logging
 import socket
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -82,16 +98,67 @@ def _compute_auth_response(scheme: str, key: bytes, device_id: str, nonce: bytes
     raise ValueError(f"unsupported auth scheme: {scheme!r}")
 
 
+#: Handshake attempts before a device gives up and sits out the run.
+#:
+#: A transport failure is NOT a denial, and conflating the two cost this
+#: project a successful identity spoof. In live run 9 the real iot1's very
+#: first handshake hit `Connection reset by peer` -- the controller's accept
+#: queue was full while 48 hosts started at once -- and iot1 logged
+#: "AUTH DENIED, sending no traffic" and never tried again. The identity "iot1"
+#: was then unclaimed for the rest of the run, and iot38 took it.
+#:
+#: A 403 is the controller's considered answer and is still final on the first
+#: reply. Only a network-level failure is retried, because only that one means
+#: the question never got asked. See panel_fix.md 5.13.
+_AUTH_MAX_ATTEMPTS = 5
+_AUTH_RETRY_BASE_S = 0.4
+
+
 def _authenticate(
     controller: str, controller_port: int, device_id: str,
     scheme: str, key: bytes, timeout_s: float,
+    max_attempts: int = _AUTH_MAX_ATTEMPTS,
+    sleep=time.sleep,
 ) -> Optional[str]:
-    """Run the challenge-response handshake with the controller.
+    """Run the challenge-response handshake, retrying transport failures.
 
-    Returns the session token on success, or None if the controller denied the
-    device (wrong key -> 403) or the handshake could not be completed. A None
-    return is the signal for the caller to not join the fleet.
+    Returns the session token on success, or None if the controller DENIED the
+    device (403) or every attempt failed at the network level. A None return is
+    the signal for the caller to not join the fleet.
     """
+    for attempt in range(1, max_attempts + 1):
+        outcome = _authenticate_once(
+            controller, controller_port, device_id, scheme, key, timeout_s,
+        )
+        if outcome is not _TRANSPORT_FAILED:
+            return outcome
+        if attempt < max_attempts:
+            backoff = _AUTH_RETRY_BASE_S * (2 ** (attempt - 1))
+            logger.warning(
+                "%s: auth handshake attempt %d/%d failed at the transport "
+                "layer -- retrying in %.1fs (a reset is not a denial)",
+                device_id, attempt, max_attempts, backoff,
+            )
+            sleep(backoff)
+    logger.error(
+        "%s: auth handshake failed at the transport layer %d times -- giving "
+        "up. This device is NOT refused; it never reached the controller, and "
+        "its identity is now unclaimed.",
+        device_id, max_attempts,
+    )
+    return None
+
+
+#: Sentinel: the handshake never got an answer, as opposed to being refused.
+_TRANSPORT_FAILED = object()
+
+
+def _authenticate_once(
+    controller: str, controller_port: int, device_id: str,
+    scheme: str, key: bytes, timeout_s: float,
+):
+    """One handshake attempt. Token on success, None on a 403, or
+    _TRANSPORT_FAILED when the exchange could not be completed at all."""
     try:
         conn = http.client.HTTPConnection(controller, controller_port, timeout=timeout_s)
         conn.request(
@@ -116,10 +183,10 @@ def _authenticate(
         conn.close()
         if resp.status == 200:
             return json.loads(body).get('token')
-        return None  # 403 -- denied admission
+        return None  # 403 -- denied admission, a real and final answer
     except OSError as exc:
         logger.warning("Auth handshake failed (network): %s", exc)
-        return None
+        return _TRANSPORT_FAILED
 
 
 def _report(
@@ -151,15 +218,174 @@ def _report(
         logger.warning("Failed to report outcome to controller: %s", exc)
 
 
+def _worker_loop(
+    vip: str, vip_port: int, controller: str, controller_port: int,
+    device_id: str, timeout_s: float, interval_s: float, stop_event: threading.Event,
+) -> None:
+    """Send tasks and report outcomes until stopped. `interval_s` paces
+    between requests; 0 means no pacing at all (a flood worker). Shared body
+    for the honest single-worker loop and every one of a flood's parallel
+    workers -- same request, different concurrency and pacing."""
+    while not stop_event.is_set():
+        status, latency_ms, local_port = _send_task(vip, vip_port, timeout_s)
+        logger.info("%s task -> %s (%.1f ms)", device_id, status, latency_ms)
+        _report(controller, controller_port, device_id, local_port, status, latency_ms, timeout_s)
+        if interval_s > 0:
+            stop_event.wait(interval_s)
+
+
+def _arm_flood(
+    vip: str, vip_port: int, controller: str, controller_port: int,
+    device_id: str, timeout_s: float, flood_concurrency: int, flood_interval_s: float,
+    stop_normal: threading.Event, stop_flood: threading.Event,
+) -> None:
+    """Stop the paced single-worker loop and start flood_concurrency
+    parallel workers hammering the VIP right now. Split from
+    _arm_flood_after_delay (mirrors node_agent.py's _arm_malicious /
+    _arm_after_delay split) so tests can arm synchronously without waiting
+    out a real delay."""
+    if stop_normal.is_set():
+        return  # already torn down (e.g. process shutting down mid-delay)
+    logger.warning(
+        "%s: FLOOD mode ARMED -- %d parallel workers, interval=%.3fs",
+        device_id, flood_concurrency, flood_interval_s,
+    )
+    stop_normal.set()
+    for _ in range(flood_concurrency):
+        threading.Thread(
+            target=_worker_loop,
+            args=(vip, vip_port, controller, controller_port, device_id,
+                  timeout_s, flood_interval_s, stop_flood),
+            daemon=True,
+        ).start()
+
+
+def _arm_flood_after_delay(delay_s: float, *args) -> None:
+    """Daemon-thread target: wait out the onset delay, then arm the flood."""
+    time.sleep(delay_s)
+    _arm_flood(*args)
+
+
+def _run_flood(
+    device_id: str, vip: str, vip_port: int, controller: str, controller_port: int,
+    interval_s: float, timeout_s: float,
+    malicious_start_s: float, flood_concurrency: int, flood_interval_s: float,
+) -> None:
+    """--malicious flood's run loop: honestly paced (interval_s, single
+    worker) until malicious_start_s elapses -- 0 arms immediately -- then
+    flood_concurrency parallel workers take over. Kept as a separate
+    function from run()'s honest path so that path is untouched
+    byte-for-byte for every non-malicious device, which is the overwhelming
+    common case."""
+    stop_normal = threading.Event()
+    stop_flood = threading.Event()
+
+    threading.Thread(
+        target=_worker_loop,
+        args=(vip, vip_port, controller, controller_port, device_id,
+              timeout_s, interval_s, stop_normal),
+        daemon=True,
+    ).start()
+
+    arm_args = (
+        vip, vip_port, controller, controller_port, device_id, timeout_s,
+        flood_concurrency, flood_interval_s, stop_normal, stop_flood,
+    )
+    if malicious_start_s > 0:
+        logger.warning(
+            "%s: MALICIOUS MODE flood -- honest until t+%.1fs, then ARMS",
+            device_id, malicious_start_s,
+        )
+        threading.Thread(
+            target=_arm_flood_after_delay, args=(malicious_start_s, *arm_args), daemon=True,
+        ).start()
+    else:
+        _arm_flood(*arm_args)
+
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        stop_normal.set()
+        stop_flood.set()
+        raise
+
+
+def _run_spoof(
+    device_id: str, vip: str, vip_port: int, controller: str, controller_port: int,
+    interval_s: float, timeout_s: float,
+    auth_scheme: Optional[str], auth_key: Optional[bytes],
+    malicious_start_s: float, spoof_target_id: str,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    """--malicious spoof: after malicious_start_s (should be long enough for
+    the real spoof_target_id to have already authenticated normally), attempt
+    to authenticate AS spoof_target_id from this host's own source IP, using
+    the fleet-shared key.
+
+    This is possible at all only because the key is fleet-wide (topology.py
+    hands every legitimate device the identical shared_key_hex) -- see
+    security/authenticator.py's source-IP pinning, which is exactly what
+    this attack is built to test. Denial is the expected/correct outcome; on
+    the (bug) case where it isn't denied, the spoofer proceeds to send task
+    traffic under the stolen identity, same as any authenticated device.
+    """
+    if malicious_start_s > 0:
+        logger.warning(
+            "%s: MALICIOUS MODE spoof -- waiting t+%.1fs before impersonating %s",
+            device_id, malicious_start_s, spoof_target_id,
+        )
+        time.sleep(malicious_start_s)
+
+    logger.warning(
+        "%s: attempting to authenticate AS %s from this host", device_id, spoof_target_id,
+    )
+    token = _authenticate(
+        controller, controller_port, spoof_target_id, auth_scheme, auth_key, timeout_s,
+    )
+    if token is None:
+        logger.error(
+            "%s: SPOOFING DENIED -- %s's identity is pinned to a different "
+            "source IP", device_id, spoof_target_id,
+        )
+        return
+
+    logger.warning(
+        "%s: SPOOFING SUCCEEDED -- now sending traffic as %s (session %s...)",
+        device_id, spoof_target_id, token[:8],
+    )
+    if stop_event is None:
+        stop_event = threading.Event()
+    try:
+        _worker_loop(
+            vip, vip_port, controller, controller_port, spoof_target_id,
+            timeout_s, interval_s, stop_event,
+        )
+    except KeyboardInterrupt:
+        stop_event.set()
+        raise
+
+
 def run(
     device_id: str, vip: str, vip_port: int, controller: str, controller_port: int,
     interval_s: float, timeout_s: float,
     auth_scheme: Optional[str] = None, auth_key: Optional[bytes] = None,
+    malicious: str = 'none', malicious_start_s: float = 0.0,
+    flood_concurrency: int = 20, flood_interval_s: float = 0.0,
+    spoof_target_id: Optional[str] = None,
 ) -> None:
     logger.info(
         "iot_client %s -> VIP %s:%d, reporting to %s:%d",
         device_id, vip, vip_port, controller, controller_port,
     )
+
+    if malicious == 'spoof':
+        _run_spoof(
+            device_id, vip, vip_port, controller, controller_port,
+            interval_s, timeout_s, auth_scheme, auth_key,
+            malicious_start_s, spoof_target_id,
+        )
+        return
 
     # Admission control: authenticate before generating any traffic. A device
     # given the wrong key is denied here and never joins the fleet -- the
@@ -175,6 +401,13 @@ def run(
             return
         logger.info("AUTH OK for %s (session %s...)", device_id, token[:8])
 
+    if malicious == 'flood':
+        _run_flood(
+            device_id, vip, vip_port, controller, controller_port,
+            interval_s, timeout_s, malicious_start_s, flood_concurrency, flood_interval_s,
+        )
+        return
+
     while True:
         status, latency_ms, local_port = _send_task(vip, vip_port, timeout_s)
         logger.info("%s task -> %s (%.1f ms)", device_id, status, latency_ms)
@@ -182,7 +415,10 @@ def run(
         time.sleep(interval_s)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The client's CLI, split out of main() -- see node_agent.build_parser for
+    why (tests/test_live_config_preflight.py checks the real launch commands
+    against it without starting a client)."""
     parser = argparse.ArgumentParser(description='Zero Trust SDN IoT client')
     parser.add_argument('--device-id', required=True)
     parser.add_argument('--vip', required=True)
@@ -200,7 +436,44 @@ def main() -> None:
         help='shared key as hex. If omitted, the device skips authentication '
              '(plain runs). A wrong key is refused at admission.',
     )
-    args = parser.parse_args()
+    parser.add_argument('--malicious', choices=['none', 'flood', 'spoof'], default='none')
+    parser.add_argument(
+        '--malicious-start-s', type=float, default=0.0,
+        help='Delay (s) after start before --malicious flood/spoof arms. 0 '
+             '(default) arms immediately. Before arming the device behaves '
+             'normally (flood: paces normally; spoof: sends no traffic at '
+             'all, since it has no identity of its own to authenticate as).',
+    )
+    parser.add_argument(
+        '--flood-concurrency', type=int, default=20,
+        help='--malicious flood only: number of parallel request workers.',
+    )
+    parser.add_argument(
+        '--flood-interval-s', type=float, default=0.0,
+        help='--malicious flood only: pacing between requests per worker. '
+             '0 (default) = no pacing, as fast as the network allows.',
+    )
+    parser.add_argument(
+        '--spoof-target-device-id', default=None,
+        help='--malicious spoof only: device_id to impersonate. Requires '
+             '--auth-key-hex (the attacker must hold the fleet-wide key).',
+    )
+    return parser
+
+
+def parse_args(argv=None):
+    """Parse and cross-validate. The spoof/target rule lives here rather than in
+    main() so the preflight exercises it too -- a spoof entry missing its target
+    is a config mistake worth catching before the run, not during it."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.malicious == 'spoof' and not args.spoof_target_device_id:
+        parser.error('--malicious spoof requires --spoof-target-device-id')
+    return args
+
+
+def main() -> None:
+    args = parse_args()
 
     auth_key = bytes.fromhex(args.auth_key_hex) if args.auth_key_hex else None
 
@@ -215,6 +488,9 @@ def main() -> None:
             args.controller, args.controller_port,
             args.interval_s, args.timeout_s,
             auth_scheme=args.auth_scheme, auth_key=auth_key,
+            malicious=args.malicious, malicious_start_s=args.malicious_start_s,
+            flood_concurrency=args.flood_concurrency, flood_interval_s=args.flood_interval_s,
+            spoof_target_id=args.spoof_target_device_id,
         )
     except KeyboardInterrupt:
         pass

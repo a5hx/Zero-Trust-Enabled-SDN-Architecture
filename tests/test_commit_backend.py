@@ -15,12 +15,13 @@ RaftNode/InMemoryNetwork directly.
 import random
 import threading
 import time
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 import pytest
 
-from blockchain.commit_backend import LocalLedgerBackend, RaftBackend
+from blockchain.commit_backend import LocalLedgerBackend, RaftBackend, TimingCommitBackend
 from blockchain.raft import InMemoryNetwork
+from contracts.block_schema import Block
 from contracts.trust_update import TrustUpdate
 
 
@@ -59,6 +60,73 @@ class TestLocalLedgerBackend:
         backend.commit([_make_update('srv1', 0.91)])
         assert backend.latest_score('srv1') == pytest.approx(0.91)
         assert backend.latest_score('unknown') is None
+
+
+# --------------------------------------------------------------------------- #
+# TimingCommitBackend -- used by the live full-scale demo's blockchain-       #
+# overhead NFR (evaluation/nfr_report.py).                                    #
+# --------------------------------------------------------------------------- #
+class TestTimingCommitBackend:
+    def test_forwards_to_inner_backend_and_returns_its_block(self) -> None:
+        backend = TimingCommitBackend(LocalLedgerBackend())
+        block = backend.commit([_make_update()])
+        assert block is not None
+        assert backend.chain_length() == 2
+        assert backend.verify()
+
+    def test_empty_commit_is_not_counted_and_fires_no_callback(self) -> None:
+        calls: List[Any] = []
+        backend = TimingCommitBackend(
+            LocalLedgerBackend(), on_commit=lambda *a: calls.append(a),
+        )
+        assert backend.commit([]) is None
+        assert backend.commit_count == 0
+        assert calls == []
+
+    def test_real_commit_increments_count_and_times_it(self) -> None:
+        calls: List[Any] = []
+        backend = TimingCommitBackend(
+            LocalLedgerBackend(), on_commit=lambda *a: calls.append(a),
+        )
+        block = backend.commit([_make_update()])
+        assert backend.commit_count == 1
+        assert len(calls) == 1
+        cb_block, elapsed_ms, num_updates = calls[0]
+        assert cb_block is block
+        assert elapsed_ms >= 0.0
+        assert num_updates == 1
+
+    def test_rejected_commit_still_fires_callback_with_none_block(self) -> None:
+        class _AlwaysRejects:
+            """Minimal CommitBackend stub whose commit() always rejects --
+            standing in for whatever real rejection path (a stale ledger,
+            a concurrent writer) LocalLedgerBackend.commit() can hit."""
+
+            def commit(self, updates: List[TrustUpdate]) -> Optional[Block]:
+                return None
+
+            def latest_score(self, node_id: str) -> Optional[float]:
+                return None
+
+            def verify(self) -> bool:
+                return True
+
+            def chain_length(self) -> int:
+                return 1
+
+        calls: List[Any] = []
+        backend = TimingCommitBackend(
+            _AlwaysRejects(), on_commit=lambda *a: calls.append(a),
+        )
+        block = backend.commit([_make_update()])
+        assert block is None
+        assert backend.commit_count == 1
+        assert calls[0][0] is None
+
+    def test_ledger_property_passes_through(self) -> None:
+        inner = LocalLedgerBackend()
+        backend = TimingCommitBackend(inner)
+        assert backend.ledger is inner.ledger
 
 
 # --------------------------------------------------------------------------- #

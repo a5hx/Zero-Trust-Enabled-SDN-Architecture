@@ -42,10 +42,18 @@ import logging
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set
 
 from os_ken.lib import hub
 
+from controller.attack_classifier import (
+    SIG_CPU_HONESTY,
+    SIG_LATENCY_TELL,
+    SIG_PACKET_DROP,
+    SIG_TRUST_COLLAPSE,
+    SIG_UNREACHABLE,
+    AttackEvidence,
+)
 from controller.event_bus import NullBus
 from controller.trust_state import TrustState
 from simulation.addressing import srv_index, srv_ip
@@ -209,6 +217,21 @@ class FlowMonitor:
         self.idle_claim_threshold = idle_claim_threshold
         self.latency_liar_persist = latency_liar_persist
         self._latency_strikes: Dict[str, int] = {nid: 0 for nid in self.node_ids}
+        # Attack classification (plan_adv.md Phase 2). Fed EVERY cycle,
+        # including the clean ones -- an on-off attacker is only visible as
+        # such because its quiet phases were recorded, so skipping clean
+        # cycles here would silently collapse on-off into sybil. Only the
+        # label CHANGE is published, not the label every second: see
+        # _publish_classification.
+        self._evidence = AttackEvidence()
+        self._last_label: Dict[str, Optional[str]] = {}
+        # Nodes that have answered /status at least once. Until a node is in
+        # here it is UNKNOWN rather than anomalous -- see _poll_once for why an
+        # unanswered poll from a node that has never been seen must not score.
+        self._ever_seen: Set[str] = set()
+        # One-shot roster audit -- see _audit_unclaimed_identities.
+        self._roster_audited = False
+        self._started_at = time.time()
         # Optional so existing callers (run_demo.py, the unit tests) keep
         # working unchanged -- they never quarantine anything, so they have
         # nothing to undo.
@@ -242,6 +265,11 @@ class FlowMonitor:
         # TrustState.reap_stale_dispatches.
         self.state.reap_stale_dispatches()
 
+        # One timestamp for the whole cycle, so every node's observation this
+        # sweep shares an ordinate. Per-node time.time() calls would let two
+        # nodes polled in the same sweep land in different classifier windows.
+        cycle_t = time.time()
+
         results = dict(zip(
             self.node_ids,
             self._executor.map(self._fetch_status, self.node_ids),
@@ -259,8 +287,17 @@ class FlowMonitor:
             status = probe.payload
             anomaly_raw = 0.0
             reasons: List[str] = []
+            # Machine-readable twin of `reasons`. Same facts, but as
+            # {signal_key: magnitude} so controller/attack_classifier.py can
+            # tell the six attacks apart without regexing prose that was
+            # written to be read by a human on a dashboard. `reasons` is
+            # unchanged and stays the thing rendered on screen.
+            signals: Dict[str, float] = {}
 
             if status is not None:
+                # First contact: from here on, silence from this node is a
+                # genuine failure signal rather than "not started yet".
+                self._ever_seen.add(node_id)
                 raw_cpu = status.get('cpu_load')
                 has_claim = isinstance(raw_cpu, (int, float))
                 claimed_cpu = float(raw_cpu) if has_claim else 0.5
@@ -274,37 +311,92 @@ class FlowMonitor:
                 )
                 concurrency = status.get('concurrency')
 
-                self.state.report_claimed_status(node_id, claimed_cpu, latency_ms)
+                raw_busy = status.get('busy_seconds')
+                busy_seconds = (
+                    float(raw_busy) if isinstance(raw_busy, (int, float)) else None
+                )
+                self.state.report_claimed_status(
+                    node_id, claimed_cpu, latency_ms, busy_seconds=busy_seconds,
+                )
                 if concurrency:
                     self.state.set_concurrency(node_id, int(concurrency))
 
-                # Both sides averaged over the same window. The node samples
-                # active/concurrency the instant its handler runs, so its claim
-                # is a quantised step function; the controller's estimate is an
-                # integral. Comparing one against the other is comparing two
-                # different quantities, and it false-positives in whichever
-                # direction happens to be ahead -- a node caught mid-burst reads
-                # claimed 0.50 against observed 0.03, and one caught idle reads
-                # claimed 0.00 against observed 0.62. Neither is dishonesty.
+                # Duty cycle against duty cycle -- both sides "fraction of
+                # available worker-time spent working", integrated over the same
+                # window. The node's side comes from its cumulative busy-second
+                # counter; the controller's from its own completion count times
+                # the fleet median service time.
+                #
+                # What this replaces, and why: observed_load() measures
+                # *residence* time (dispatch -> report, including flow install,
+                # transit and the client's own reporting) while the node can only
+                # ever measure *service* time. Live run 6 put that ratio at ~6x,
+                # so |claimed - observed_load| was ~= occupancy at every load --
+                # a standing tax on being busy rather than a dishonesty signal.
+                # See LIVE_RUN_8_40_3 Defect 8.
                 observed = self.state.observed_load(node_id)
                 claimed_avg = self.state.claimed_load(node_id)
+                expected = self.state.expected_duty_cycle(node_id)
+                # Fall back to observed_load when the duty-cycle estimate has no
+                # opinion (agent predates busy_seconds, window too short, or too
+                # few honest nodes for a fleet median). That fallback is the old
+                # residence-time comparison, tax and all -- but *abstaining*
+                # instead would delete the sybil check outright for exactly the
+                # node that refuses to report busy time, which is a detection
+                # hole an attacker controls. Imperfect beats absent; the
+                # dimensionally-sound path is used whenever it is available.
+                # Which reference to judge the claim against -- and, crucially,
+                # whether to judge it at all.
+                #
+                # This used to be `expected if expected is not None else
+                # observed`, an unconditional fallback justified as "imperfect
+                # beats absent". Live run 7 measured what that fallback
+                # actually costs: expected_duty was available 70% of the time
+                # and was excellent where it was (deviation 0.0006 against a
+                # 0.40 gate), while observed_load read ~17x higher on the same
+                # samples -- and 175 of 175 CPU-honesty firings came from the
+                # fallback path. Every false quarantine in the run, none from
+                # the fixed path. Worse, it was self-reinforcing: a quarantined
+                # node completes fewer tasks, which is exactly what makes
+                # expected_duty unavailable, which re-fires the check.
+                #
+                # The fallback conflated two different reasons for None. Split:
+                if expected is not None:
+                    reference, basis = expected, 'expected duty'
+                elif not self.state.reports_busy_seconds(node_id):
+                    # The NODE is withholding its busy-seconds counter. That is
+                    # attacker-controlled, so going quiet here would let a liar
+                    # switch the check off by omission. Keep the imperfect
+                    # comparison -- and say in the reason that it is the
+                    # degraded one, so a reader is never told a residence-time
+                    # number is a duty cycle.
+                    reference, basis = observed, 'observed (node sends no busy_seconds)'
+                else:
+                    # The node is reporting honestly; WE lack the completions to
+                    # build a fleet median. Our missing evidence is not the
+                    # node's misbehaviour -- abstain, per the same rule as
+                    # stale-evidence abstention (memory/quarantine-absorbing-state).
+                    reference, basis = None, None
                 # Only cross-check a figure the node actually sent. Falling back
                 # to 0.5 and then comparing against that accuses the node of
                 # lying about a value it never claimed -- and the invented 0.5
                 # against an idle observed 0.0 is itself a 0.50 deviation, over
                 # the threshold before the node has done anything at all.
-                deviation = abs(claimed_avg - observed) if has_claim else 0.0
-                if has_claim and deviation > self.honesty_deviation_threshold:
+                can_judge = has_claim and reference is not None
+                deviation = abs(claimed_avg - reference) if can_judge else 0.0
+                if can_judge and deviation > self.honesty_deviation_threshold:
                     logger.warning(
-                        "%s: honesty deviation %.3f (claimed=%.3f observed=%.3f) > %.3f",
-                        node_id, deviation, claimed_avg, observed,
+                        "%s: honesty deviation %.3f (claimed=%.3f %s=%.3f) > %.3f",
+                        node_id, deviation, claimed_avg, basis, reference,
                         self.honesty_deviation_threshold,
                     )
                     anomaly_raw = 1.0
                     reasons.append(
-                        f'CPU honesty: |claimed {claimed_avg:.2f} - observed '
-                        f'{observed:.2f}| = {deviation:.2f} > {self.honesty_deviation_threshold:.2f}'
+                        f'CPU honesty: |claimed {claimed_avg:.2f} - {basis} '
+                        f'{reference:.2f}| = {deviation:.2f} > '
+                        f'{self.honesty_deviation_threshold:.2f}'
                     )
+                    signals[SIG_CPU_HONESTY] = round(deviation, 4)
 
                 # Load-independent Sybil tell (see __init__): claims idle but is
                 # far slower to answer than the fleet median, and stays that way.
@@ -338,7 +430,9 @@ class FlowMonitor:
                         f'{measured_rtt:.0f}ms is {tell.ratio:.1f}x fleet median '
                         f'{latency_baseline:.0f}ms (sustained)'
                     )
-            else:
+                    if tell.ratio is not None:
+                        signals[SIG_LATENCY_TELL] = round(tell.ratio, 4)
+            elif node_id in self._ever_seen:
                 # Agent unreachable this cycle -- treat as suspicious rather
                 # than silently skipping, but don't crash the loop over it.
                 # The anomaly EMA (lambda=0.85 by default) means even one
@@ -348,6 +442,24 @@ class FlowMonitor:
                 logger.warning("%s: /status poll failed this cycle", node_id)
                 anomaly_raw = 1.0
                 reasons.append('/status unreachable')
+                signals[SIG_UNREACHABLE] = 1.0
+            else:
+                # Never successfully polled even once: this node is UNKNOWN, not
+                # anomalous. A node that has gone silent after being healthy is a
+                # real failure signal and is scored as one above -- but one that
+                # has never answered has not misbehaved, it has not started. The
+                # controller must be listening before any switch can connect, so
+                # it necessarily comes up seconds before Mininet builds the
+                # network and the agents inside it; scoring that window pushed Ā
+                # to 0.85 on the first poll and quarantined all 8 servers at
+                # t=0.5s of the 8/40/3 live run, before a single one existed.
+                # Staying silent here costs nothing: a node that never comes up
+                # never gets traffic either, because it is never a routing
+                # candidate until it reports.
+                logger.info(
+                    "%s: not seen yet (no successful /status poll) -- treating as "
+                    "unknown, not anomalous", node_id,
+                )
 
             timeout_rate = self.state.recent_timeout_rate(node_id, min_samples=_MIN_TIMEOUT_SAMPLES)
             if timeout_rate is not None and timeout_rate > self.honesty_deviation_threshold:
@@ -360,19 +472,50 @@ class FlowMonitor:
                     f'packet-drop tell: timeout rate {timeout_rate:.2f} > '
                     f'{self.honesty_deviation_threshold:.2f}'
                 )
+                signals[SIG_PACKET_DROP] = round(timeout_rate, 4)
+
+            # The trust rail can isolate a node before the anomaly rail has the
+            # _MIN_TIMEOUT_SAMPLES it needs to say anything -- live run 8's
+            # srv6 was a blackhole contained in 9.7s with anomaly exactly 0.0
+            # and not one flagged cycle in 250, so the classifier had no
+            # evidence and the attack went unlabelled. Record what the trust
+            # rail acted on so the label can exist.
+            #
+            # NOTE the deliberate omission: this does NOT set anomaly_raw. It
+            # is evidence for the CLASSIFIER only and adds no isolation power
+            # -- the node it describes has already been isolated by the trust
+            # rail, so the most a wrong answer here can cost is a wrong label
+            # in a report. Keep it that way.
+            collapse = self.state.isolation_evidence(node_id)
+            if collapse is not None:
+                fail_rate, samples = collapse
+                reasons.append(
+                    f'trust-rail isolation: {fail_rate:.0%} of the {samples} '
+                    f'task outcome(s) since trust collapsed did not succeed '
+                    f'(no anomaly signal -- this does not gate)'
+                )
+                signals[SIG_TRUST_COLLAPSE] = round(fail_rate, 4)
 
             anomaly = self.state.set_anomaly_raw(node_id, anomaly_raw)
 
             if reasons:
                 self.bus.publish(
                     'anomaly', node=node_id, reasons=reasons,
+                    signals=dict(signals),
                     anomaly=round(anomaly, 4), gate=self.state.anomaly_gate,
                 )
+
+            # Record the cycle whether or not anything fired -- a clean cycle
+            # is evidence too (see AttackEvidence.record_node).
+            self._evidence.record_node(node_id, cycle_t, signals)
+            self._publish_classification(node_id, cycle_t)
 
         # One snapshot event per cycle rather than one per node: the dashboard
         # redraws the whole trust panel from it, and 4 separate events would
         # make it render torn intermediate states.
         self.bus.publish('node_status', nodes=self.state.snapshot())
+
+        self._audit_unclaimed_identities(cycle_t)
 
         newly_quarantined, newly_recovered = self.state.poll_quarantine_transitions()
         for node_id in newly_quarantined:
@@ -398,6 +541,94 @@ class FlowMonitor:
                 summary['prev_weights'], summary['next_weights'],
             )
             self.bus.publish('optimizer', **summary)
+
+    #: How long after controller start to audit the device roster. Long enough
+    #: that every host has had time to come up and complete a handshake
+    #: (Mininet's build plus the client's own retry ladder), short enough to be
+    #: well inside a 300s run.
+    ROSTER_AUDIT_AFTER_S = 45.0
+
+    def _audit_unclaimed_identities(self, now: float) -> None:
+        """Publish, once, the provisioned identities nobody has authenticated as.
+
+        Live run 9's spoof turned on the controller being unable to tell "iot1
+        has not started yet" from "iot1 was knocked off its socket and is out of
+        the run" -- both are silence, and silence is what left the identity free
+        for iot38 to take (panel_fix.md 5.13). The roster makes the difference
+        expressible: a provisioned device that has never once authenticated,
+        long after everything else has, is a fact worth recording rather than an
+        absence of facts.
+
+        This is a REPORT, not a control action. It gates nothing and quarantines
+        nobody -- the spoofing race itself is closed in security.IdentityBinding,
+        by refusing a foreign host regardless of whether the owner showed up.
+        This exists so that when a device is evicted, something says so.
+
+        It lives in FlowMonitor because this is the controller's only periodic
+        loop, not because identity is its concern; hence one shot and out.
+        """
+        if self._roster_audited or (now - self._started_at) < self.ROSTER_AUDIT_AFTER_S:
+            return
+        self._roster_audited = True
+
+        binding = getattr(getattr(self.state, 'authenticator', None), 'binding', None)
+        if binding is None or not binding.roster():
+            return          # no provisioned roster -- nothing to audit against
+
+        unclaimed = binding.unclaimed()
+        if not unclaimed:
+            return
+        logger.warning(
+            "ROSTER AUDIT: %d provisioned identity(s) never authenticated: %s "
+            "-- each is either a device that failed to start or one that was "
+            "evicted before it could claim its name",
+            len(unclaimed), ', '.join(sorted(unclaimed)),
+        )
+        self.bus.publish(
+            'identity_unclaimed', devices=sorted(unclaimed),
+            expected_ips=unclaimed, after_s=round(now - self._started_at, 1),
+        )
+
+    def _publish_classification(self, node_id: str, now: float) -> None:
+        """Classify this node and publish only when the LABEL CHANGES.
+
+        Not every cycle: the classifier has an opinion on every poll of every
+        misbehaving node, so publishing unconditionally would put one event per
+        node per second on the bus for the whole run and drown the dashboard's
+        event feed in restatements of a verdict nobody asked twice. Same
+        rising-edge discipline as 'quarantine'/'recovered' and the flood tell.
+
+        A transition INTO abstention (None) is published too, as
+        attack_type=None -- "the classifier no longer has an opinion" is a real
+        state change and hiding it would leave the last label standing on
+        screen forever, which is the stale-verdict failure that
+        memory/quarantine-absorbing-state is about.
+        """
+        result = self._evidence.classify_node(node_id, now=now)
+        label = result.attack_type if result is not None else None
+        # .get() defaults to None, which is also the "no opinion" label -- so a
+        # node that has never been classified and still isn't stays silent,
+        # rather than announcing an empty verdict on its first clean poll.
+        if self._last_label.get(node_id) == label:
+            return
+        self._last_label[node_id] = label
+
+        if result is None:
+            self.bus.publish('classification', subject=node_id, kind='node', attack_type=None)
+            return
+
+        logger.warning(
+            "%s CLASSIFIED as %s (confidence %.2f): %s",
+            node_id, result.attack_type, result.confidence, result.rationale,
+        )
+        self.bus.publish(
+            'classification', subject=node_id, kind='node',
+            attack_type=result.attack_type,
+            confidence=round(result.confidence, 3),
+            rationale=result.rationale,
+            evidence_cycles=result.evidence_cycles,
+            first_flagged_t=result.first_flagged_t,
+        )
 
     def _fetch_status(self, node_id: str) -> StatusProbe:
         host = srv_ip(srv_index(node_id))

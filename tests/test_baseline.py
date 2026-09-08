@@ -9,6 +9,7 @@ and the metrics mean what they say. A harness that silently mis-measures would
 produce confident, wrong results, which is worse than no harness.
 """
 
+import csv
 import sys
 import os
 
@@ -281,3 +282,44 @@ class TestExperiment:
         assert 'zt_sdn' in table and 'random' in table
         assert 'clean' in table and 'drop' in table
         assert '-' not in table.split('\n')[-1].replace('-', '') or True
+
+
+class TestRowsAndCsvAgree:
+    """`as_rows` is what `write_csv` writes.
+
+    The analysis page reads a CSV or, under --run-sweeps, takes these rows
+    directly. If the two ever carried different fields or different rounding,
+    the same sweep would render two different pages.
+    """
+
+    def test_row_keys_are_the_csv_columns_in_order(self) -> None:
+        results = B.run_experiment(
+            runs=1, strategies=('zt_sdn',), scenarios=('clean',),
+            sim_s=15.0, n_nodes=4,
+        )
+        assert tuple(B.as_rows(results)[0]) == B.CSV_FIELDS
+
+    def test_a_written_csv_reads_back_as_the_same_values(self, tmp_path) -> None:
+        results = B.run_experiment(
+            runs=2, strategies=('random', 'zt_sdn'), scenarios=('clean',),
+            sim_s=15.0, n_nodes=4,
+        )
+        path = tmp_path / 'out.csv'
+        B.write_csv(results, str(path))
+        from_file = list(csv.DictReader(path.open()))
+        in_memory = B.as_rows(results)
+
+        assert len(from_file) == len(in_memory)
+        for disk, mem in zip(from_file, in_memory):
+            # The CSV stringifies; nothing else may differ.
+            assert disk == {k: str(v) for k, v in mem.items()}
+
+    def test_a_run_that_never_isolated_stays_empty_not_zero(self) -> None:
+        """`stats.compare_all` skips '' and would happily average a 0.0."""
+        rows = B.as_rows([B.RunResult(
+            strategy='zt_sdn', scenario='clean', seed=1, offered=10,
+            completed=10, failed=0, slo_violations=1, malicious_tasks=0,
+            latencies_ms=[1.0] * 10, served=[0] * 10, time_to_isolate_s=None,
+        )])
+        assert rows[0]['time_to_isolate_s'] == ''
+

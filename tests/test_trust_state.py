@@ -38,8 +38,10 @@ def test_dispatch_tracks_inflight_and_observed_load():
     # claimed 0.0 clears the 0.40 honesty threshold on its own.
     assert state.observed_load('srv1') < 0.1
 
-    node = state.complete_dispatch('10.0.0.5', 5000)
-    assert node == 'srv1'
+    completed = state.complete_dispatch('10.0.0.5', 5000)
+    assert completed.node_id == 'srv1'
+    # Routed, not inherited -- so this outcome is the node's to answer for.
+    assert completed.chargeable
     assert state.get_inflight('srv1') == 1
 
 
@@ -76,8 +78,15 @@ def test_complete_dispatch_unknown_flow_returns_none():
 def test_observed_load_clamped_to_one():
     state = _make_state()
     state.set_concurrency('srv1', 2)
+    # Occupancy is a *time* average, so five dispatches registered back-to-back
+    # have almost no area behind them yet and the ratio is dominated by however
+    # the samples happened to be spaced -- this asserted on zero elapsed time
+    # and flaked ~2% of runs. Give it a window's worth of history, as the other
+    # observed_load tests do.
+    state.load_window_s = 0.1
     for port in range(5001, 5006):
         state.register_dispatch('10.0.0.5', port, 'srv1')
+    time.sleep(0.15)
     assert state.observed_load('srv1') == 1.0
 
 
@@ -284,3 +293,1004 @@ def test_stale_dispatches_are_reaped_without_new_dispatches():
     # No further dispatches -- exactly the all-quarantined case.
     state.reap_stale_dispatches()
     assert state.get_inflight('srv1') == 0, 'stale dispatches must drain on their own'
+
+
+def test_reassigned_dispatches_keep_their_original_age():
+    """Re-steering a flow must not restart the abandonment clock.
+
+    `dispatched_at` answers "has the client given up yet?", and the client's
+    own timer is unaffected by the controller re-pointing its flow. Stamping
+    `now` on reassignment made every re-dispatch rejuvenate the entry, so
+    under quarantine churn -- the only time this path runs -- dispatches never
+    aged out at all. The 8/40/3 live run held inflight pinned at 7 for its
+    whole length, which kept observed_load at 1.00 against a truthful
+    claimed_cpu of 0.00 and re-tripped the honesty check on each survivor the
+    load was moved onto.
+    """
+    state = _make_state()
+    state._dispatch_reap_after_s = 0.05
+
+    state.register_dispatch('10.0.0.5', 5000, 'srv1')
+    assert state.get_inflight('srv1') == 1
+
+    time.sleep(0.1)  # the client has now given up
+    moved = state.reassign_dispatches('srv1', 'srv2')
+    assert moved == [('10.0.0.5', 5000)]
+    assert state.get_inflight('srv2') == 1
+
+    # Already past the horizon when it was moved, so the very next sweep must
+    # drop it rather than granting it a fresh lease on srv2.
+    state.reap_stale_dispatches()
+    assert state.get_inflight('srv2') == 0, (
+        're-dispatch must not rejuvenate an already-abandoned dispatch'
+    )
+
+
+def test_reap_horizon_tracks_the_client_task_timeout():
+    """The reaper must not out-live the client's own give-up time.
+
+    A client that times out at task_timeout_s never sends /report at all, so
+    every dispatch it abandons keeps counting toward _inflight -- and therefore
+    observed_load -- until the reaper drops it. The 8/40/3 live run had a fixed
+    30s reaper against a 2s client timeout, so under saturation each node
+    carried ~15 cycles of phantom inflight and read observed_load 0.75 while
+    genuinely idle; flow_monitor then compared that to a truthful claimed_cpu
+    of 0.00 and quarantined five honest nodes. Deriving the horizon from the
+    timeout is what makes the two impossible to drift apart again.
+    """
+    assert _make_state(task_timeout_s=2.0)._dispatch_reap_after_s == 3.0
+    assert _make_state(task_timeout_s=10.0)._dispatch_reap_after_s == 15.0
+    # Never below a floor, so a pathologically small timeout can't reap a
+    # dispatch before the report has any chance to arrive.
+    assert _make_state(task_timeout_s=0.01)._dispatch_reap_after_s == 1.0
+    # It must stay a small multiple of the client timeout, never the old
+    # order-of-magnitude gap.
+    assert _make_state(task_timeout_s=2.0)._dispatch_reap_after_s < 2.0 * 5
+
+
+def test_abandoned_dispatches_do_not_pin_observed_load_on_an_idle_node():
+    """End-to-end shape of the live-run failure: clients that time out and
+    never report must not leave an honest, idle node reading as loaded."""
+    state = _make_state()
+    state.set_concurrency('srv1', 4)
+    # Both set directly rather than via task_timeout_s: the derived horizon has
+    # a 1.0s floor (see test_reap_horizon_tracks_the_client_task_timeout) and
+    # the averaging window is 3s, which would make this a multi-second test for
+    # no extra coverage. The ratio between them is what matters, and it is
+    # preserved: the reaper fires well inside one averaging window.
+    state._dispatch_reap_after_s = 0.05
+    state.load_window_s = 0.1
+
+    # Four clients dispatch, then all give up without ever reporting.
+    for i in range(4):
+        state.register_dispatch('10.0.0.5', 8000 + i, 'srv1')
+    assert state.get_inflight('srv1') == 4
+
+    time.sleep(0.15)
+    # Held for more than a full window, so this much is real occupancy and
+    # must read as such -- the fix must not simply blind the load estimate.
+    assert state.observed_load('srv1') > 0.9, 'real load must read as load while it is real'
+
+    state.reap_stale_dispatches()
+    assert state.get_inflight('srv1') == 0, 'abandoned dispatches must drain'
+
+    # ...and once they have drained, the occupancy estimate must actually fall
+    # back to idle. With the old 30s-vs-2s gap it never got here: inflight
+    # stayed pinned, so observed_load sat above the 0.40 honesty threshold
+    # indefinitely and every honest node looked like it was lying about being
+    # idle. One averaging window is all it should take.
+    time.sleep(0.15)
+    assert state.observed_load('srv1') < 0.40, (
+        'abandoned dispatches must not hold load past the honesty threshold'
+    )
+
+
+# --------------------------------------------------------------------- #
+# Escaping quarantine                                                    #
+#                                                                        #
+# Quarantine cuts service traffic, and service traffic is the only source
+# of task outcomes -- so every detector reading task outcomes goes blind
+# the moment it fires, and every term of T those outcomes feed stops
+# moving. The 8/40/3 live run ended with three provably healthy servers
+# (anomaly 0.0, 29ms RTT, zero inflight) isolated for its whole length.
+# These tests pin both halves of the escape, and just as importantly pin
+# that neither half opens a door for an actually-misbehaving node.
+# --------------------------------------------------------------------- #
+
+class _Clock:
+    """Injectable monotonic clock, so evidence can be aged without sleeping."""
+
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+def _timeouts(state: TrustState, node_id: str, n: int = 10) -> None:
+    for i in range(n):
+        state.record_task_outcome(TrustUpdate(
+            device_id=f'iot{i}', edge_node_id=node_id, task_status='timeout',
+            cpu_usage=0.5, reported_cpu=0.5, latency_ms=2000,
+        ))
+
+
+def test_packet_drop_tell_abstains_once_its_evidence_goes_stale():
+    """The window is count-based, so a quarantined node's last verdict would
+    otherwise stand forever on evidence that stopped being observed.
+
+    Measured in the 8/40/3 live run: srv5's last real task outcome landed at
+    t=9.2s and the controller was still asserting 'timeout rate 0.60 > 0.40'
+    against it at t=240.9s -- 231s of anomaly 1.0 from a frozen sample, which
+    held a healthy node in quarantine for the rest of the run.
+    """
+    clock = _Clock()
+    state = _make_state(task_timeout_s=4.0, time_source=clock)
+    _timeouts(state, 'srv1')
+
+    # Fresh evidence: the tell fires, exactly as it must for a drop attacker.
+    assert state.recent_timeout_rate('srv1') == 1.0
+
+    # Still fresh just inside the horizon (3 x task_timeout_s = 12s).
+    clock.advance(11.0)
+    assert state.recent_timeout_rate('srv1') == 1.0
+
+    # Past it, the detector has no recent evidence and must say so.
+    clock.advance(2.0)
+    assert state.recent_timeout_rate('srv1') is None, (
+        'a detector with no recent evidence must return None, not re-assert '
+        'its last verdict forever'
+    )
+
+
+def test_stale_evidence_horizon_tracks_the_client_task_timeout():
+    assert _make_state(task_timeout_s=4.0)._timeout_evidence_max_age_s == 12.0
+    assert _make_state(task_timeout_s=1.0)._timeout_evidence_max_age_s == 3.0
+    # Floored, so a tiny timeout can't make the tell abstain on live evidence.
+    assert _make_state(task_timeout_s=0.1)._timeout_evidence_max_age_s == 2.0
+
+
+def test_a_node_still_receiving_tasks_never_abstains():
+    """The staleness rule must not blunt the tell on a node under live traffic:
+    a drop attacker is still being routed to, so its evidence stays fresh."""
+    clock = _Clock()
+    state = _make_state(task_timeout_s=4.0, time_source=clock)
+    _timeouts(state, 'srv1', n=4)  # enough to clear min_samples
+    for _ in range(6):
+        clock.advance(10.0)  # under the 12s horizon, as live traffic would be
+        _timeouts(state, 'srv1', n=2)
+        assert state.recent_timeout_rate('srv1') == 1.0
+
+
+def _trust_quarantined(state: TrustState, node_id: str, trust: float) -> None:
+    """Put a node below the isolation threshold with its anomaly rail clear."""
+    state.trust_calc._scores[node_id] = trust
+    state.set_anomaly_raw(node_id, 0.0)
+
+
+def test_probation_offers_a_trial_to_a_trust_quarantined_node():
+    clock = _Clock()
+    state = _make_state(node_ids=['srv1'], time_source=clock)
+    _trust_quarantined(state, 'srv1', 0.18)
+    assert state.is_quarantined('srv1')
+
+    chosen, probation = state.choose_edge_node_ex()
+    assert (chosen, probation) == ('srv1', True), (
+        'a node quarantined on trust alone can never earn trust back without '
+        'a trial task -- nothing else generates the outcomes T is built from'
+    )
+
+
+def test_probation_never_probes_a_node_the_anomaly_rail_has_flagged():
+    """The anomaly gate stays an absolute bar. Probation re-tests a stale
+    trust verdict; it must not hand traffic to a node under active suspicion."""
+    state = _make_state(node_ids=['srv1'])
+    state.trust_calc._scores['srv1'] = 0.18
+    state.set_anomaly_raw('srv1', 1.0)
+
+    assert state.choose_edge_node_ex() == (None, False)
+    assert not state.is_on_probation('srv1')
+
+
+def test_probation_is_rate_limited_to_one_trial_per_interval():
+    """The cost of recoverability is bounded: a genuinely bad node gets one
+    task per interval, not a route back into service."""
+    clock = _Clock()
+    state = _make_state(
+        node_ids=['srv1'], time_source=clock, probation_interval_s=5.0,
+    )
+    _trust_quarantined(state, 'srv1', 0.18)
+
+    assert state.choose_edge_node_ex() == ('srv1', True)
+    # Immediately after, and right up to the interval, nothing is offered.
+    assert state.choose_edge_node_ex() == (None, False)
+    clock.advance(4.9)
+    assert state.choose_edge_node_ex() == (None, False)
+    clock.advance(0.2)
+    assert state.choose_edge_node_ex() == ('srv1', True)
+
+
+def test_probation_probes_the_closest_to_recovery_first():
+    clock = _Clock()
+    state = _make_state(
+        node_ids=['srv1', 'srv2', 'srv3'], time_source=clock,
+    )
+    _trust_quarantined(state, 'srv1', 0.10)
+    _trust_quarantined(state, 'srv2', 0.28)
+    _trust_quarantined(state, 'srv3', 0.20)
+
+    assert state.choose_edge_node_ex() == ('srv2', True)
+    assert state.choose_edge_node_ex() == ('srv3', True)
+    assert state.choose_edge_node_ex() == ('srv1', True)
+    assert state.choose_edge_node_ex() == (None, False)
+
+
+def test_probation_is_inert_when_nothing_is_quarantined():
+    """Normal operation must be byte-for-byte what it was before probation
+    existed -- no candidates, so the path never runs."""
+    clock = _Clock()
+    state = _make_state(node_ids=['srv1', 'srv2'], time_source=clock)
+
+    for _ in range(20):
+        chosen, probation = state.choose_edge_node_ex()
+        assert chosen in ('srv1', 'srv2')
+        assert probation is False
+    assert state._last_probation == {}
+
+
+def test_probation_trials_do_not_displace_ordinary_service():
+    """The trial is a trickle alongside service, not instead of it: one due
+    trial goes out, then the healthy node takes every other decision until the
+    interval comes round again. This is what bounds the cost of probation at
+    |nodes| / probation_interval_s decisions per second, whatever the load."""
+    clock = _Clock()
+    state = _make_state(
+        node_ids=['srv1', 'srv2'], time_source=clock, probation_interval_s=5.0,
+    )
+    _trust_quarantined(state, 'srv1', 0.18)   # quarantined
+    state.trust_calc._scores['srv2'] = 0.90   # healthy
+
+    # The one due trial goes out first, then srv2 takes everything else for
+    # the rest of the interval.
+    assert state.choose_edge_node_ex() == ('srv1', True)
+    for _ in range(10):
+        assert state.choose_edge_node_ex() == ('srv2', False)
+
+
+def test_probation_lets_a_recovering_node_rejoin_normally():
+    """End to end: trial -> successful outcomes -> trust crosses back over the
+    isolation threshold -> the node is chosen by the ordinary path, and stops
+    being a probation candidate at all."""
+    clock = _Clock()
+    state = _make_state(node_ids=['srv1'], time_source=clock)
+    _trust_quarantined(state, 'srv1', 0.28)
+
+    chosen, probation = state.choose_edge_node_ex()
+    assert (chosen, probation) == ('srv1', True)
+
+    for i in range(10):
+        state.record_task_outcome(TrustUpdate(
+            device_id=f'iot{i}', edge_node_id='srv1', task_status='success',
+            cpu_usage=0.1, reported_cpu=0.1, latency_ms=20,
+        ))
+
+    assert not state.is_quarantined('srv1')
+    assert not state.is_on_probation('srv1')
+    clock.advance(60.0)
+    assert state.choose_edge_node_ex() == ('srv1', False)
+
+
+# --------------------------------------------------------------------- #
+# The inflight/dispatch invariant                                        #
+#                                                                        #
+# sum(_inflight.values()) == len(_dispatches). Every count is owned by    #
+# exactly one dict entry, so a count can only be released by removing the #
+# entry that owns it. Live run 4 broke this 57 times and left a healthy   #
+# srv1 pinned at observed_load 0.50 vs a truthful claimed 0.00 for 976s.  #
+# --------------------------------------------------------------------- #
+
+def _assert_invariant(state: TrustState) -> None:
+    counted = sum(state._inflight.values())
+    held = len(state._dispatches)
+    assert counted == held, (
+        f'inflight total {counted} != {held} live dispatches -- a count is '
+        f'orphaned and nothing will ever release it'
+    )
+
+
+def test_re_registering_a_live_flow_does_not_leak_inflight():
+    """A PacketIn for a (client_ip, client_port) that still has an outstanding
+    dispatch overwrites the dict entry. The count that entry owned has to be
+    released in the same breath, or it is stranded: no dict entry survives for
+    the reaper to find, and no completion report will ever reference it.
+    """
+    state = _make_state(node_ids=['srv1', 'srv2'])
+
+    state.register_dispatch('10.0.0.1', 40778, 'srv1')
+    assert state.get_inflight('srv1') == 1
+    _assert_invariant(state)
+
+    # Same flow re-dispatched to a different node before the first completed.
+    state.register_dispatch('10.0.0.1', 40778, 'srv2')
+    assert state.get_inflight('srv1') == 0, (
+        "srv1 no longer holds this flow and must not still be counted for it"
+    )
+    assert state.get_inflight('srv2') == 1
+    _assert_invariant(state)
+
+    # And back again, plus a same-node re-registration -- the exact triple seen
+    # at t=38.6s in live run 4.
+    state.register_dispatch('10.0.0.1', 40778, 'srv1')
+    state.register_dispatch('10.0.0.1', 40778, 'srv1')
+    assert state.get_inflight('srv1') == 1
+    assert state.get_inflight('srv2') == 0
+    _assert_invariant(state)
+
+    # One completion clears it entirely -- not "one of the several".
+    assert state.complete_dispatch('10.0.0.1', 40778).node_id == 'srv1'
+    assert state.get_inflight('srv1') == 0
+    _assert_invariant(state)
+
+
+def test_orphaned_inflight_cannot_survive_the_reaper():
+    """The failure mode that made this so damaging: an orphaned count is not
+    merely wrong, it is unreachable. The reaper walks _dispatches, so a count
+    with no entry behind it is never swept -- srv1 held one for 976s."""
+    state = _make_state(node_ids=['srv1', 'srv2'], task_timeout_s=1.0)
+    state._dispatch_reap_after_s = 0.05
+
+    state.register_dispatch('10.0.0.1', 40778, 'srv1')
+    state.register_dispatch('10.0.0.1', 40778, 'srv2')  # supersedes it
+
+    time.sleep(0.1)
+    state.reap_stale_dispatches()
+
+    assert state.get_inflight('srv1') == 0
+    assert state.get_inflight('srv2') == 0
+    _assert_invariant(state)
+
+
+def test_invariant_holds_across_reassignment_and_completion():
+    """Re-steering moves a count between nodes rather than creating one, and a
+    later re-registration of the same key must still balance."""
+    state = _make_state(node_ids=['srv1', 'srv2', 'srv3'])
+
+    for port in (5000, 5001, 5002):
+        state.register_dispatch('10.0.0.5', port, 'srv1')
+    _assert_invariant(state)
+    assert state.get_inflight('srv1') == 3
+
+    state.reassign_dispatches('srv1', 'srv2')
+    assert state.get_inflight('srv1') == 0
+    assert state.get_inflight('srv2') == 3
+    _assert_invariant(state)
+
+    # A fresh PacketIn for one of those re-steered flows.
+    state.register_dispatch('10.0.0.5', 5001, 'srv3')
+    assert state.get_inflight('srv2') == 2
+    assert state.get_inflight('srv3') == 1
+    _assert_invariant(state)
+
+    state.complete_dispatch('10.0.0.5', 5001)
+    state.complete_dispatch('10.0.0.5', 5000)
+    state.complete_dispatch('10.0.0.5', 5002)
+    assert sum(state._inflight.values()) == 0
+    _assert_invariant(state)
+
+
+def test_a_leaked_dispatch_would_have_tripped_the_honesty_check():
+    """Ties the invariant to why it matters. Two stranded dispatches on a
+    4-way node read as observed_load 0.50; against a truthful claimed 0.00
+    that is over the 0.40 honesty gate, which is precisely how live run 4
+    quarantined srv1 707 times while it was behaving perfectly."""
+    state = _make_state(node_ids=['srv1', 'srv2'])
+    state.set_concurrency('srv1', 4)
+    state.load_window_s = 0.1
+
+    for port in (40778, 40779):
+        state.register_dispatch('10.0.0.1', port, 'srv1')
+        state.register_dispatch('10.0.0.1', port, 'srv2')  # supersede both
+
+    time.sleep(0.15)
+    assert state.observed_load('srv1') < 0.40, (
+        'a node that holds no live dispatches must not read as loaded'
+    )
+    _assert_invariant(state)
+
+
+# ---------------------------------------------------------------------------
+# The honesty comparison has TWO consumers, and they must agree
+# ---------------------------------------------------------------------------
+
+def test_trust_path_uses_the_windowed_claim_not_the_raw_one():
+    """`honesty_delta()` must compare two quantities measured the same way.
+
+    `claimed_load()` was added to fix exactly this, but was only ever wired
+    into the anomaly gate (flow_monitor.py). The trust path kept passing the
+    raw `get_claimed_cpu()` into `TrustUpdate.reported_cpu`, so the *gate*
+    compared like with like and the *trust formula* did not.
+
+    That is not a false-quarantine bug -- this path never gates -- it is a
+    steady tax. The agent samples active/concurrency the instant its handler
+    runs, so at a small `task_work_ms` it truthfully claims 0.00 almost always:
+    live run 5 measured 98.49% of honest samples at 0.00, which makes the
+    deviation *equal to* the occupancy (dev/occ = 1.000 in every bin) and
+    h_raw = 1 - 2*occupancy. A busy honest node loses trust for being busy --
+    the study's Finding 6 (docs/study §7).
+    """
+    import types
+    from controller.trust_balancer import TrustBalancerApp
+
+    state = _make_state()
+    state.set_concurrency('srv1', 4)
+    state.load_window_s = 1.0
+
+    # Mostly idle with one instantaneous spike, exactly as a real agent reports.
+    for _ in range(8):
+        state.report_claimed_status('srv1', 0.0, 30.0)
+        time.sleep(0.05)
+    state.report_claimed_status('srv1', 0.5, 30.0)
+
+    raw = state.get_claimed_cpu('srv1')
+    windowed = state.claimed_load('srv1')
+    assert raw == 0.5, 'precondition: the raw claim is the spike'
+    assert windowed < 0.1, 'precondition: the windowed claim ignores it'
+
+    state.register_dispatch('10.0.0.5', 5000, 'srv1')
+
+    captured = {}
+
+    class _Bus:
+        def publish(self, _topic, **kw):
+            captured.update(kw)
+
+    class _Backend:
+        commit_count = 0
+
+    stub = types.SimpleNamespace(
+        state=state, bus=_Bus(), _commit_backend=_Backend(),
+    )
+    TrustBalancerApp.handle_client_report(
+        stub, '10.0.0.5', 5000, 'iot1', 'success', 42.0,
+    )
+
+    # The value that reached the trust formula, as recorded on the event bus.
+    assert captured['claimed_cpu'] < 0.1, (
+        f"the trust path published claimed_cpu={captured['claimed_cpu']}, i.e. the "
+        f"raw instantaneous claim ({raw}) rather than the windowed one "
+        f"({windowed:.4f}) -- honesty_delta is comparing an instant against an "
+        f"integral again"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Busy-time honesty: comparing two integrals of the SAME quantity
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
+
+
+def _busy_fleet(clock, node_ids=('srv1', 'srv2', 'srv3', 'srv4')):
+    state = TrustState(node_ids=list(node_ids), time_source=clock)
+    for nid in node_ids:
+        state.set_concurrency(nid, 4)
+    return state
+
+
+def _drive_fleet(state, clock, specs, seconds, step=1.0):
+    """Drive every node in lockstep for `seconds`.
+
+    `specs` maps node_id -> (tasks_per_s, claimed_service_s). Each node reports
+    a cumulative busy-second counter of `completions * claimed_service_s`, and
+    the controller independently records the completions it saw. A *truthful*
+    node uses its real service time; a liar passes a smaller one, which is
+    exactly the fabrication the implied-service-time check has to catch.
+
+    All nodes report at the same instants and the clock advances once per step,
+    so every node's history spans the same window -- otherwise a node whose
+    samples all share one timestamp has zero span and the estimator (correctly)
+    abstains.
+    """
+    busy = {nid: 0.0 for nid in specs}
+    for _ in range(int(seconds / step)):
+        for nid, (tasks_per_s, service_s) in specs.items():
+            completions = int(tasks_per_s * step)
+            busy[nid] += completions * service_s
+            state.report_claimed_status(nid, 0.0, 30.0, busy_seconds=busy[nid])
+            for _ in range(completions):
+                state.record_task_outcome(TrustUpdate(
+                    device_id='iot1', edge_node_id=nid, task_status='success',
+                    cpu_usage=0.0, reported_cpu=0.0, latency_ms=90.0,
+                ))
+        clock.advance(step)
+    return busy
+
+
+def test_claimed_load_is_a_duty_cycle_not_an_instantaneous_sample():
+    """B(t1)-B(t0) over elapsed worker-seconds. 2 tasks/s x 0.015 s of work on
+    4 workers is a duty cycle of 0.0075, whatever the residence time is."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    _drive_fleet(state, clock, {'srv1': (2, 0.015)}, seconds=10)
+
+    duty = state.claimed_load('srv1')
+    assert abs(duty - (2 * 0.015 / 4)) < 0.002, (
+        f'duty cycle should be tasks/s * service_s / concurrency, got {duty}'
+    )
+
+
+def test_honest_busy_node_is_not_taxed_for_being_busy():
+    """The whole point of Defect 8's second layer.
+
+    The node truthfully reports service time; the controller's own estimate is
+    built from its completion count times the fleet median service time. Both
+    are duty cycles, so a *busy* honest node shows ~no deviation -- where the
+    old residence-time comparison produced |dev| ~= occupancy at every load
+    (dev/occ = 1.000 in every bin of live runs 5 and 6).
+    """
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    # A genuinely busy fleet: 20 tasks/s each, 15 ms of work, concurrency 4
+    # -> duty cycle 0.075. Residence time is irrelevant to both sides now.
+    _drive_fleet(state, clock, {
+        nid: (20, 0.015) for nid in ('srv1', 'srv2', 'srv3', 'srv4')
+    }, seconds=10)
+
+    claimed = state.claimed_load('srv1')
+    expected = state.expected_duty_cycle('srv1')
+    assert expected is not None, 'fleet has 4 reporting nodes; must have an opinion'
+    assert abs(claimed - expected) < 0.05, (
+        f'honest busy node still taxed: claimed duty {claimed:.4f} vs expected '
+        f'{expected:.4f} -- the two sides are not the same quantity'
+    )
+
+
+def test_sybil_under_reporting_busy_time_is_caught_by_implied_service_time():
+    """The attack the new comparison has to survive.
+
+    A liar can fabricate a busy-second counter as easily as a cpu_load. What it
+    cannot fabricate is how many tasks the *controller* saw it finish -- so
+    under-reporting busy time shows up as an implausibly small service time
+    against the fleet median.
+    """
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    # Three honest nodes at 0.100 s of work per task; srv1 completes just as
+    # many tasks but claims a tenth of the busy time for each.
+    _drive_fleet(state, clock, {
+        'srv1': (20, 0.010),
+        'srv2': (20, 0.100),
+        'srv3': (20, 0.100),
+        'srv4': (20, 0.100),
+    }, seconds=10)
+
+    claimed = state.claimed_load('srv1')
+    expected = state.expected_duty_cycle('srv1')
+    assert expected is not None
+    assert expected - claimed > 0.40, (
+        f'liar claimed duty {claimed:.3f} against an expected {expected:.3f}; '
+        f'deviation {expected - claimed:.3f} must clear the 0.40 honesty gate'
+    )
+    assert state.implied_service_time_s('srv1') < state.fleet_service_time_s()
+
+
+def test_duty_cycle_abstains_rather_than_guessing_without_evidence():
+    """No busy-second counter, too short a span, or too small a fleet -> None,
+    and callers fall back instead of inventing a comparison."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    assert state.expected_duty_cycle('srv1') is None, 'no data yet'
+
+    # One sample is not a difference.
+    state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=1.0)
+    assert state.claimed_load('srv1') is not None  # falls back, does not crash
+    assert state.expected_duty_cycle('srv1') is None
+
+    # An agent that never sends busy_seconds keeps the old averaged-claim path.
+    clock.advance(1.0)
+    state.report_claimed_status('srv2', 0.25, 30.0)
+    clock.advance(1.0)
+    state.report_claimed_status('srv2', 0.25, 30.0)
+    assert abs(state.claimed_load('srv2') - 0.25) < 0.01
+
+
+def test_busy_counter_going_backwards_resets_instead_of_going_negative():
+    """A restarted agent replays from zero. Differencing across that step would
+    hand the honesty check a negative duty cycle."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    for b in (10.0, 20.0, 30.0):
+        state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=b)
+        clock.advance(1.0)
+    state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=0.5)
+    clock.advance(1.0)
+    state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=1.0)
+
+    duty = state.claimed_load('srv1')
+    assert duty >= 0.0, f'duty cycle went negative across an agent restart: {duty}'
+
+
+class TestClientRequestRate:
+    """TrustState.record_client_request / client_request_rate -- the raw
+    per-CLIENT counters controller/flood_detector.py's tell reads
+    (plan_adv.md Phase 1). Deliberately keyed on client_ip, not node_id."""
+
+    def test_no_requests_yet_is_zero(self):
+        state = _make_state()
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 0.0
+
+    def test_rate_counts_requests_within_the_window(self):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1'], time_source=clock)
+        for _ in range(4):
+            state.record_client_request('10.0.2.5')
+            clock.advance(0.5)  # 4 requests spread over the trailing 2s
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 2.0
+
+    def test_old_requests_age_out_of_the_window(self):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1'], time_source=clock)
+        state.record_client_request('10.0.2.5')
+        clock.advance(10.0)  # long silence
+        state.record_client_request('10.0.2.5')
+        # Only the second request is within a 2s trailing window now.
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 0.5
+
+    def test_clients_are_tracked_independently(self):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1'], time_source=clock)
+        for _ in range(10):
+            state.record_client_request('10.0.2.5')  # the flooder
+        state.record_client_request('10.0.2.6')       # one honest request
+        assert state.client_request_rate('10.0.2.5', window_s=2.0) == 5.0
+        assert state.client_request_rate('10.0.2.6', window_s=2.0) == 0.5
+
+    def test_zero_window_is_zero_not_a_crash(self):
+        state = _make_state()
+        state.record_client_request('10.0.2.5')
+        assert state.client_request_rate('10.0.2.5', window_s=0.0) == 0.0
+
+
+# --------------------------------------------------------------------- #
+# Trust-rail isolation evidence (plan_adv.md 6.2)
+# --------------------------------------------------------------------- #
+
+def _outcome(state, node_id, status, latency_ms=50.0, observed=0.0):
+    state.record_task_outcome(TrustUpdate(
+        device_id='iot1', edge_node_id=node_id, task_status=status,
+        cpu_usage=observed, reported_cpu=0.0, latency_ms=latency_ms,
+    ))
+
+
+def _collapsing_timeout(state, node_id) -> None:
+    """One task outcome shaped exactly like srv6's in live run 8.
+
+    A single timeout is NOT enough to cross the isolation threshold on its own
+    -- measured here, it leaves trust at 0.43. srv6 landed at 0.2085 because
+    the same event collapsed three terms at once: the timeout status crushes R,
+    the 4s latency (the client's task_timeout_s) zeroes B, and the node's
+    claimed 0.00 against an observed 1.00 zeroes H. Worth stating, because it
+    is why a blackhole reaches the trust rail before the anomaly rail has the
+    four samples its drop tell needs.
+    """
+    _outcome(state, node_id, 'timeout', latency_ms=4000.0, observed=1.0)
+
+
+class TestIsolationEvidence:
+    """The evidence the TRUST rail acted on, handed to the classifier.
+
+    Live run 8's srv6 was a blackhole quarantined 9.7s after onset on the trust
+    rail, with anomaly exactly 0.0 and not one flagged cycle in 250 -- only 3
+    timeouts were ever reported, below the drop tell's _MIN_TIMEOUT_SAMPLES of
+    4. The classifier reads anomaly signals, so a perfectly contained attack
+    went entirely unlabelled. These pin the way back in.
+    """
+
+    def test_a_healthy_node_offers_no_evidence(self):
+        state = _make_state(node_ids=['srv1'])
+        for _ in range(5):
+            _outcome(state, 'srv1', 'success')
+        assert state.isolation_evidence('srv1') is None, (
+            'this is only ever asked about a node the trust rail has already '
+            'condemned -- it must stay silent otherwise'
+        )
+
+    def test_counts_only_outcomes_since_the_collapse(self):
+        """srv6's exact shape: an honest life, then a collapse.
+
+        _recent_statuses is the last 10 outcomes regardless of era, so at the
+        moment srv6's trust collapsed it held nine pre-onset successes and one
+        timeout -- a 0.10 failure rate for a node that was by then dropping
+        everything. Counting from the collapse asks the right question.
+        """
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        for _ in range(9):
+            _outcome(state, 'srv1', 'success')
+            clock.advance(0.5)      # real outcomes arrive spaced apart
+        _collapsing_timeout(state, 'srv1')
+        assert state.trust_calc.get_score('srv1') < state.isolation_threshold
+
+        rate, samples = state.isolation_evidence('srv1')
+        assert (rate, samples) == (1.0, 1), (
+            'the nine successes predate the collapse and describe a node that '
+            'no longer exists'
+        )
+
+    def test_abstains_once_the_post_collapse_evidence_goes_stale(self):
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        _collapsing_timeout(state, 'srv1')
+        assert state.isolation_evidence('srv1') is not None
+
+        clock.advance(11.0)          # inside the 12s horizon
+        assert state.isolation_evidence('srv1') is not None
+        clock.advance(2.0)           # past it
+        assert state.isolation_evidence('srv1') is None, (
+            'quarantine starves a node of outcomes, so without this the last '
+            'reading would stand for the rest of the run'
+        )
+
+    def test_recovery_clears_the_collapse_marker(self):
+        """A node that earns its way back out starts a fresh episode, so its
+        next collapse is not scored against evidence from the previous one."""
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        _collapsing_timeout(state, 'srv1')
+        assert state.isolation_evidence('srv1') is not None
+
+        for _ in range(10):
+            _outcome(state, 'srv1', 'success')
+        assert state.trust_calc.get_score('srv1') >= state.isolation_threshold
+        assert state.isolation_evidence('srv1') is None
+        assert 'srv1' not in state._trust_collapsed_at
+
+    def test_probation_trials_are_the_evidence(self):
+        """Probation is the only thing generating outcomes for an isolated
+        node, so its trials are exactly what this reads -- and both of srv6's
+        trials in live run 8 timed out."""
+        clock = _Clock()
+        state = _make_state(node_ids=['srv1'], task_timeout_s=4.0,
+                            time_source=clock)
+        _collapsing_timeout(state, 'srv1')
+        clock.advance(100.0)
+        assert state.isolation_evidence('srv1') is None   # stale
+
+        _collapsing_timeout(state, 'srv1')
+        rate, samples = state.isolation_evidence('srv1')
+        assert (rate, samples) == (1.0, 2)
+
+
+# --------------------------------------------------------------------------- #
+# Re-steer attribution (panel_fix.md §3.17 / §6.9)                             #
+# --------------------------------------------------------------------------- #
+class TestResteeredOutcomesAreNotChargedToTheReceivingNode:
+    """Quarantine's drop rules tear down the in-flight TCP connections, so a
+    flow moved by reassign_dispatches is a dead socket the client is still
+    blocked on. When its own task_timeout_s expires it reports a timeout for a
+    task the receiving node never saw.
+
+    Measured across three live runs by matching each report to its flow via
+    `report.ts - latency_ms`: 12/29 (run 8), 9/13 (run 9) and 26/68 (run 10)
+    timeouts were charged to a node that had merely inherited the flow. In run
+    10 that was the receiving nodes' *entire* timeout signal -- srv7 11 of 11,
+    srv5 8 of 8 -- and srv7 was quarantined twice, 26.4 s, on nothing else.
+    """
+
+    def test_a_routed_dispatch_is_chargeable(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv1'
+        assert completed.resteered_from is None
+        assert completed.chargeable
+
+    def test_a_resteered_dispatch_is_not_chargeable(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        assert state.reassign_dispatches('srv1', 'srv2') == [('10.0.0.5', 5000)]
+
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv2'
+        assert completed.resteered_from == 'srv1'
+        assert not completed.chargeable
+
+    def test_the_clients_next_connection_is_chargeable_again(self):
+        """The receiving node's real relationship with this client starts at
+        its *next* connection, which arrives as a fresh PacketIn and builds a
+        new _Dispatch. If that were not chargeable, a genuinely bad node could
+        be handed re-steered work and become permanently unaccountable."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        state.complete_dispatch('10.0.0.5', 5000)
+
+        state.register_dispatch('10.0.0.5', 5000, 'srv2')
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv2'
+        assert completed.chargeable
+
+    def test_a_second_resteer_keeps_the_first_handover(self):
+        """srv1 -> srv2 -> srv3: the connection died when srv1 was quarantined,
+        so srv1 is the origin of the corruption and the age at handover is
+        measured from there. Overwriting with the later hop would understate
+        how long the flow had already been dead."""
+        state = _make_state(node_ids=('srv1', 'srv2', 'srv3'))
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        first_handover = state._dispatches[('10.0.0.5', 5000)].resteered_at
+
+        state.reassign_dispatches('srv2', 'srv3')
+        completed = state.complete_dispatch('10.0.0.5', 5000)
+        assert completed.node_id == 'srv3'
+        assert completed.resteered_from == 'srv1'
+        assert completed.resteered_at == first_handover
+        assert not completed.chargeable
+
+    def test_resteer_does_not_restart_the_reaper_clock(self):
+        """Run 2's defect 3 must stay fixed: dispatched_at answers 'has the
+        client given up?' and re-steering does not restart the client's timer.
+        The new marks are a second, separate question and must not disturb it."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        original = state._dispatches[('10.0.0.5', 5000)].dispatched_at
+
+        time.sleep(0.05)
+        state.reassign_dispatches('srv1', 'srv2')
+        entry = state._dispatches[('10.0.0.5', 5000)]
+        assert entry.dispatched_at == original
+        assert entry.resteered_at > original
+
+    def test_abstention_does_not_break_the_occupancy_invariant(self):
+        """Attribution and occupancy are separate axes. Whether an outcome is
+        blamed on the node has no bearing on whether a task was outstanding,
+        and the inflight release stays unconditional -- run 4's leak was this
+        same conflation pointed the other way."""
+        state = _make_state()
+        for port in (5000, 5001, 5002):
+            state.register_dispatch('10.0.0.5', port, 'srv1')
+        _assert_invariant(state)
+
+        state.reassign_dispatches('srv1', 'srv2')
+        assert state.get_inflight('srv1') == 0
+        assert state.get_inflight('srv2') == 3
+        _assert_invariant(state)
+
+        for port in (5000, 5001, 5002):
+            assert not state.complete_dispatch('10.0.0.5', port).chargeable
+        assert state.get_inflight('srv2') == 0
+        _assert_invariant(state)
+
+    def test_a_node_still_answers_for_the_work_it_was_actually_routed(self):
+        """The anti-evasion half. Abstention is scoped to flows the controller
+        itself re-steered; an attacker cannot reach it, because it cannot cause
+        its own dispatches to be re-steered onto itself. Confirmed on the
+        recordings: srv1 and srv6, the two attackers, inherit zero timeouts
+        across all three live runs -- they earn every one of theirs."""
+        state = _make_state()
+        # One inherited flow, and its own genuinely routed work alongside it.
+        state.register_dispatch('10.0.0.9', 6000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        for port in (7000, 7001, 7002, 7003):
+            state.register_dispatch('10.0.0.9', port, 'srv2')
+
+        assert not state.complete_dispatch('10.0.0.9', 6000).chargeable
+        charged = [state.complete_dispatch('10.0.0.9', p).chargeable
+                   for p in (7000, 7001, 7002, 7003)]
+        assert charged == [True, True, True, True]
+
+    def test_the_rule_carries_no_tuned_threshold(self):
+        """panel_fix.md §6.9 proposed excusing an outcome that arrived with
+        less than the node's typical service time remaining. The recordings
+        overturned it: the median re-steered flow still had 2.86 s of its 4.0 s
+        left at handover (min 0.15 s) against successful tasks completing in
+        103-437 ms, so a budget rule would have excused 0 of 26. The flow was
+        never short of time -- it was on a dead socket. Nothing here reads a
+        clock, a budget, or a service time, and a future 'tune the margin'
+        change should fail this test rather than pass quietly."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        entry = state._dispatches[('10.0.0.5', 5000)]
+
+        # Hand it a flow re-steered with its full budget intact.
+        entry.resteered_at = entry.dispatched_at
+        assert not state.complete_dispatch('10.0.0.5', 5000).chargeable
+
+
+class TestTheReportPathAbstainsWithoutGoingSilent:
+    """The controller half of §3.17. Two things must both hold: the receiving
+    node's trust and drop-tell evidence must not move, and the client's loss
+    must still reach the event bus -- service availability and PDR are measured
+    from 'report' events, and a task the client really did lose is real service
+    loss no matter who is to blame for it. Suppressing the event instead of the
+    attribution would have quietly inflated every availability figure in the
+    study.
+    """
+
+    def _stub(self, state):
+        import types
+
+        published = []
+
+        class _Bus:
+            def publish(self, topic, **kw):
+                published.append((topic, kw))
+
+        class _Backend:
+            commit_count = 0
+
+        return types.SimpleNamespace(
+            state=state, bus=_Bus(), _commit_backend=_Backend(),
+        ), published
+
+    def _report(self, state, port, status='timeout'):
+        from controller.trust_balancer import TrustBalancerApp
+
+        stub, published = self._stub(state)
+        score = TrustBalancerApp.handle_client_report(
+            stub, '10.0.0.5', port, 'iot5', status, 4040.0,
+        )
+        return score, published
+
+    def test_an_inherited_timeout_moves_no_trust_and_no_evidence(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+        before = state.trust_calc.get_score('srv2')
+
+        score, published = self._report(state, 5000)
+
+        assert score is None
+        assert state.trust_calc.get_score('srv2') == before
+        assert not state._recent_statuses['srv2'], (
+            'an inherited timeout entered the packet-drop tell\'s window -- '
+            'this is exactly what quarantined srv7 twice in live run 10'
+        )
+        assert state.recent_timeout_rate('srv2', min_samples=1) is None
+
+    def test_the_clients_loss_still_reaches_the_bus(self):
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv1')
+        state.reassign_dispatches('srv1', 'srv2')
+
+        _, published = self._report(state, 5000)
+
+        assert len(published) == 1
+        topic, ev = published[0]
+        assert topic == 'report'
+        # Same shape the availability/PDR readers already consume...
+        assert (ev['status'], ev['node']) == ('timeout', 'srv2')
+        assert ev['latency_ms'] == 4040.0
+        # ...plus enough to re-derive the abstention offline.
+        assert ev['charged'] is False
+        assert ev['attribution'] == 'resteer_inherited'
+        assert ev['resteered_from'] == 'srv1'
+
+    def test_a_routed_timeout_is_still_charged_in_full(self):
+        """The half that must not regress: abstention is scoped to inherited
+        flows, and a node's own work still moves its trust and fills the drop
+        tell's window."""
+        state = _make_state()
+        state.register_dispatch('10.0.0.5', 5000, 'srv2')
+        before = state.trust_calc.get_score('srv2')
+
+        score, published = self._report(state, 5000)
+
+        assert score is not None and score < before
+        assert [s for _, s in state._recent_statuses['srv2']] == ['timeout']
+        assert published[0][1].get('charged') is not False

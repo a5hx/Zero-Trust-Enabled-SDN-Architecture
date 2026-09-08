@@ -4,6 +4,8 @@ _fetch_status is monkeypatched in every test here rather than hitting real
 HTTP, so these run with no Mininet/network dependency at all.
 """
 
+import time
+
 from controller.flow_monitor import FlowMonitor, StatusProbe
 from controller.trust_state import TrustState
 
@@ -201,11 +203,46 @@ def test_packet_drop_tell_uses_timeout_rate_not_cpu_honesty():
 
 
 def test_unreachable_agent_treated_as_anomalous():
+    """A node that HAS been seen and then goes silent is anomalous.
+
+    This is the original Sprint 1 finding ("unreachable = anomalous"): a node
+    that stops answering is indistinguishable from one that has failed or been
+    taken over, so silence must score rather than be skipped. The
+    first-contact requirement added for the startup window (see the test
+    below) must not weaken this -- hence one healthy poll first, then silence.
+    """
     state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
-    fm, quarantined = _make_monitor(state, {'srv1': None})
+    statuses = {'srv1': {'cpu_load': 0.2, 'latency_ms': 20.0, 'concurrency': 4}}
+    fm, quarantined = _make_monitor(state, statuses)
+    fm._poll_once()                     # seen once, healthy
+    assert state.get_anomaly('srv1') < 0.5
+    assert quarantined == []
+
+    statuses['srv1'] = None             # now it goes dark
     fm._poll_once()
     assert state.get_anomaly('srv1') > 0.5
     assert quarantined == ['srv1']
+
+
+def test_never_seen_agent_is_unknown_not_anomalous():
+    """A node that has never answered once must not be scored.
+
+    The controller has to be listening before any switch can connect, so it
+    necessarily starts seconds before Mininet builds the network and the
+    agents inside it. Scoring that window pushed A to 0.85 on the very first
+    poll and quarantined all 8 servers at t=0.5s of the 8/40/3 live run --
+    before a single agent existed. Absence of evidence is not evidence of
+    misbehaviour; a node that never comes up simply never becomes a routing
+    candidate.
+    """
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    fm, quarantined = _make_monitor(state, {'srv1': None})
+
+    for _ in range(5):
+        fm._poll_once()
+
+    assert state.get_anomaly('srv1') == 0.0
+    assert quarantined == []
 
 
 def test_measured_rtt_feeds_routing_not_self_reported_latency():
@@ -244,3 +281,357 @@ def test_poll_calls_flush_if_stale():
     fm, _ = _make_monitor(state, {'srv1': {'cpu_load': 0.2, 'latency_ms': 10, 'concurrency': 4}})
     fm._poll_once()
     assert state.commit_backend.chain_length() == 2  # genesis + the flushed block
+
+
+# --------------------------------------------------------------------------- #
+# plan_adv.md Phase 2: structured signals + live classification.
+# --------------------------------------------------------------------------- #
+
+class _RecordingBus:
+    """Minimal bus stand-in that keeps every published event."""
+
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event_type, **fields):
+        self.events.append((event_type, fields))
+
+    def of(self, event_type):
+        return [f for t, f in self.events if t == event_type]
+
+
+def _lying_monitor(bus, threshold=0.40):
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    state.set_concurrency('srv1', 4)
+    for port in range(6000, 6004):
+        state.register_dispatch('10.0.0.5', port, 'srv1')
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=threshold, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.05, 'latency_ms': 10, 'concurrency': 4}
+    )
+    return fm
+
+
+def test_anomaly_event_carries_structured_signals_beside_the_prose():
+    from controller.attack_classifier import SIG_CPU_HONESTY
+
+    bus = _RecordingBus()
+    _lying_monitor(bus)._poll_once()
+
+    anomaly = bus.of('anomaly')[0]
+    # The human-readable reasons are unchanged -- the dashboard still renders
+    # them -- and the machine-readable twin sits alongside.
+    assert anomaly['reasons']
+    assert SIG_CPU_HONESTY in anomaly['signals']
+    assert anomaly['signals'][SIG_CPU_HONESTY] > 0.40
+
+
+def test_sustained_lying_is_classified_as_sybil_on_the_bus():
+    from controller.attack_classifier import ATTACK_SYBIL
+
+    bus = _RecordingBus()
+    fm = _lying_monitor(bus)
+    for _ in range(6):
+        fm._poll_once()
+
+    labels = [c['attack_type'] for c in bus.of('classification')]
+    assert ATTACK_SYBIL in labels
+
+
+def test_classification_is_published_on_change_not_every_cycle():
+    """A sustained attack must not emit one event per node per second for the
+    whole run -- same rising-edge discipline as quarantine/recovered."""
+    bus = _RecordingBus()
+    fm = _lying_monitor(bus)
+    for _ in range(12):
+        fm._poll_once()
+
+    # 12 cycles, but the label only ever changed once (None -> sybil).
+    assert len(bus.of('classification')) == 1
+    assert len(bus.of('anomaly')) == 12
+
+
+def test_clean_node_publishes_no_classification():
+    state = TrustState(node_ids=['srv1'])
+    state.set_concurrency('srv1', 4)
+    bus = _RecordingBus()
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.1, 'latency_ms': 40, 'concurrency': 4}
+    )
+    for _ in range(5):
+        fm._poll_once()
+    # Abstention is the correct verdict for a healthy node, and abstention
+    # publishes nothing until it has something to retract.
+    assert bus.of('classification') == []
+
+
+def test_unreachable_node_is_classified_node_down_not_an_attack():
+    from controller.attack_classifier import NODE_DOWN
+
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5)
+    state.set_concurrency('srv1', 4)
+    bus = _RecordingBus()
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    seen = {'n': 0}
+
+    def probe(_node_id):
+        seen['n'] += 1
+        # Answer once so the node is 'ever seen', then go dark. A node that
+        # was never seen is UNKNOWN, not anomalous (Sprint 1 finding).
+        if seen['n'] == 1:
+            return _as_probe({'cpu_load': 0.1, 'latency_ms': 40, 'concurrency': 4})
+        return _as_probe(None)
+
+    fm._fetch_status = probe
+    for _ in range(5):
+        fm._poll_once()
+
+    labels = [c['attack_type'] for c in bus.of('classification')]
+    assert NODE_DOWN in labels
+
+
+# --------------------------------------------------------------------------- #
+# The honesty-check reference split (live run 7).
+#
+# expected_duty_cycle() returning None had ONE fallback, and it produced every
+# false quarantine in run 7 (175/175 firings). The two causes of None are now
+# handled differently, and both halves matter:
+#   * node withholds busy_seconds -> keep the fallback, or a liar disables the
+#     check by omission;
+#   * controller lacks completions -> abstain, because that is our gap, not the
+#     node's misbehaviour.
+# --------------------------------------------------------------------------- #
+
+def _loaded_state(claimed):
+    """A node the controller believes is fully occupied, claiming near-idle --
+    the deviation that used to fire unconditionally."""
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, anomaly_lambda=0.85)
+    state.set_concurrency('srv1', 4)
+    for port in range(6000, 6004):
+        state.register_dispatch('10.0.0.5', port, 'srv1')
+    return state
+
+
+def _monitor_for(state, bus, status):
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None, bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(status)
+    return fm
+
+
+def test_abstains_when_the_controller_lacks_completions_but_the_node_reports():
+    """The run-7 false positive, now abstained on.
+
+    observed_load is 1.00 against a truthful claim of 0.00, which is exactly
+    what used to fire -- but the node IS supplying busy_seconds, so the missing
+    duty-cycle estimate is the controller's gap, not evidence against the node.
+    """
+    from controller.attack_classifier import SIG_CPU_HONESTY
+
+    state = _loaded_state(0.0)
+    bus = _RecordingBus()
+    status = {'cpu_load': 0.0, 'latency_ms': 40, 'concurrency': 4,
+              'busy_seconds': 0.0}
+    fm = _monitor_for(state, bus, status)
+    fm._poll_once()
+
+    assert state.reports_busy_seconds('srv1')
+    assert state.expected_duty_cycle('srv1') is None      # no completions yet
+    fired = [f for f in bus.of('anomaly') if SIG_CPU_HONESTY in f.get('signals', {})]
+    assert fired == [], 'honesty check fired on the controller''s own missing evidence'
+
+
+def test_still_fires_when_the_node_withholds_busy_seconds():
+    """The anti-evasion half. A node that simply omits the counter must not buy
+    itself immunity -- the degraded comparison is kept for exactly that case."""
+    from controller.attack_classifier import SIG_CPU_HONESTY
+
+    state = _loaded_state(0.0)
+    bus = _RecordingBus()
+    status = {'cpu_load': 0.0, 'latency_ms': 40, 'concurrency': 4}   # no busy_seconds
+    fm = _monitor_for(state, bus, status)
+    fm._poll_once()
+
+    assert not state.reports_busy_seconds('srv1')
+    fired = [f for f in bus.of('anomaly') if SIG_CPU_HONESTY in f.get('signals', {})]
+    assert fired, 'withholding busy_seconds disabled the honesty check'
+    assert 'no busy_seconds' in ' '.join(fired[0]['reasons'])
+
+
+def test_a_node_that_stops_reporting_stops_being_abstained_for():
+    """Reporting once then going quiet must not be a way to buy abstention
+    forever, which is why reports_busy_seconds is recency-based."""
+    state = _loaded_state(0.0)
+    state.report_claimed_status('srv1', 0.0, 40.0, busy_seconds=1.0)
+    assert state.reports_busy_seconds('srv1')
+    # Older than the 2 x load_window_s horizon.
+    assert not state.reports_busy_seconds('srv1', max_age_s=-1.0)
+
+
+def test_the_degraded_basis_is_named_in_the_reason():
+    """A reader must never be shown a residence-time number labelled as a duty
+    cycle -- the two differ by ~17x in live telemetry."""
+    state = _loaded_state(0.0)
+    bus = _RecordingBus()
+    fm = _monitor_for(state, bus, {'cpu_load': 0.0, 'latency_ms': 40, 'concurrency': 4})
+    fm._poll_once()
+    reason = ' '.join(bus.of('anomaly')[0]['reasons'])
+    assert 'observed' in reason and 'expected duty' not in reason
+
+
+# --------------------------------------------------------------------- #
+# Trust-rail isolation evidence (plan_adv.md 6.2)
+# --------------------------------------------------------------------- #
+
+def _trust_collapsed_monitor(bus):
+    """A node the TRUST rail has condemned, answering /status perfectly.
+
+    srv6's shape in live run 8: fast, honest about its load, and dropping the
+    work. Nothing here can trip the anomaly rail, which is the whole problem
+    the trust-collapse signal exists to solve.
+    """
+    from contracts.trust_update import TrustUpdate
+
+    state = TrustState(node_ids=['srv1'], anomaly_gate=0.5, task_timeout_s=4.0)
+    state.set_concurrency('srv1', 4)
+    state.record_task_outcome(TrustUpdate(
+        device_id='iot1', edge_node_id='srv1', task_status='timeout',
+        cpu_usage=1.0, reported_cpu=0.0, latency_ms=4000.0,
+    ))
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.0, 'latency_ms': 30, 'concurrency': 4, 'busy_seconds': 0.0}
+    )
+    return state, fm
+
+
+def test_trust_rail_isolation_reaches_the_classifier():
+    from controller.attack_classifier import SIG_TRUST_COLLAPSE
+
+    bus = _RecordingBus()
+    state, fm = _trust_collapsed_monitor(bus)
+    assert state.trust_calc.get_score('srv1') < state.isolation_threshold
+    fm._poll_once()
+
+    fired = [f for f in bus.of('anomaly') if SIG_TRUST_COLLAPSE in f.get('signals', {})]
+    assert fired, (
+        'a node the trust rail condemned before the anomaly rail had its '
+        'minimum samples must still leave evidence a classifier can read'
+    )
+    assert fired[0]['signals'][SIG_TRUST_COLLAPSE] == 1.0
+
+
+def test_trust_rail_evidence_adds_no_isolation_power():
+    """THE SAFETY PROPERTY. This signal describes a node already isolated by
+    the trust rail, so it must never touch the anomaly rail -- otherwise a
+    reporting improvement quietly becomes a new way to quarantine, which is how
+    every cascade in this project's live-run history started."""
+    from controller.attack_classifier import SIG_TRUST_COLLAPSE
+
+    bus = _RecordingBus()
+    state, fm = _trust_collapsed_monitor(bus)
+    for _ in range(5):
+        fm._poll_once()
+
+    assert state.get_anomaly('srv1') == 0.0, (
+        'the trust-collapse signal must not feed anomaly_raw'
+    )
+    published = bus.of('anomaly')
+    assert published and all(
+        SIG_TRUST_COLLAPSE in f['signals'] for f in published
+    )
+    assert all(f['anomaly'] == 0.0 for f in published), (
+        'the event must carry the real anomaly score so no reader mistakes '
+        'this for an anomaly-gate trip'
+    )
+
+
+# --------------------------------------------------------------------- #
+# Roster audit (panel_fix.md 6.10 part 3)
+# --------------------------------------------------------------------- #
+
+def _monitor_with_roster(bus, roster, claimed=()):
+    from security.authenticator import NullAuthenticator
+
+    auth = NullAuthenticator(expected_ips=roster)
+    for d in claimed:
+        auth.binding.mark_authenticated(d)
+    state = TrustState(node_ids=['srv1'], authenticator=auth)
+    fm = FlowMonitor(
+        state=state, node_ids=['srv1'], agent_port=8000, poll_interval_s=1.0,
+        honesty_deviation_threshold=0.40, on_quarantine=lambda _n: None,
+        bus=bus,
+    )
+    fm._fetch_status = lambda node_id: _as_probe(
+        {'cpu_load': 0.1, 'latency_ms': 30, 'concurrency': 4}
+    )
+    fm._started_at = 0.0          # the grace period has already elapsed
+    return state, fm
+
+
+def test_an_identity_nobody_claimed_is_reported():
+    """Live run 9's precondition, made visible: the controller could not tell
+    "iot1 has not started" from "iot1 was evicted" -- both are silence."""
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(
+        bus, {'iot1': '10.0.0.1', 'iot2': '10.0.0.2'}, claimed=['iot2'],
+    )
+    fm._poll_once()
+
+    events = bus.of('identity_unclaimed')
+    assert len(events) == 1
+    assert events[0]['devices'] == ['iot1']
+    assert events[0]['expected_ips'] == {'iot1': '10.0.0.1'}
+
+
+def test_the_audit_is_one_shot_not_every_cycle():
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {'iot1': '10.0.0.1'})
+    for _ in range(5):
+        fm._poll_once()
+    assert len(bus.of('identity_unclaimed')) == 1
+
+
+def test_a_fully_claimed_roster_reports_nothing():
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {'iot1': '10.0.0.1'}, claimed=['iot1'])
+    fm._poll_once()
+    assert bus.of('identity_unclaimed') == []
+
+
+def test_the_audit_waits_out_its_grace_period():
+    """Every device is unclaimed at t=0; firing then would report the whole
+    fleet as missing on the first poll of every run."""
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {'iot1': '10.0.0.1'})
+    fm._started_at = time.time()          # just started
+    fm._poll_once()
+    assert bus.of('identity_unclaimed') == []
+
+
+def test_no_roster_means_no_audit():
+    """Deployments with an unknown population must not be told their empty
+    roster is fully claimed, nor get a spurious event."""
+    bus = _RecordingBus()
+    _, fm = _monitor_with_roster(bus, {})
+    fm._poll_once()
+    assert bus.of('identity_unclaimed') == []

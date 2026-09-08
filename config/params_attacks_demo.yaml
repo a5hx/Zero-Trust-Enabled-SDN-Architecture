@@ -65,7 +65,8 @@ simulation:
   # Which EDGE SERVERS misbehave, and how.
   #   sybil — under-reports CPU while burning it; caught by the latency tell under p2c.
   #   drop  — accepts the task, then silently never replies; caught by the timeout tell.
-  # (start_s is advisory only — node_agent.py misbehaves from launch; see topology.py.)
+  # (start_s is honoured: the agent behaves honestly until t+start_s, then arms.
+  #  Wired in plan_adv.md Phase 0; see node_agent.py's --malicious-start-s.)
   malicious_edge_nodes:
     - node: srv3
       attack: sybil
