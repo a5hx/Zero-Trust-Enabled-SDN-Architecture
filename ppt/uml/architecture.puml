@@ -1,0 +1,42 @@
+@startuml architecture
+!pragma layout smetana
+!include _style.puml
+title Layered architecture — one controller process, five layers
+
+package "L5  Presentation" {
+  rectangle "Live dashboard\n(topology, charts, ledger)" as DASH
+  rectangle "Evaluation tools\n+ baseline control arm" as EVAL
+}
+package "L4  Northbound API" {
+  rectangle "REST + Server-Sent Events\n:8081" as API
+}
+package "L3  Control logic" {
+  rectangle "**trust_balancer.py**\nrouting · detection · enforcement" as CTRL
+}
+package "L2  Trust services" {
+  rectangle "Trust calculator\nT = αR + βB + γH − δA" as TRUST
+  rectangle "Edge selector\npower-of-two-choices" as SEL
+  rectangle "PRESENT-80\nadmission" as AUTH
+  rectangle "Blockchain ledger\nSHA-256 + Merkle" as LEDGER
+}
+package "L1  Data plane" {
+  rectangle "OpenFlow 1.3 switches\n1 core + 8 edge" as SW
+  rectangle "8 edge servers\n40 IoT devices" as HOSTS
+}
+
+DASH -down-> API
+EVAL -down-> API
+API  -down-> CTRL
+CTRL -down-> TRUST
+CTRL -down-> SEL
+CTRL -down-> AUTH
+CTRL -down-> LEDGER
+CTRL -down-> SW : flow-mod
+SW   -down-> HOSTS
+HOSTS -up-> CTRL : packet-in / reports
+
+note right of CTRL
+  The request path **writes** evidence.
+  The 1 s control loop **reads** decisions.
+end note
+@enduml

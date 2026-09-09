@@ -1,0 +1,23 @@
+@startuml sequence_task
+!pragma layout smetana
+!include _style.puml
+title One task, end to end
+
+participant "IoT\ndevice" as I
+participant "Controller" as C
+participant "Trust\nstate" as T
+participant "Edge\nserver" as S
+participant "Ledger" as L
+
+I -> C : 1. auth challenge / verify
+C --> I : 2. token (or 403)
+I -> C : 3. task request
+C -> T : 4. read trust + load
+C -> C : 5. p2c select  (0.61 ms mean)
+C -> S : 6. dispatch
+S --> C : 7. report(status, latency)
+C -> T : 8. write evidence
+T -> T : 9. 1 s loop: score + anomaly gate
+T --> C : 10. quarantine verdict
+C -> L : 11. commit block (every 10 updates)
+@enduml

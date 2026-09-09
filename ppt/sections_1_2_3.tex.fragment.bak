@@ -1,0 +1,374 @@
+% ===========================================================================
+%  Panel Review 1: Sections 1, 2, 3
+%  Zero Trust-Enabled SDN for Secure Load Balancing in Edge Networks (Team 50)
+%
+%  Drop this file into the existing beamer deck with:
+%      \input{sections_1_2_3}
+%  and put ppt/figures/ next to the .tex (or add
+%      \graphicspath{{figures/}}
+%  to the preamble).
+%
+%  Preamble requirements: \usepackage{graphicx,booktabs,array}
+%  Most figures are 16:9 at 2400x1350 px, but fig10 (2.77:1), fig11 (2.08:1)
+%  and fig12 (2120x2128, effectively square) are not, so every figure goes
+%  through \fitfig below rather than a bare width=\textwidth.
+%  Compiled clean with pdflatex + beamer aspectratio=169 on 2026-09-08.
+% ===========================================================================
+
+% \fitfig scales a figure to the frame body: width binds for 16:9 art,
+% height binds for the taller/wider ones (fig10 2.77:1, fig11 2.08:1,
+% fig12 is effectively SQUARE at 2120x2128 and overflows badly without this).
+\providecommand{\fitfig}[2][0.78]{%
+  \centerline{\includegraphics[width=\textwidth,height=#1\textheight,keepaspectratio]{#2}}}
+
+% ---------------------------------------------------------------- SECTION 1
+\begin{frame}{1. Software Architecture \& Module Design}
+  \framesubtitle{Rubric: UML Diagrams, DB Schema, APIs, Module Interaction \& Deployment (5 Marks)}
+  \begin{columns}[T]
+    \begin{column}{0.40\textwidth}
+      \scriptsize
+      \textbf{Five layers, one OS process.}\\[2pt]
+      The controller is a single os-ken OpenFlow 1.3 application; the trust
+      engine and the ledger are libraries it calls in-process, not services.
+      \begin{itemize}\itemsep1pt
+        \item \textbf{L5} dashboard, 19 evaluation tools, control arm
+        \item \textbf{L4} northbound REST + SSE on :8081
+        \item \textbf{L3} \texttt{trust\_balancer.py} for routing, detection and enforcement
+        \item \textbf{L2} trust calculator, UCB1 optimiser, PRESENT-80 auth, ledger
+        \item \textbf{L1} Mininet: 1 core + 8 edge switches, 8 servers, 40 IoT
+      \end{itemize}
+      \textbf{Design rule:} the request path \emph{writes} evidence into
+      \texttt{TrustState}; the 1\,s control loop \emph{reads} decisions out of it.
+    \end{column}
+    \begin{column}{0.60\textwidth}
+      \includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{figures/fig1_software_architecture.png}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{1. Module Interaction: UML Component and Call Flow}
+  \framesubtitle{Rubric: UML Diagrams, DB Schema, APIs, Module Interaction \& Deployment (5 Marks)}
+  \fitfig{figures/fig2_module_interaction.png}
+\end{frame}
+
+\begin{frame}{1. Core API Specification}
+  \framesubtitle{Rubric: UML Diagrams, DB Schema, APIs, Module Interaction \& Deployment (5 Marks)}
+  \centering\scriptsize
+  \begin{tabular}{@{}llll@{}}
+    \toprule
+    \textbf{Method} & \textbf{Path} & \textbf{Request} & \textbf{Response}\\
+    \midrule
+    POST & \texttt{/auth/challenge}  & \texttt{\{device\_id\}}                    & \texttt{\{nonce\}}, 64-bit, TTL 30\,s\\
+    POST & \texttt{/auth/verify}     & \texttt{\{device\_id, response\}}          & \texttt{\{token\}} \;\textbar\; \textbf{403} \texttt{auth\_denied\{kind\}}\\
+    POST & \texttt{/report}          & \texttt{\{status, latency\_ms, \ldots\}}   & task outcome; \texttt{client\_ip} from the socket\\
+    POST & \texttt{/register}        & \texttt{\{node\_id, concurrency\}}         & agent start-up registration\\
+    POST & \texttt{/topology/links}  & \texttt{\{links:[\ldots]\}}                & link parameters the harness built\\
+    GET  & \texttt{/trust/score}     & \texttt{?node\_id=}                        & \texttt{\{node\_id: score\}} or all nodes\\
+    GET  & \texttt{/node/status}     & \texttt{?node\_id=}                        & \texttt{TrustState.snapshot()}\\
+    GET  & \texttt{/ledger/verify}   & none                                       & \texttt{\{valid, chain\_length, batch\}}\\
+    GET  & \texttt{/api/events}      & none                                       & Server-Sent Events stream\\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{6pt}
+  \footnotesize
+  \texttt{auth\_denied} kinds: \texttt{ip\_pin} $\cdot$ \texttt{bad\_response} $\cdot$ \texttt{nonce\_expired}.
+  SSE rather than WebSockets: it is one-way, plain HTTP and needs no third-party
+  library, which matters because the target box is apt-only Python 3.14 with no pip.
+\end{frame}
+
+\begin{frame}{1. Data Model: Entities, Keys and Relationships}
+  \framesubtitle{Rubric: UML Diagrams, DB Schema, APIs, Module Interaction \& Deployment (5 Marks)}
+  \fitfig[0.58]{figures/fig3_data_model_er.png}
+
+  \vspace{2pt}\footnotesize
+  \textbf{The system uses no relational database.} The ledger is the store of
+  record for trust, and its integrity is cryptographic (SHA-256 chain + Merkle
+  root) rather than referential; the JSONL recording is the durable evidence log;
+  configuration is YAML.
+\end{frame}
+
+\begin{frame}{1. Deployment Architecture}
+  \framesubtitle{Rubric: UML Diagrams, DB Schema, APIs, Module Interaction \& Deployment (5 Marks)}
+  \fitfig{figures/fig4_deployment.png}
+\end{frame}
+
+% ---------------------------------------------------------------- SECTION 2
+\begin{frame}{2. Implementation Progress ($\approx$60\%) \& Module Functionality}
+  \framesubtitle{Rubric: Backend, Frontend, Database \& Core Modules Functional (8 Marks)}
+  \centering\tiny
+  \begin{tabular}{@{}p{0.26\textwidth}p{0.56\textwidth}l@{}}
+    \toprule
+    \textbf{Subsystem / Layer} & \textbf{Current Implementation State} & \textbf{Status}\\
+    \midrule
+    Data plane \& topology   & 1 core + 8 edge OVS switches, 8 edge servers, 40 IoT devices, VIP service model & Functional\\
+    SDN control plane        & OpenFlow 1.3 app: proxy-ARP, per-connection VIP rewrite, 5-band priority table, meters & Functional\\
+    Trust engine             & $T=\alpha R+\beta B+\gamma H-\delta A$, EMA $\lambda$=0.85, isolation 0.30, anomaly gate 0.50 & Functional\\
+    Secure load balancing    & EdgeScore + power-of-two-choices, eligibility filter, UCB1 online weight tuning & Functional\\
+    Security / admission     & PRESENT-80 challenge-response, single-use nonce, source-IP pinning (roster + TOFU) & Functional\\
+    Attack simulation \& detection & 6 attacks with delayed onset; latency, timeout, honesty, flood tells; windowed classifier & Functional\\
+    Blockchain ledger        & SHA-256 chain, Merkle root per block, batch of 10, in-browser re-verification & Functional\\
+    Northbound API           & 9 endpoints + SSE stream, stdlib only & Functional\\
+    Dashboard (frontend)     & Live topology, flow tables, 6 time-series charts, tamper-testable ledger ribbon & Functional\\
+    Evaluation \& control arm & 19 analysis tools; complete no-zero-trust control arm; scored comparison & Integrated\\
+    RAFT consensus           & Core + TCP transport + 3-replica live cluster, safety proven. \emph{Not wired into the controller} & Partial\\
+    DDoS response            & Detected and classified; throttling not built (needs a per-client-IP OpenFlow path) & Partial\\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{2. System Workflow: One Task, End to End}
+  \framesubtitle{Rubric: Backend, Frontend, Database \& Core Modules Functional (8 Marks)}
+  \fitfig{figures/fig5_system_workflow.png}
+\end{frame}
+
+\begin{frame}{2. Measured Functionality: The Controlled Comparison}
+  \framesubtitle{Rubric: Backend, Frontend, Database \& Core Modules Functional (8 Marks)}
+  \fitfig{figures/fig8_results_comparison.png}
+\end{frame}
+
+\begin{frame}{2. Baseline vs Zero-Trust: The Numbers}
+  \framesubtitle{Two live Mininet runs, 2026-09-05: same topology, same 40 devices, same six attacks, same schedule}
+  \centering\footnotesize
+  \begin{tabular}{@{}lrr@{}}
+    \toprule
+    \textbf{Metric} & \textbf{Baseline} & \textbf{Zero-trust}\\
+    \midrule
+    Packet delivery ratio                 & 94.29\,\%      & \textbf{99.10\,\%}\\
+    Mean per-device availability (honest) & 85.67\,\%      & \textbf{99.00\,\%}\\
+    Honest devices served below 50\,\%    & 5              & \textbf{0}\\
+    Tasks lost to timeout                 & 380            & \textbf{58}\\
+    p95 task latency                      & 260.0\,ms      & \textbf{134.3\,ms}\\
+    Mean task latency                     & \textbf{83.7\,ms} & 88.5\,ms\\
+    Throughput                            & 20.74 task/s   & 20.66 task/s\\
+    Jain fairness, honest servers only    & 0.689          & \textbf{0.992}\\
+    Requests routed to attacker nodes     & 30.5\,\%       & \textbf{12.5\,\%}\\
+    Anomalies raised / acted on           & 502 / 0        & 372 / \textbf{33}\\
+    Identity spoof (iot38 $\to$ iot1)     & \textbf{ADMITTED} at 19.6\,s & \textbf{REFUSED}\\
+    Wrong-key devices admitted            & 2              & \textbf{0}\\
+    Trust blocks committed                & none (no ledger)& 649\\
+    \midrule
+    \multicolumn{3}{@{}l@{}}{\textbf{Containment, onset $\to$ isolation:} sybil 8.2\,s $\cdot$ blackhole 8.7\,s $\cdot$ on-off 9.9\,s $\cdot$ grayhole 11.3\,s}\\
+    \multicolumn{3}{@{}l@{}}{\emph{The baseline never contains any of them, because it has no isolation path.}}\\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{4pt}\scriptsize
+  Mean latency is 4.8\,ms \emph{worse} in our arm. The trade is a small cost in
+  the mean in exchange for removing the long tail: p95 halves, timeouts fall
+  85\,\% and throughput is unchanged.
+\end{frame}
+
+\begin{frame}{2. Per-server trust and load, both arms on one axis}
+  \framesubtitle{Rubric: Backend, Frontend, Database \& Core Modules Functional (8 Marks)}
+  \fitfig[0.40]{figures/fig10_trust_per_server.png}
+
+  \vspace{2pt}
+  \fitfig[0.34]{figures/fig11_load_share.png}
+\end{frame}
+
+% ---------------------------------------------------------------- SECTION 3
+\begin{frame}{3. Technical Knowledge \& Engineering Decisions}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \centering\scriptsize
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.26\textwidth}p{0.46\textwidth}@{}}
+    \toprule
+    \textbf{Pattern} & \textbf{Where} & \textbf{Justification}\\
+    \midrule
+    Layered architecture & L1 to L5 & The trust engine must be callable with enforcement removed. That is what makes the control arm a controlled experiment rather than a second codebase\\
+    Strategy & \texttt{edge\_selector}, \texttt{static\_router} & Routing policy is a config key (\texttt{selection: p2c}), so the two arms differ by a key, not a fork\\
+    Protocol / structural typing & \texttt{CommitBackend}, \texttt{Transport} & \texttt{RaftBackend} is a drop-in for \texttt{LocalLedgerBackend}; \texttt{RaftNode} did not change at all to gain a TCP transport\\
+    Observer / pub-sub & \texttt{EventBus} $\to$ SSE + JSONL & Every decision is published exactly once; dashboard and analysis tools read one stream\\
+    Pure function & \texttt{attack\_classifier} & No I/O, no locks, no state, so live and offline verdicts come from one implementation\\
+    Decorator & \texttt{TimingCommitBackend} & Commit cost is measured without the ledger knowing it is being timed\\
+    Multi-armed bandit (UCB1) & \texttt{ai\_optimizer} & Weight tuning is an exploration problem rather than a training problem, because no labelled data exists at runtime\\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{3pt}\scriptsize
+  \textbf{Stack:} Python 3.14 $\cdot$ os-ken (Ryu fork) $\cdot$ Mininet + Open vSwitch, OpenFlow 1.3 $\cdot$
+  stdlib \texttt{ThreadingHTTPServer} + SSE $\cdot$ PRESENT-80 $\cdot$ SHA-256/Merkle $\cdot$ pytest.
+  \textbf{No pip, no venv, no web framework}, which is a constraint of the target machine.
+\end{frame}
+
+\begin{frame}{3. Zero Trust Security Flow: Never Trust, Always Verify}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \fitfig{figures/fig6_zero_trust_flow.png}
+\end{frame}
+
+\begin{frame}{3. Secure Load-Balancing Flow}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \fitfig{figures/fig7_load_balancing_flow.png}
+\end{frame}
+
+\begin{frame}{3. Data Integrity, Concurrency \& Error Handling}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \centering\scriptsize
+  \begin{tabular}{@{}p{0.26\textwidth}p{0.68\textwidth}@{}}
+    \toprule
+    \textbf{Concern} & \textbf{Mechanism}\\
+    \midrule
+    Ledger integrity & SHA-256 chain + Merkle root per block; the browser recomputes the hash itself rather than trusting the controller's \texttt{valid} flag\\
+    Deterministic replication & Log entries carry only content; \texttt{index}, \texttt{previous\_hash} and \texttt{merkle\_root} are recomputed per replica at apply time. This was the fix for a non-deterministic genesis block and for a stale ledger snapshot taken at proposal time\\
+    Concurrency & One \texttt{RLock} guards \texttt{RaftNode}/\texttt{Ledger} (re-entrant, because \texttt{apply\_fn} re-enters it); a second lock serialises whole \texttt{commit()} calls; \texttt{commit()} releases the first while waiting, or the driver thread deadlocks\\
+    Trust-state consistency & All mutation under one lock; the invariant \texttt{sum(\_inflight) == len(\_dispatches)} is asserted, after a register leak fabricated load on honest nodes\\
+    Replay resistance & Nonces are single-use (popped on first verification) and expire after 30\,s\\
+    Identity integrity & The fleet key is shared, so PRESENT-80 authenticates possession of the key rather than the device. That gap is closed by source-IP pinning against a provisioned roster, with TOFU as the fallback\\
+    Error handling & Structured \texttt{AuthError(kind)}; a 403 also \emph{publishes} an event, so a refusal is visible to the recording; meters degrade to allow/quarantine where unsupported, logged once\\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{3. Preliminary Testing \& NFR Validation}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \centering\scriptsize
+  \begin{tabular}{@{}lllc@{}}
+    \toprule
+    \textbf{NFR} & \textbf{Target} & \textbf{Measured} & \textbf{Verdict}\\
+    \midrule
+    Routing decision (packet-in $\to$ flow-mod) & $<$ 200\,ms   & mean 0.53\,ms $\cdot$ p95 0.71\,ms (n=6\,611) & \textbf{PASS}\\
+    Isolation (quarantine $\to$ re-dispatch)    & $<$ 3\,000\,ms & mean 25.6\,ms $\cdot$ max 47.3\,ms (n=38)     & \textbf{PASS}\\
+    Blockchain overhead                          & $<$ 15\,\%    & \textbf{0.049\,\%}, 0.437\,ms over 649 blocks & \textbf{PASS}\\
+    RAFT commit latency                          & $<$ 500\,ms   & mean 4.3 to 4.8\,ms; failover 0.21\,s & \textbf{PASS}\\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{8pt}
+  \fitfig[0.42]{figures/fig9_testing_evidence.png}
+\end{frame}
+
+\begin{frame}{3. Recorded RAFT Failover: 3 Replicas, Real TCP, Real Kill}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \fitfig[0.84]{figures/fig12_raft_failover.png}
+\end{frame}
+
+\begin{frame}{3. Engineering Decisions Defended, and What Is Not Done}
+  \framesubtitle{Rubric: Software Architecture, Implementation, Integration \& Tech Stack (5 Marks)}
+  \scriptsize
+  \textbf{Decisions we would defend under questioning}
+  \begin{enumerate}\itemsep2pt
+    \item \textbf{Power-of-two-choices over argmax.} Argmax is winner-take-all: every request goes to one node until its load catches up. We measured it starving the fleet as $N$ grows, while p2c scales linearly.
+    \item \textbf{The flood tell is keyed on the requesting client, never the edge node it lands on.} A server drowning under a flood is telling the truth about being overwhelmed.
+    \item \textbf{A detector with no recent evidence abstains} rather than re-asserting a stale verdict. Without this, quarantine became an absorbing state that starved the evidence needed to leave it.
+    \item \textbf{Anomaly $A$ is a separate gate, not a fourth term.} A node that lies about its load but serves tasks well holds $T\approx0.44$ and never crosses the isolation line.
+    \item \textbf{No literal replay attack was built.} \texttt{verify\_response} pops the nonce on first use, so replay was already impossible; the real gap was fleet-wide key sharing.
+  \end{enumerate}
+
+  \vspace{2pt}
+  \textbf{Open limitations}
+  \begin{itemize}\itemsep1pt
+    \item \textbf{RAFT is built, proven and demonstrated, but not wired into the controller.} All 649 blocks of the live run carry \texttt{raft\_term = 0}. Three blockers remain: nobody drives the tick; \texttt{commit()} would block an OpenFlow handler thread for up to 2\,s; a \texttt{None} return is currently discarded silently.
+    \item \textbf{DDoS is detection-only}; throttling needs a per-client-IP OpenFlow path. We deferred it rather than shipping half of it.
+    \item One run per configuration (no confidence intervals) $\cdot$ detection latency is an upper bound, bounded by the 1\,s poll $\cdot$ scalability past 8 nodes is a queueing simulation $\cdot$ localhost, not multi-host.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------- REFERENCES
+%  Numbering [1] to [13] is IDENTICAL to Appendix B of docs/paper/ (built from
+%  tools/paper/paper_template.html), so a citation means the same thing in the
+%  deck, the report and the paper. [14] to [21] are additions used by the deck.
+%  Plain \item[...] labels are used instead of thebibliography so the frames
+%  need no extra preamble beyond graphicx/booktabs/array.
+
+\begin{frame}[allowframebreaks]{References I: Zero Trust and Load Balancing}
+  \framesubtitle{Numbering matches Appendix B of the project report}
+  \scriptsize
+
+  \textbf{Zero Trust and trust-aware edge computing}
+  \begin{itemize}\itemsep1.5pt
+    \item[{[1]}] S. Rose, O. Borchert, S. Mitchell and S. Connelly, ``Zero Trust Architecture,'' \emph{NIST Special Publication 800-207}, National Institute of Standards and Technology, Aug. 2020.\\
+      {\color{gray}$\rightarrow$ The doctrine we implement, and the gap we claim. It mandates continuous verification but specifies no mechanism for verifying the \emph{serving infrastructure}.}
+    \item[{[11]}] B. Ali, M. A. Gregory and S. Li, ``Trust-aware task load balancing in multi-access edge computing based on blockchain and a zero trust security capability framework,'' \emph{Trans. Emerging Telecommunications Technologies}, vol.~34, no.~12, e4845, 2023. DOI 10.1002/ett.4845.\\
+      {\color{gray}$\rightarrow$ The closest prior work, with the same three ingredients of zero trust, blockchain and MEC load balancing. We differ in enforcing the verdict in the data plane and in measuring against a control arm.}
+    \item[{[12]}] ``Securing edge based smart city networks with software defined networking and zero trust architecture (TREN),'' \emph{J. Network and Computer Applications}, 2025. DOI 10.1016/j.jnca.2025.104318.\\
+      {\color{gray}$\rightarrow$ The smart-city and SDN application domain.}
+    \item[{[13]}] M. Huang, Z. Li, F. Xiao, S. Long and A. Liu, ``Trust Mechanism-Based Multi-Tier Computing System for Service-Oriented Edge-Cloud Networks,'' \emph{IEEE Trans. Dependable and Secure Computing}, vol.~21, no.~4, pp.~1639-1651, 2024. DOI 10.1109/TDSC.2023.3285927.\\
+      {\color{gray}$\rightarrow$ Trust scoring for edge task placement. This is the score-only design whose arithmetic ceiling our Finding 1 characterises.}
+    \item[{[19]}] ETSI GS MEC 003, ``Multi-access Edge Computing (MEC); Framework and Reference Architecture,'' V3.1.1, 2022.\\
+      {\color{gray}$\rightarrow$ The deployment mapping: controller to MEC orchestrator, edge servers to MEC hosts, IoT clients to UE.}
+  \end{itemize}
+
+  \vspace{3pt}
+  \textbf{Load balancing: why we replaced argmax with power-of-two-choices}
+  \begin{itemize}\itemsep1.5pt
+    \item[{[2]}] M. Mitzenmacher, ``The Power of Two Choices in Randomized Load Balancing,'' \emph{IEEE Trans. Parallel and Distributed Systems}, vol.~12, no.~10, pp.~1094-1104, 2001. DOI 10.1109/71.963420.\\
+      {\color{gray}$\rightarrow$ The source of our fix. Sampling two candidates and taking the better one gives far better tail behaviour than picking the single best. This is the argmax to p2c switch.}
+    \item[{[14]}] Y. Azar, A. Z. Broder, A. R. Karlin and E. Upfal, ``Balanced Allocations,'' \emph{SIAM J. Computing}, vol.~29, no.~1, pp.~180-200, 1999.\\
+      {\color{gray}$\rightarrow$ The originating balanced-allocations result behind [2].}
+    \item[{[3]}] M. Mitzenmacher, ``How Useful Is Old Information?,'' \emph{IEEE Trans. Parallel and Distributed Systems}, vol.~11, no.~1, pp.~6-20, 2000. DOI 10.1109/71.824633.\\
+      {\color{gray}$\rightarrow$ Herd behaviour caused by stale load information. Our poll interval is 1\,s while tasks finish in about 0.2\,s, which is the regime this paper describes.}
+    \item[{[4]}] M. Dahlin, ``Interpreting Stale Load Information,'' \emph{IEEE Trans. Parallel and Distributed Systems}, vol.~11, no.~10, pp.~1033-1047, 2000. DOI 10.1109/71.888643.\\
+      {\color{gray}$\rightarrow$ \textbf{This explains the one place we lose.} Stale least-loaded performs worse than random, which is why least-connections is our weakest measured baseline and why we sit 10.7\,\% behind round-robin in the no-attack case.}
+    \item[{[9]}] R. Jain, D.-M. Chiu and W. Hawe, ``A Quantitative Measure of Fairness and Discrimination for Resource Allocation in Shared Computer Systems,'' \emph{DEC Research Report TR-301}, 1984.\\
+      {\color{gray}$\rightarrow$ The fairness index reported in Table 2.2 (0.689 to 0.992, honest servers only).}
+    \item[{[20]}] J. D. C. Little, ``A Proof for the Queuing Formula $L = \lambda W$,'' \emph{Operations Research}, vol.~9, no.~3, pp.~383-387, 1961.\\
+      {\color{gray}$\rightarrow$ The diagnostic that proved a live run's occupancy was fabricated rather than real: predicted in-flight 0.01 against an actual counter of 2.}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References II: Security, Consensus and Method}
+  \framesubtitle{Numbering matches Appendix B of the project report}
+  \scriptsize
+
+  \textbf{Lightweight cryptography and the tamper-evident ledger}
+  \begin{itemize}\itemsep1.5pt
+    \item[{[5]}] A. Bogdanov, L. R. Knudsen, G. Leander, C. Paar, A. Poschmann, M. J. B. Robshaw, Y. Seurin and C. Vikkelsoe, ``PRESENT: An Ultra-Lightweight Block Cipher,'' in \emph{Cryptographic Hardware and Embedded Systems (CHES 2007)}, LNCS 4727, pp.~450-466, 2007.\\
+      {\color{gray}$\rightarrow$ The cipher behind device admission, and the published test vectors our implementation is checked against.}
+    \item[{[18]}] ISO/IEC 29192-2:2019, \emph{Information security, lightweight cryptography, Part~2: Block ciphers}.\\
+      {\color{gray}$\rightarrow$ The standardisation that makes PRESENT-80 a defensible choice for constrained devices, and the framing for its 80-bit key being below modern margins.}
+    \item[{[6]}] R. C. Merkle, ``A Digital Signature Based on a Conventional Encryption Function,'' in \emph{Advances in Cryptology (CRYPTO '87)}, LNCS 293, pp.~369-378, 1988.\\
+      {\color{gray}$\rightarrow$ The Merkle tree giving per-record proofs. Our \texttt{\_hash\_pair} was fixed to positional concatenation so that proofs are order-sensitive, as the construction requires.}
+    \item[{[7]}] D. Ongaro and J. Ousterhout, ``In Search of an Understandable Consensus Algorithm,'' in \emph{Proc. USENIX Annual Technical Conf.}, pp.~305-319, 2014.\\
+      {\color{gray}$\rightarrow$ RAFT. Safety properties R-01 to R-18 are tested against this paper's statements. It is crash-fault tolerant and \emph{not} Byzantine, a distinction we state before being asked.}
+  \end{itemize}
+
+  \vspace{3pt}
+  \textbf{SDN platform}
+  \begin{itemize}\itemsep1.5pt
+    \item[{[8]}] N. McKeown, T. Anderson, H. Balakrishnan, G. Parulkar, L. Peterson, J. Rexford, S. Shenker and J. Turner, ``OpenFlow: Enabling Innovation in Campus Networks,'' \emph{ACM SIGCOMM Computer Communication Review}, vol.~38, no.~2, pp.~69-74, 2008.\\
+      {\color{gray}$\rightarrow$ The protocol our decisions are installed as, and the source of Finding 3: once a rule is installed, matching packets never return to the controller.}
+    \item[{[10]}] B. Lantz, B. Heller and N. McKeown, ``A Network in a Laptop: Rapid Prototyping for Software-Defined Networks,'' in \emph{Proc. 9th ACM SIGCOMM Workshop on Hot Topics in Networks (HotNets)}, 2010.\\
+      {\color{gray}$\rightarrow$ Mininet, the emulation testbed. It is why we say ``demonstrated in an emulated network'' and never ``proven in production''.}
+  \end{itemize}
+
+  \vspace{3pt}
+  \textbf{Learning and statistical method}
+  \begin{itemize}\itemsep1.5pt
+    \item[{[15]}] P. Auer, N. Cesa-Bianchi and P. Fischer, ``Finite-time Analysis of the Multiarmed Bandit Problem,'' \emph{Machine Learning}, vol.~47, no.~2/3, pp.~235-256, 2002.\\
+      {\color{gray}$\rightarrow$ UCB1, the online EdgeScore weight optimiser. This is a classical bandit and \emph{not} deep reinforcement learning, because weight tuning is an exploration problem when no labelled data exists at runtime.}
+    \item[{[16]}] F. Wilcoxon, ``Individual Comparisons by Ranking Methods,'' \emph{Biometrics Bulletin}, vol.~1, no.~6, pp.~80-83, 1945.\\
+      {\color{gray}$\rightarrow$ The paired signed-rank test behind every $p$-value in Section 7.4. We chose it over a paired $t$-test because our outcomes are bounded rates, skewed and zero-inflated.}
+    \item[{[17]}] S. Holm, ``A Simple Sequentially Rejective Multiple Test Procedure,'' \emph{Scandinavian J. Statistics}, vol.~6, no.~2, pp.~65-70, 1979.\\
+      {\color{gray}$\rightarrow$ The multiple-comparison correction. One system against four baselines is four tests, so the family-wise false-positive rate is about 19\,\% rather than 5\,\%. We use Holm rather than Bonferroni because it is uniformly more powerful for the same guarantee.}
+    \item[{[21]}] M. T. Nygard, \emph{Release It!: Design and Deploy Production-Ready Software}, 2nd ed., Pragmatic Bookshelf, 2018.\\
+      {\color{gray}$\rightarrow$ The circuit-breaker pattern. Our \emph{probation} mechanism is its half-open leg, and it is what stopped quarantine being an absorbing state.}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{How the Literature Is Used}
+  \framesubtitle{What is borrowed, what is reproduced and what is ours}
+  \tiny
+  \begin{tabular}{@{}p{0.30\textwidth}p{0.07\textwidth}p{0.55\textwidth}@{}}
+    \toprule
+    \textbf{Claim in this project} & \textbf{Source} & \textbf{Status} \\
+    \midrule
+    Continuous verification, never trust & [1] & \textbf{Borrowed doctrine.} We supply the missing mechanism for infrastructure nodes. \\
+    Argmax starves the fleet as $N$ grows & [2],[14] & \textbf{Predicted by theory and reproduced by us.} Measured on the real selector: $N{=}8$ uses 2 nodes, $N{=}64$ uses 3. \\
+    p2c scales where argmax saturates & [2] & \textbf{Reproduced.} 48/95/192/382/762 tasks/s at $N{=}4$ to $64$, against argmax saturating at about 85 tasks/s. \\
+    Stale load signals cause herding & [3],[4] & \textbf{Reproduced, and it explains our own loss} in the no-attack scenario. Isolated by a poll-interval sweep. \\
+    Fairness index 0.689 to 0.992 & [9] & \textbf{Borrowed metric}, measured on our runs. Reported over two populations, because whole-roster Jain hides the result. \\
+    Trust score alone cannot isolate a liar & none & \textbf{Ours (Finding 1).} A $T=0.44$ floor against a 0.30 threshold. Not in the literature we reviewed. \\
+    A Sybil lie is self-defeating & none & \textbf{Ours (Finding 2).} It emerges only because the testbed measures real work instead of injecting telemetry. \\
+    Per-packet SDN animation is dishonest & [8] & \textbf{Ours (Finding 3)}, following from the OpenFlow forwarding model. \\
+    RAFT failover 0.21\,s, commit 4.3 to 4.8\,ms & [7] & \textbf{Our measurement} of a standalone 3-replica cluster. The algorithm is [7]'s. \\
+    $p_{\mathrm{adj}}=7.45\times10^{-9}$, $r=+1.00$ & [16],[17] & \textbf{Borrowed method}, our 600-run experiment. \\
+    PRESENT-80 admission & [5],[18] & \textbf{Borrowed primitive}, checked against published test vectors and framed as architecture rather than as strong security. \\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{4pt}
+  \footnotesize
+  The load-balancing and consensus results are established theory that we
+  reproduce on a real system. The three findings in the middle of the table are
+  ours, and they came from building and measuring rather than from the review.
+\end{frame}

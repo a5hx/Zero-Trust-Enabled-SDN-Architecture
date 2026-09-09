@@ -81,6 +81,7 @@ from base_model.figure_style import (  # noqa: E402
     X_HEADROOM,
     draw_onset,
     resolve_label_collisions,
+    save_figure,
     style_axes,
 )
 
@@ -328,10 +329,7 @@ def main(argv=None) -> int:
                 labelcolor=INK_SECONDARY, handlelength=1.6,
             )
         fig.tight_layout()
-        fig.savefig(out_dir / f'{node}_trust.png', facecolor=SURFACE)
-        if not args.no_svg:
-            fig.savefig(out_dir / f'{node}_trust.svg', facecolor=SURFACE)
-        plt.close(fig)
+        save_figure(fig, out_dir / f'{node}_trust', args.no_svg)
 
     # -- one grid, for the paper -------------------------------------------- #
     cols = 4
@@ -374,12 +372,7 @@ def main(argv=None) -> int:
                frameon=False, fontsize=9.5, labelcolor=INK_SECONDARY,
                bbox_to_anchor=(0.5, 0.02))
     fig.subplots_adjust(bottom=0.16)
-    fig.savefig(out_dir / 'all_servers_trust.png', facecolor=SURFACE,
-                bbox_inches='tight')
-    if not args.no_svg:
-        fig.savefig(out_dir / 'all_servers_trust.svg', facecolor=SURFACE,
-                    bbox_inches='tight')
-    plt.close(fig)
+    save_figure(fig, out_dir / 'all_servers_trust', args.no_svg, tight=True)
 
     # -- the table view ------------------------------------------------------ #
     csv_path = out_dir / 'trust_data.csv'

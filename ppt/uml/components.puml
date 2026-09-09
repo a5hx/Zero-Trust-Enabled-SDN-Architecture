@@ -1,0 +1,30 @@
+@startuml components
+!pragma layout smetana
+!include _style.puml
+title Module interaction — who calls whom
+
+component "IoT device" as IOT
+component "Edge server\nagent" as SRV
+component "Controller\n(trust_balancer)" as CTRL
+component "TrustState\n(shared evidence)" as STATE
+component "Edge selector" as SEL
+component "Trust calculator" as CALC
+component "Anomaly detectors\nlatency · timeout · honesty · flood" as DET
+component "Ledger" as LED
+component "Event bus\n→ SSE + JSONL" as BUS
+
+IOT  --> CTRL  : 1. auth + task request
+CTRL --> SEL   : 2. pick an edge node
+SEL  --> STATE : 3. read trust + load
+CTRL --> SRV   : 4. dispatch
+SRV  --> CTRL  : 5. report(status, latency)
+CTRL --> STATE : 6. write evidence
+
+STATE --> CALC : 7. every 1 s
+STATE --> DET  : 7. every 1 s
+CALC  --> STATE : 8. new trust score
+DET   --> STATE : 8. anomaly verdict
+STATE --> CTRL : 9. quarantine decision
+CTRL  --> LED  : 10. commit block
+CTRL  --> BUS  : 11. publish event
+@enduml

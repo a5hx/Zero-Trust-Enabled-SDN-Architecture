@@ -1,0 +1,1366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Panel Review Briefing — Zero Trust-Enabled SDN</title>
+<style>
+  @page { size: A4; margin: 17mm 15mm 15mm 15mm; }
+
+  :root{
+    --ink:#16202e;
+    --ink-soft:#43536a;
+    --accent:#0b5f6a;
+    --accent-tint:#eef5f6;
+    --warn:#9a3618;
+    --warn-tint:#fdf3ef;
+    --good:#1c6b3f;
+    --rule:#d5dde4;
+    --tint:#f5f8fa;
+  }
+
+  *{ box-sizing:border-box; }
+  html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body{
+    font-family:"DejaVu Serif", Georgia, serif;
+    font-size:9.6pt;
+    line-height:1.52;
+    color:var(--ink);
+    margin:0;
+  }
+  h1,h2,h3,h4,.ui{ font-family:"Ubuntu","Ubuntu Sans","DejaVu Sans",sans-serif; }
+
+  /* ---------- cover ---------- */
+  .cover{ page-break-after:always; padding-top:14mm; }
+  .cover .eyebrow{
+    font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:8pt; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--accent); font-weight:700;
+  }
+  .cover h1{
+    font-size:26pt; line-height:1.15; margin:.35em 0 .1em; letter-spacing:-.01em; color:var(--ink);
+  }
+  .cover .sub{ font-size:12.5pt; color:var(--ink-soft); margin:0 0 1.1em; font-family:"Ubuntu","DejaVu Sans",sans-serif;}
+  .cover .rule{ height:3px; background:var(--accent); width:64mm; margin:0 0 7mm; }
+  .cover .meta{ font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:9pt; color:var(--ink-soft); }
+  .cover .meta b{ color:var(--ink); }
+
+  .pitch{
+    background:var(--accent-tint); border-left:4px solid var(--accent);
+    padding:6mm 7mm; margin:8mm 0; font-size:10.4pt; line-height:1.6;
+  }
+
+  .kpi-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:3mm; margin:6mm 0; }
+  .kpi{ border:1px solid var(--rule); border-top:3px solid var(--accent); padding:3.5mm 3mm; }
+  .kpi .n{ font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:16pt; font-weight:700; color:var(--accent); line-height:1.1; }
+  .kpi .l{ font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:7.4pt; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; margin-top:1.5mm; line-height:1.3;}
+
+  /* ---------- structure ---------- */
+  h2{
+    font-size:15pt; margin:0 0 3mm; padding-bottom:2mm; border-bottom:2px solid var(--accent);
+    color:var(--ink); letter-spacing:-.005em;
+  }
+  h2 .num{ color:var(--accent); font-weight:700; margin-right:2.5mm; }
+  h3{ font-size:11pt; margin:6mm 0 2mm; color:var(--accent); }
+  h4{ font-size:9.6pt; margin:4.5mm 0 1.5mm; color:var(--ink); }
+  section{ page-break-before:always; }
+  section.cont{ page-break-before:auto; }
+  p{ margin:0 0 2.6mm; }
+  ul,ol{ margin:0 0 3mm; padding-left:5.5mm; }
+  li{ margin-bottom:1.4mm; }
+  strong{ color:#0d1826; }
+  code{ font-family:"Ubuntu Mono","DejaVu Sans Mono",monospace; font-size:8.4pt; background:var(--tint); padding:0 .8mm; border-radius:2px; }
+
+  table{ width:100%; border-collapse:collapse; margin:3mm 0 4mm; font-size:8.5pt; page-break-inside:avoid; }
+  th{
+    font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:7.6pt; text-transform:uppercase;
+    letter-spacing:.05em; text-align:left; background:var(--ink); color:#fff; padding:2mm 2.2mm; font-weight:600;
+  }
+  td{ padding:1.8mm 2.2mm; border-bottom:1px solid var(--rule); vertical-align:top; }
+  tbody tr:nth-child(even) td{ background:var(--tint); }
+  td.num,th.num{ text-align:right; font-variant-numeric:tabular-nums; }
+  .win{ color:var(--good); font-weight:700; }
+  .lose{ color:var(--warn); font-weight:700; }
+
+  figure{ margin:4mm 0 5mm; page-break-inside:avoid; }
+  figure img{ width:100%; border:1px solid var(--rule); display:block; }
+  figcaption{
+    font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:7.8pt; color:var(--ink-soft);
+    margin-top:1.5mm; padding-left:2mm; border-left:2px solid var(--accent);
+  }
+  figcaption b{ color:var(--accent); }
+
+  .callout{ border:1px solid var(--rule); border-left:4px solid var(--accent); background:var(--accent-tint); padding:3.5mm 4mm; margin:3.5mm 0; page-break-inside:avoid; }
+  .callout.warn{ border-left-color:var(--warn); background:var(--warn-tint); }
+  .callout .hd{ font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:8pt; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--accent); margin-bottom:1.5mm; }
+  .callout.warn .hd{ color:var(--warn); }
+  .callout p:last-child{ margin-bottom:0; }
+
+  .qa{ page-break-inside:avoid; margin-bottom:4mm; border-bottom:1px dotted var(--rule); padding-bottom:3mm; }
+  .qa .q{ font-family:"Ubuntu","DejaVu Sans",sans-serif; font-weight:700; font-size:9.4pt; color:var(--ink); margin-bottom:1.5mm; }
+  .qa .q::before{ content:"Q "; color:var(--accent); }
+  .qa .a::before{ content:"A "; color:var(--accent); font-family:"Ubuntu","DejaVu Sans",sans-serif; font-weight:700; }
+
+  .toc{ column-count:2; column-gap:9mm; font-size:9pt; }
+  .toc div{ break-inside:avoid; margin-bottom:1.6mm; font-family:"Ubuntu","DejaVu Sans",sans-serif; }
+  .toc .n{ display:inline-block; width:8mm; color:var(--accent); font-weight:700; }
+  .toc .sub{ color:var(--ink-soft); font-size:8pt; padding-left:8mm; display:block; }
+
+  .formula{
+    background:var(--tint); border:1px solid var(--rule); padding:3.5mm 4mm; margin:3mm 0;
+    font-family:"Ubuntu Mono","DejaVu Sans Mono",monospace; font-size:9pt; text-align:center;
+  }
+  .lead{ font-size:10.2pt; color:var(--ink-soft); margin-bottom:4mm; }
+  .two{ display:grid; grid-template-columns:1fr 1fr; gap:0 7mm; }
+  .tag{ display:inline-block; font-family:"Ubuntu","DejaVu Sans",sans-serif; font-size:7pt; font-weight:700;
+        text-transform:uppercase; letter-spacing:.05em; padding:.6mm 1.6mm; border-radius:2px; }
+  .tag.strong{ background:#dff0e4; color:var(--good); }
+  .tag.ok{ background:#e6eef5; color:#1b4a75; }
+  .tag.no{ background:#f6e2dc; color:var(--warn); }
+  .footnote{ font-size:8pt; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:2mm; margin-top:4mm; }
+</style>
+</head>
+<body>
+
+<!-- ============================== COVER ============================== -->
+<div class="cover">
+  <div class="eyebrow">23CSE498 · Project Phase 2 · Panel Review 1 · Team 50</div>
+  <h1>Zero Trust-Enabled SDN Architecture for Secure and Intelligent Load Balancing in Edge Networks</h1>
+  <div class="sub">Complete panel briefing — what it is, what it proves, where it applies, and what to say</div>
+  <div class="rule"></div>
+
+  <div class="pitch">
+    <p><b>In one paragraph.</b> Every load balancer in production today — from a cloud
+    health-check pool to a Kubernetes scheduler to a 5G edge orchestrator — decides
+    where to send work based on what the servers <i>say</i> about themselves. That
+    assumption breaks the moment one of those servers is compromised, rented,
+    misconfigured, or simply selfish. We built an SDN control plane that instead
+    decides from what it <b>observes</b>: it continuously scores every edge server
+    on measured behaviour, and when a server misbehaves it revokes that server in
+    the data plane — as real OpenFlow rules, in under a second — while an
+    append-only cryptographic ledger records why. We then ran the same network,
+    same workload and same six attacks <i>with and without</i> that mechanism, and
+    measured the difference.</p>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="n">8 / 8</div><div class="l">Attacks detected and correctly familied</div></div>
+    <div class="kpi"><div class="n">8.2–11.3 s</div><div class="l">Onset&nbsp;→&nbsp;isolation, all four server attacks</div></div>
+    <div class="kpi"><div class="n">0 → 5</div><div class="l">Honest devices starved: ours vs. control arm</div></div>
+    <div class="kpi"><div class="n">4 / 4</div><div class="l">Non-functional requirements PASS</div></div>
+  </div>
+
+  <div class="meta">
+    <p><b>System under review.</b> An os-ken (Ryu-fork) OpenFlow 1.3 controller application,
+    its REST/SSE northbound API and live dashboard. Mininet, the node agents and the
+    IoT clients are the <i>test harness</i>, not the product.</p>
+    <p><b>Scale of the measured runs.</b> 1 core + 8 edge OpenVSwitch switches, 8 edge
+    servers, 40 IoT devices, 6 armed attack classes, ~300&nbsp;s per run, on a 4-core WSL2 box.</p>
+    <p><b>Evidence base.</b> 13 live runs; the headline pair is a controlled
+    baseline-vs-treatment comparison recorded 2026-09-05. 600-run seeded statistical
+    harness. 1&nbsp;004 automated tests (993 pass, 11 skipped, 0 fail).</p>
+    <p><b>Every number in this document is traceable</b> to <code>data/comparison/comparison.txt</code>,
+    <code>data/nfr_report.txt</code>, <code>data/raft_timeline.jsonl</code>, <code>docs/EVALUATION.md</code>
+    or <code>pytest -q</code>. Where a figure is an estimate, a simulation or an upper bound, it says so.</p>
+  </div>
+</div>
+
+<!-- ============================== TOC ============================== -->
+<section class="cont" style="page-break-before:always">
+  <h2><span class="num">§</span>Contents</h2>
+  <div class="toc">
+    <div><span class="n">1</span>The problem, in plain language<span class="sub">Why self-reported telemetry is a security hole</span></div>
+    <div><span class="n">2</span>What we built<span class="sub">The system in one page</span></div>
+    <div><span class="n">3</span>Architecture and modules<span class="sub">Five layers, one process</span></div>
+    <div><span class="n">4</span>How one task flows end to end<span class="sub">Admission → routing → trust → ledger</span></div>
+    <div><span class="n">5</span>The trust model and the anomaly gate<span class="sub">Including our strongest finding</span></div>
+    <div><span class="n">6</span>The six attacks and how each is caught</div>
+    <div><span class="n">7</span>Results: the controlled comparison<span class="sub">Baseline vs zero-trust, same everything else</span></div>
+    <div><span class="n">8</span>Testing, NFRs and consensus evidence</div>
+    <div><span class="n">9</span><b>Where this is used — real-world application domains</b></div>
+    <div><span class="n">10</span><b>Systems this maps onto</b><span class="sub">Kubernetes, service mesh, MEC, SD-WAN</span></div>
+    <div><span class="n">11</span><b>The business and operations case</b><span class="sub">Who benefits, and how it is bought</span></div>
+    <div><span class="n">12</span>What is genuinely novel here<span class="sub">Three findings that came from building it</span></div>
+    <div><span class="n">13</span>Engineering decisions we would defend</div>
+    <div><span class="n">14</span>The eleven-run story<span class="sub">What broke, and what each failure taught</span></div>
+    <div><span class="n">15</span>Limitations, stated before anyone asks</div>
+    <div><span class="n">16</span><b>Anticipated panel questions and answers</b></div>
+    <div><span class="n">17</span>What to demonstrate live, and the fallbacks</div>
+    <div><span class="n">18</span>Glossary and provenance of every number</div>
+  </div>
+
+  <div class="callout">
+    <div class="hd">How to use this document</div>
+    <p>Sections 1, 9, 10 and 11 are the <b>non-technical</b> half — the problem, the
+    application domains, the systems it maps onto, and the operational case. Sections
+    3–8 are the technical evidence. Section 16 is the rehearsal material: read it last
+    and read it twice. If you have ten minutes before you walk in, read the cover page,
+    §5's finding, §7's comparison table, and §15's limitations — that quartet is the
+    whole project.</p>
+  </div>
+</section>
+
+<!-- ============================== 1 ============================== -->
+<section>
+  <h2><span class="num">1</span>The problem, in plain language</h2>
+  <p class="lead">Edge computing pushes computation onto many small, physically exposed,
+  heterogeneously-owned machines: roadside cabinets, factory-floor servers, campus racks,
+  telco base-station sites. Three facts collide there.</p>
+
+  <h3>1.1 The perimeter model fails at the edge</h3>
+  <p>Classical network security draws a wall and trusts everything inside it. At the edge
+  there is no meaningful inside: a node can be physically opened with a screwdriver, rented
+  to a third party, misconfigured by a subcontractor, or simply be selfish. Classical load
+  balancers — round-robin, least-connections — assume every backend is honest about its
+  state and faithfully performs its work. <b>Neither assumption survives a single compromised
+  node</b>, and neither balancer has any mechanism that could ever notice.</p>
+
+  <h3>1.2 Self-reported telemetry is the industry norm, and it is trivially gameable</h3>
+  <p>This is the sharp end of the problem and it is worth saying slowly to the panel.
+  Almost every real orchestrator schedules on what nodes <i>claim</i> about themselves:
+  Kubernetes schedules on kubelet-reported resource metrics, cloud auto-scalers on
+  agent-reported utilisation, MEC orchestrators on advertised host capacity. A node that
+  under-reports its load therefore <b>attracts</b> traffic — which is exactly what an
+  attacker wants, whether the goal is to intercept data, degrade the service, or freeload
+  on someone else's SLA.</p>
+  <p>The attacker does not have to break any cryptography to do this. It just has to lie
+  in a field that everybody believes.</p>
+
+  <h3>1.3 "Zero Trust" is policy, not implementation, at the network layer</h3>
+  <p>NIST SP 800-207 says <i>never trust, always verify, continuously</i> — but it is an
+  architecture document, not a mechanism. Commercial Zero-Trust products overwhelmingly
+  verify <b>users and client devices at access time</b>. Verifying the <b>serving
+  infrastructure itself, continuously, with consequences in the routing path</b> is much
+  less settled, and that is the gap this project works in.</p>
+
+  <div class="callout">
+    <div class="hd">The honest problem statement — memorise this sentence</div>
+    <p>“Can an SDN control plane continuously verify edge servers using <b>observed</b>
+    rather than <b>claimed</b> behaviour, and enforce the verdict in the data plane fast
+    enough to matter?”</p>
+    <p style="margin-top:2mm">Our answer, at prototype scale: <b>yes</b> — with isolation
+    inside a 3-second bound — <b>and</b> with the important negative result that
+    score-based trust <i>alone</i> is provably insufficient to do it (§5).</p>
+  </div>
+
+  <h3>1.4 What we are careful <i>not</i> to claim</h3>
+  <ul>
+    <li>We do not solve Zero Trust for edge networks in general. We demonstrate one
+    mechanism — behavioural trust plus SDN enforcement — under six modelled attacks.</li>
+    <li>Real adversaries have a larger menu than we cover: collusion between nodes,
+    slow-and-low degradation, adaptive attackers who keep every signal just under
+    threshold, and attacks on the controller itself.</li>
+    <li>The evaluation is emulation (Mininet with real Open vSwitch and real OpenFlow),
+    not a field deployment. The correct phrase is <b>“demonstrated in an emulated
+    network”</b>, never “proven in production”.</li>
+  </ul>
+</section>
+
+<!-- ============================== 2 ============================== -->
+<section>
+  <h2><span class="num">2</span>What we built</h2>
+
+  <p class="lead">A trust-aware SDN load balancer for OpenFlow 1.3 networks. The controller
+  computes a per-node trust score from observed behaviour, ranks edge servers by an
+  EdgeScore, installs the routing decision as real flow rules, and quarantines misbehaving
+  nodes in the data plane. Every trust event is recorded in a tamper-evident SHA-256 +
+  Merkle ledger.</p>
+
+  <table>
+    <thead><tr><th style="width:24%">Component</th><th>What it does</th><th style="width:18%">State</th></tr></thead>
+    <tbody>
+      <tr><td><b>SDN controller</b><br><code>controller/trust_balancer.py</code></td>
+          <td>os-ken OpenFlow 1.3 application. Proxy-ARP, per-connection VIP rewrite, a five-band flow-priority table, cookie-scoped rule deletion, OpenFlow meters.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Dynamic trust model</b><br><code>trust_engine/trust_calculator.py</code></td>
+          <td>Normalised score <code>T = αR̄ + βB̄ + γH̄ − δĀ</code> with EMA decay λ=0.85, plus a separate load-bearing anomaly gate.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Secure load balancing</b><br><code>controller/edge_selector.py</code></td>
+          <td>EdgeScore with power-of-two-choices sampling, trust eligibility filter, ε-greedy exploration, UCB1 online weight tuning.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Attack classification</b><br><code>controller/attack_classifier.py</code></td>
+          <td>Six attacks plus bad-credentials devices, each <b>named</b> rather than merely flagged, by one pure function that the live controller and the offline scorer both call.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Device authentication</b><br><code>security/</code></td>
+          <td>PRESENT-80 lightweight challenge–response with single-use nonces (30 s TTL), extended with a provisioned source-IP pin so the fleet key authenticates the <i>device</i> and not merely possession of the key.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Trust ledger</b><br><code>blockchain/</code></td>
+          <td>SHA-256 hash chain with a Merkle root per block, batching 10 trust updates. Tamper-evident: an edit is localised to the seam, not merely reported as “chain invalid”. Re-verified independently inside the browser.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Live dashboard</b><br><code>dashboard/index.html</code></td>
+          <td>Topology, packet animation driven by real <code>OFPFlowStats</code> counters, flow tables, trust curves, nine metric-vs-time charts, per-cluster panel, tamper-testable ledger ribbon — all over server-sent events.</td>
+          <td><span class="tag strong">Functional</span></td></tr>
+      <tr><td><b>Control arm</b><br><code>base_model/</code></td>
+          <td>A complete no-zero-trust build of the same system — static routing, no quarantine, no admission control, no ledger — so the comparison is an experiment rather than a claim.</td>
+          <td><span class="tag ok">Integrated</span></td></tr>
+      <tr><td><b>Evaluation harness</b><br><code>evaluation/</code> (19 tools)</td>
+          <td>NFR pass/fail, per-interval metrics, confusion matrix with detection latency, service availability, scalability sweep to N=64, and a 600-run seeded statistical comparison against four baselines.</td>
+          <td><span class="tag ok">Integrated</span></td></tr>
+      <tr><td><b>RAFT consensus</b><br><code>blockchain/raft*.py</code></td>
+          <td>Leader election, log replication, real TCP transport, a 3-replica live cluster with a recorded leader kill. Safety properties proven by test (R-01–R-18). <b>Not wired into the live controller</b> — see §15.</td>
+          <td><span class="tag no">Partial</span></td></tr>
+      <tr><td><b>DDoS response</b></td>
+          <td>Flooding is detected and correctly classified; throttling is <b>not built</b> — it needs a per-client-IP OpenFlow path and today's machinery is per-edge-node. Deferred as real scope rather than half-built.</td>
+          <td><span class="tag no">Partial</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">Overall implementation status</div>
+    <p>Approximately <b>60% of the full project scope</b> is functional and measured, which
+    is the target for this review. The two partial items are named above and again in §15;
+    neither is hidden, and neither is on the critical path of the claim being made.</p>
+  </div>
+
+  <h3>2.1 One environment decision to state before you are asked</h3>
+  <p>The original deck specified the <b>Ryu</b> SDN framework. This project runs on
+  <b>os-ken</b>, the actively-maintained fork of Ryu, with the identical API
+  (<code>os_ken.*</code> instead of <code>ryu.*</code>). The reason is environmental and
+  hard: the target OS ships only Python 3.14, there is no Ryu package for it, and Ryu
+  cannot run above Python 3.13. There is no <code>ryu</code> dependency and no
+  <code>ryu-manager</code> anywhere in the repository. Present this as a documented
+  engineering decision, not as Ryu.</p>
+</section>
+
+<!-- ============================== 3 ============================== -->
+<section>
+  <h2><span class="num">3</span>Architecture and modules</h2>
+
+  <p class="lead">Five layers, one operating-system process. The controller is a single
+  os-ken OpenFlow 1.3 application; the trust engine and the ledger are libraries it calls
+  in-process, not network services.</p>
+
+  {{FIG:fig1_software_architecture.png}}
+  <figcaption><b>Figure 1.</b> Software architecture — the five layers and the modules in each.</figcaption>
+
+  <table>
+    <thead><tr><th style="width:22%">Layer</th><th style="width:40%">Modules</th><th>Responsibility</th></tr></thead>
+    <tbody>
+      <tr><td><b>L5</b> Presentation &amp; analysis</td><td><code>dashboard/</code>, <code>evaluation/</code> (19 tools), <code>base_model/</code></td><td>Live SSE panels; offline scoring; the no-zero-trust control arm</td></tr>
+      <tr><td><b>L4</b> Northbound API</td><td><code>controller/northbound_api.py</code></td><td>REST + Server-Sent Events on :8081, stdlib <code>ThreadingHTTPServer</code></td></tr>
+      <tr><td><b>L3</b> SDN control plane</td><td><code>trust_balancer</code>, <code>edge_selector</code>, <code>trust_state</code>, <code>flow_monitor</code>, <code>flood_detector</code>, <code>attack_classifier</code>, <code>event_bus</code>, <code>flow_stats</code></td><td>Routing decisions, detection, enforcement, event publication</td></tr>
+      <tr><td><b>L2</b> Trust, security &amp; consensus</td><td><code>trust_calculator</code>, <code>ai_optimizer</code>, <code>authenticator</code> + <code>present_cipher</code>, <code>ledger·block·merkle</code>, <code>raft*</code></td><td>Trust scoring, weight tuning, admission crypto, the hash-chained ledger</td></tr>
+      <tr><td><b>L1</b> Data plane</td><td><code>simulation/topology</code>, <code>node_agent</code>, <code>iot_client</code></td><td>1 core switch, 8 edge switches, 8 edge servers, 40 IoT devices</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">The design rule that runs through every layer</div>
+    <p>The <b>request path writes evidence</b> into <code>TrustState</code>; the
+    <b>1-second control loop reads decisions</b> out of it. The two never share a code
+    path. That separation is precisely what makes it possible to run the identical trust
+    code in the control arm with enforcement removed — which is what turns our headline
+    comparison into a controlled experiment rather than two different programs.</p>
+  </div>
+
+  <h3>3.1 Module interaction</h3>
+  {{FIG:fig2_module_interaction.png}}
+  <figcaption><b>Figure 2.</b> Component and call-flow view: request path, control loop, evidence path.</figcaption>
+  <ul>
+    <li><b>Request path (solid):</b> <code>IoTClient</code> → <code>NorthboundAPI</code> →
+      <code>PRESENT80Authenticator</code> + <code>IdentityBinding</code> →
+      <code>TrustBalancerApp</code> → <code>edge_selector</code> → OpenFlow flow-mod.</li>
+    <li><b>Control loop (dashed):</b> <code>flow_monitor</code> (1 s <code>/status</code>
+      poll) and <code>flood_detector</code> → anomaly <b>Ā</b> → <code>TrustState</code> →
+      <code>attack_classifier</code>.</li>
+    <li><b>Evidence path:</b> <code>TrustState</code> → <code>TrustCalculator.update()</code>
+      → <code>CommitBackend.commit()</code> → <code>Ledger</code> → <code>Block</code>;
+      every decision is also published exactly once through <code>EventBus</code>.</li>
+  </ul>
+  <p><code>attack_classifier</code> is a <b>pure function over an evidence window</b> — no
+  I/O, no locks, no state. The same implementation serves the live controller and the
+  offline scorer, so the live verdict and the marked confusion matrix cannot drift apart.</p>
+
+  <h3>3.2 The data model — and why there is no relational database</h3>
+  {{FIG:fig3_data_model_er.png}}
+  <figcaption><b>Figure 3.</b> Entity–relationship view of the persisted and in-memory state.</figcaption>
+
+  <table>
+    <thead><tr><th style="width:18%">Entity</th><th style="width:26%">Defined in</th><th style="width:30%">Key fields</th><th>Integrity mechanism</th></tr></thead>
+    <tbody>
+      <tr><td><code>Block</code></td><td><code>contracts/block_schema.py</code></td><td><code>index</code> PK, <code>previous_hash</code> → <code>Block.hash</code>, <code>merkle_root</code>, <code>proposer_id</code>, <code>raft_term</code></td><td>SHA-256 header hash + Merkle root; genesis timestamp pinned to 0.0</td></tr>
+      <tr><td><code>TrustUpdate</code></td><td><code>contracts/trust_update.py</code></td><td><code>device_id</code>, <code>edge_node_id</code>, <code>task_status</code>, <code>cpu_usage</code>, <code>reported_cpu</code>, <code>latency_ms</code>, <code>anomaly_flag</code></td><td>Merkle leaf; 10 batched per block</td></tr>
+      <tr><td><code>NodeState</code></td><td><code>controller/trust_state.py</code></td><td><code>node_id</code> PK, <code>trust</code>, <code>observed_load</code>, <code>inflight</code>, <code>anomaly</code>, <code>quarantined</code>, <code>probation</code></td><td>In-memory, invariant-checked: <code>sum(_inflight) == len(_dispatches)</code></td></tr>
+      <tr><td><code>IdentityBinding</code></td><td><code>security/authenticator.py</code></td><td><code>device_id</code> PK, <code>expected_ip</code> (roster), <code>session_ip</code> (TOFU)</td><td>Source-IP pin, checked on every admission</td></tr>
+      <tr><td><code>EMA state</code></td><td><code>trust_engine/trust_calculator.py</code></td><td><code>node_id</code> PK, R, B, H, A</td><td>λ = 0.85 exponential decay</td></tr>
+      <tr><td><code>Event</code></td><td><code>data/events.jsonl</code></td><td><code>type</code> (20 kinds), <code>ts</code>, <code>seq</code>, payload</td><td>Append-only; the durable evidence log every analysis tool reads</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">Why no RDBMS — this is a deliberate answer, not an omission</div>
+    <p>The <b>ledger is the store of record</b> for trust, and its integrity is
+    <b>cryptographic</b> (hash chain plus Merkle root, verified by
+    <code>GET /ledger/verify</code> and re-verified independently in the browser) rather
+    than referential. The JSONL recording is the durable evidence log that every analysis
+    tool reads back offline. Configuration is YAML. Adding a relational database would add
+    a second, weaker source of truth for data whose integrity requirement is tamper-evidence,
+    not joins.</p>
+  </div>
+
+  <h3>3.3 Northbound API</h3>
+  <table>
+    <thead><tr><th style="width:10%">Method</th><th style="width:22%">Path</th><th style="width:34%">Request</th><th>Response</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/auth/challenge</code></td><td><code>{device_id}</code></td><td><code>{nonce}</code> — 64-bit, TTL 30 s, single-use</td></tr>
+      <tr><td>POST</td><td><code>/auth/verify</code></td><td><code>{device_id, response}</code></td><td><code>{token}</code> · <b>403</b> + <code>auth_denied{kind}</code></td></tr>
+      <tr><td>POST</td><td><code>/report</code></td><td><code>{device_id, vip_src_port, status, latency_ms}</code></td><td>Task outcome; <code>client_ip</code> read from the socket, never from the body</td></tr>
+      <tr><td>POST</td><td><code>/register</code></td><td><code>{node_id, concurrency}</code></td><td>Agent start-up registration</td></tr>
+      <tr><td>POST</td><td><code>/topology/links</code></td><td><code>{links:[{a,b,delay_ms,bw_mbps}]}</code></td><td>The link parameters the harness actually built</td></tr>
+      <tr><td>GET</td><td><code>/trust/score</code></td><td><code>?node_id=</code></td><td><code>{node_id: score}</code> or all nodes</td></tr>
+      <tr><td>GET</td><td><code>/node/status</code></td><td><code>?node_id=</code></td><td><code>TrustState.snapshot()</code></td></tr>
+      <tr><td>GET</td><td><code>/ledger/verify</code></td><td>—</td><td><code>{valid, chain_length, max_updates_per_block}</code></td></tr>
+      <tr><td>GET</td><td><code>/api/events</code></td><td>—</td><td>Server-Sent Events stream (one-way, no third-party library)</td></tr>
+    </tbody>
+  </table>
+  <p><code>auth_denied</code> kinds are <code>ip_pin</code> · <code>bad_response</code> ·
+  <code>nonce_expired</code>. The distinction matters: <code>ip_pin</code> versus
+  <code>bad_response</code> is the <i>only</i> thing that separates a spoofer (correct key,
+  wrong source host) from a device that never held the key at all.</p>
+
+  <h3>3.4 Deployment</h3>
+  {{FIG:fig4_deployment.png}}
+  <figcaption><b>Figure 4.</b> Deployment view — process groups, ports and the VIP service model.</figcaption>
+  <table>
+    <thead><tr><th style="width:26%">Process group</th><th>What runs</th><th style="width:26%">Ports</th></tr></thead>
+    <tbody>
+      <tr><td>1 — SDN controller</td><td><code>python3 -m controller.osken_manager controller.trust_balancer</code></td><td>:6653 OpenFlow 1.3 · :8081 REST + SSE</td></tr>
+      <tr><td>2 — Mininet namespaces</td><td><code>s0</code> core OVS, <code>s1..s8</code> edge OVS, 8 × <code>node_agent.py</code>, 40 × <code>iot_client.py</code>, <code>cx</code> control host</td><td>VIP 10.0.99.254:9000</td></tr>
+      <tr><td>3 — RAFT cluster (standalone)</td><td>3 × <code>blockchain/raft_replica.py</code></td><td>RAFT :9001–9003 · control API :9101–9103</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Host: WSL2 · Ubuntu 26.04 · <b>Python 3.14</b> · 4 cores · apt packages only, no venv and no pip.</li>
+    <li><b>A client never addresses a server.</b> It connects to a virtual IP, and the
+    controller rewrites destination MAC and IP in the data plane. The routing decision is
+    therefore invisible to the client and — critically — <b>revocable</b> by the controller
+    at any moment, without the client's cooperation.</li>
+    <li>Start-up order is enforced by <code>scripts/preflight_live_run.py</code>: the
+    controller must be listening first, because a switch that connects to nothing installs
+    no rules and the run comes out silently empty.</li>
+  </ul>
+</section>
+
+<!-- ============================== 4 ============================== -->
+<section>
+  <h2><span class="num">4</span>How one task flows end to end</h2>
+  {{FIG:fig5_system_workflow.png}}
+  <figcaption><b>Figure 5.</b> One task from admission to ledger commit. Steps 1–4 happen once per device, 5–9 once per TCP connection, 10–14 once per task — roughly 20 times per second across the fleet.</figcaption>
+
+  <h3>Phase A — Admission (once per device)</h3>
+  <ol>
+    <li>The IoT device asks for a challenge: <code>POST /auth/challenge {device_id}</code>.</li>
+    <li>The controller returns a fresh 64-bit nonce with a 30-second TTL, single-use.</li>
+    <li>The device encrypts the nonce under the fleet PRESENT-80 key and returns it to
+    <code>POST /auth/verify</code>.</li>
+    <li>The controller checks the cryptographic response <b>and</b> the source IP against
+    the provisioned identity roster. Both must pass. A failure returns 403 <i>and</i>
+    publishes an <code>auth_denied</code> event with a structured reason — a refusal that
+    only the refused device knows about is invisible to any later analysis.</li>
+  </ol>
+
+  <h3>Phase B — Routing (once per TCP connection)</h3>
+  <ol start="5">
+    <li>The device opens a TCP connection to the virtual IP <code>10.0.99.254:9000</code>.</li>
+    <li>The edge switch has no matching flow rule, so it sends a PacketIn to the controller.</li>
+    <li><code>edge_selector</code> filters to eligible nodes (trust above the isolation
+    threshold, not quarantined), samples <b>two</b> of them, and scores each by EdgeScore
+    <code>w₁·T + w₂·(1−cpu) + w₃·(1−latency)</code>.</li>
+    <li>The winner is installed as a pair of flow rules that rewrite destination MAC and IP
+    to that specific server — and the reverse rules for the return path.</li>
+    <li>The dispatch is registered in <code>TrustState</code>, which now holds an
+    outstanding obligation against that server.</li>
+  </ol>
+
+  <h3>Phase C — Execution, verdict and record (once per task)</h3>
+  <ol start="10">
+    <li>The server does real bounded work (a hash loop) and answers.</li>
+    <li>The client reports the outcome — success or timeout, with its own measured latency
+    — to <code>POST /report</code>.</li>
+    <li><code>TrustState</code> resolves the dispatch, updates reliability R, latency B and
+    honesty H, and decays the anomaly term A.</li>
+    <li>In parallel, the 1-second control loop has been polling every server's
+    <code>/status</code>, comparing what it <i>claims</i> against what the controller
+    <i>observed</i>, and raising anomaly signals.</li>
+    <li>The trust update is batched (10 per block) and committed to the ledger; a block
+    carries a Merkle root over its updates and a SHA-256 hash over its header, chained to
+    its predecessor.</li>
+  </ol>
+
+  <h3>Phase D — Enforcement, when a node fails verification</h3>
+  <p>If trust falls below the isolation threshold, <b>or</b> the anomaly gate fires
+  regardless of trust, the controller: deletes every flow rule carrying that node's cookie
+  with a single cookie-matched <code>OFPFC_DELETE</code>; installs drop rules at
+  <code>PRIO_QUARANTINE_DROP</code>; and re-steers the in-flight dispatches onto surviving
+  nodes. Measured end to end at <b>25.6 ms mean, 47.3 ms maximum</b> against a 3-second
+  requirement.</p>
+
+  <div class="callout">
+    <div class="hd">Recovery is part of the design, not an afterthought</div>
+    <p>A quarantined node is not condemned forever. <b>Probation</b> — the half-open leg of
+    a circuit breaker — gives a node that was isolated on the <i>trust</i> rail only, and
+    whose anomaly score has since fallen below the gate, one trial task per interval. Trial
+    flows install <i>above</i> the quarantine drop rules, or they would be black-holed by
+    the very rules they exist to escape. In the run reported in §7 that produced 23
+    recoveries from 25 quarantines. §14 explains why this mechanism had to be invented.</p>
+  </div>
+</section>
+
+<!-- ============================== 5 ============================== -->
+<section>
+  <h2><span class="num">5</span>The trust model, the anomaly gate, and our strongest finding</h2>
+  {{FIG:fig6_zero_trust_flow.png}}
+  <figcaption><b>Figure 6.</b> The zero-trust verification flow: admission, continuous verification, the two independent isolation rails, and the recovery path.</figcaption>
+
+  <h3>5.1 The formula</h3>
+  <div class="formula">T = α·R̄ + β·B̄ + γ·H̄ − δ·Ā &nbsp;&nbsp;&nbsp; α=0.35 · β=0.25 · γ=0.25 · δ=0.15</div>
+  <table>
+    <thead><tr><th style="width:12%">Term</th><th style="width:26%">Name</th><th>Measured from</th></tr></thead>
+    <tbody>
+      <tr><td><b>R̄</b></td><td>Reliability</td><td>Completed versus failed task outcomes, exponentially weighted (λ = 0.85)</td></tr>
+      <tr><td><b>B̄</b></td><td>Behaviour / latency</td><td>Observed response time against the fleet's own median</td></tr>
+      <tr><td><b>H̄</b></td><td>Honesty</td><td>Deviation between the load the node <i>claims</i> and the duty cycle the controller <i>derives</i> from completion counts and reported busy time</td></tr>
+      <tr><td><b>Ā</b></td><td>Anomaly</td><td>The detector rail: latency tell, timeout-rate tell, honesty tell, flood tell</td></tr>
+    </tbody>
+  </table>
+  <p>Isolation threshold <b>0.30</b>. Anomaly gate <b>0.50</b>. Honesty deviation gate
+  <b>0.40</b>. Poll interval <b>1 s</b>.</p>
+
+  <div class="callout warn">
+    <div class="hd">Finding 1 — the published formula provably cannot isolate a competent liar</div>
+    <p>Replaying the real <code>TrustCalculator</code> against the project's own attack
+    scenarios shows that the original claim “Ā→1 implies T→0” is <b>arithmetically
+    unreachable</b>. Consider a node that lies about its load but still serves tasks
+    correctly. Its reliability is perfect and its behaviour term is near-perfect, so:</p>
+    <div class="formula" style="background:#fff">T = 0.35(1.0) + 0.25(0.96) + 0.25(0) − 0.15(1.0) = <b>0.44</b></div>
+    <p>δ can only ever subtract 0.15. <b>Dishonesty alone cannot push the score across an
+    isolation threshold of 0.30.</b> A perfectly detected, perfectly dishonest node stays
+    eligible for traffic forever.</p>
+    <p style="margin-top:2mm"><b>Consequence:</b> score-based trust is insufficient for
+    Zero Trust's continuous-verification requirement. An independent anomaly gate
+    (<code>Ā ≥ 0.5 ⇒ quarantine regardless of T</code>) is <b>necessary, not
+    belt-and-braces</b>. This is proven in code by
+    <code>test_f04_non_degrading_liar_needs_anomaly_gate</code>, which drives the real
+    calculator rather than a mock.</p>
+  </div>
+
+  <h3>5.2 Why this is a contribution rather than a bug report</h3>
+  <p>We kept the published formula byte-for-byte and added a documented gate beside it.
+  The alternative — quietly retuning the weights until the demo worked — would have
+  destroyed the finding and produced a system whose success nobody could explain. A
+  characterised failure mode with a tested fix is the strongest credibility signal
+  available to a project like this.</p>
+  <p><b>The live evidence that the two rails are both necessary</b> comes straight out of
+  the recorded run: the sybil and on-off attackers were caught <b>only</b> by the anomaly
+  gate (their trust never fell far enough), while the blackhole attacker was caught
+  <b>only</b> by the trust score and raised almost no anomaly signal at all. Neither rail
+  alone catches all four attackers. That single sentence is the justification for the
+  entire two-rail design.</p>
+
+  <div class="callout">
+    <div class="hd">Finding 2 — a Sybil lie is self-defeating when the telemetry is real</div>
+    <p>Because our node agents perform real bounded work, a liar that advertises “I am
+    idle” <b>attracts traffic it cannot actually serve</b>, genuinely degrades, times out,
+    and its trust collapses on its own. This emergent self-punishment exists <i>only</i>
+    because the testbed measures real load instead of injecting synthetic telemetry — which
+    most simulation papers in this space do. The pathological remaining case, a liar with
+    enough spare capacity never to degrade, is precisely the case Finding 1's gate covers.
+    The two findings together are a complete story.</p>
+  </div>
+
+  <h3>5.3 Load balancing: EdgeScore, and why power-of-two-choices</h3>
+  {{FIG:fig7_load_balancing_flow.png}}
+  <figcaption><b>Figure 7.</b> The load-balancing decision: eligibility filter, two-candidate sampling, EdgeScore ranking, flow-rule installation.</figcaption>
+  <p>The original selector was <b>argmax</b> — take the single best-scoring node. We
+  measured what that does as the fleet grows, driving the <i>real</i> selector inside a
+  queueing model, and found a genuine flaw:</p>
+  <ul>
+    <li>With load-only differentiation, argmax spreads traffic fine even at N=64 — it
+    degenerates to join-shortest-queue. So “many servers plus argmax” is <i>not</i> the
+    problem by itself.</li>
+    <li>Once <b>trust is coupled to selection</b>, argmax locks onto roughly <b>two nodes
+    regardless of N</b> — N=8 → 2 used, N=32 → 2 used, N=64 → 3 used. Positive feedback:
+    only completed tasks move trust, so the nodes already winning traffic are the only
+    ones that can build trust. Idle capacity grows linearly with fleet size.</li>
+    <li>Argmax then fails in <b>two different ways at the two ends of offered load</b>: at
+    low load it starves the fleet (Jain fairness 0.176, 13 of 16 nodes idle); at high load
+    almost nothing is starved but throughput saturates around 85 tasks/s from N=8 upward
+    and delivery ratio collapses from 99.2% to 10.5% at N=64.</li>
+    <li><b>Power-of-two-choices scales linearly</b>: 48 / 95 / 192 / 382 / 762 tasks/s at
+    N=4/8/16/32/64, delivery ratio 99.7–99.8%, delay flat at ~266 ms.</li>
+  </ul>
+  <p><b>Do not claim p2c as a CPU saving.</b> We measured that too, and it is not one: both
+  strategies cost the same 3/5/9/16/30 µs per decision, because the selector scores and
+  sorts every eligible node either way — the full ranking is returned as the decision's
+  explanation and published to the dashboard. That is a deliberate trade. Claim the p2c win
+  in fairness, throughput and delay; never in CPU.</p>
+</section>
+
+<!-- ============================== 6 ============================== -->
+<section>
+  <h2><span class="num">6</span>The six attacks and how each is caught</h2>
+  <p class="lead">All six have <b>delayed onset</b>. Before it arms, an attacker is
+  behaviourally identical to an honest node — so every attack has a clean baseline interval
+  before it, and the detectors have to notice a change rather than recognise a permanently
+  odd node.</p>
+
+  <table>
+    <thead><tr><th style="width:15%">Attack</th><th style="width:9%">Subject</th><th style="width:8%">Onset</th><th style="width:34%">What it does</th><th>How it is caught</th></tr></thead>
+    <tbody>
+      <tr><td><b>Sybil</b> (load lying)</td><td>srv3</td><td>20 s</td><td>Claims <code>cpu ≈ 0</code> while burning CPU, to attract traffic it cannot serve</td><td><b>Latency tell</b> — it answers <code>/status</code> slowly no matter how little task traffic it receives</td></tr>
+      <tr><td><b>Blackhole</b></td><td>srv6</td><td>30 s</td><td>Accepts tasks and completes none; still answers <code>/status</code> at full speed</td><td><b>Timeout-rate tell</b>, and the trust rail collapsing on reliability</td></tr>
+      <tr><td><b>Grayhole</b></td><td>srv1</td><td>40 s</td><td>Drops 50% of tasks — partial, so it stays plausible</td><td>Same timeout-rate tell, weaker per sample; separated from blackhole on the <b>median</b> rate over a window</td></tr>
+      <tr><td><b>On-off</b></td><td>srv8</td><td>50 s</td><td>Alternates good and bad phases (20 s period, 0.5 duty) to bleed trust back up between attacks</td><td>Latency tell plus <b>sustained intermittency</b> — the share of the active span spent quiet</td></tr>
+      <tr><td><b>DDoS / flood</b></td><td>iot37</td><td>60 s</td><td>3 workers at 0.25 s ≈ 12 Hz, 24× the honest per-device rate</td><td><code>flood_detector.py</code>, keyed on the <b>requesting client</b></td></tr>
+      <tr><td><b>Identity spoof</b></td><td>iot38</td><td>15 s</td><td>Holds the <b>real</b> fleet key and impersonates iot1</td><td>Source-IP pin against the provisioned roster → <code>auth_denied kind=ip_pin</code></td></tr>
+      <tr><td><i>Bad credentials</i></td><td>iot39, iot40</td><td>—</td><td>Wrong key entirely — the seventh ground-truth class</td><td>Refused at admission → <code>auth_denied kind=bad_response</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.1 Three design decisions worth defending out loud</h3>
+  <ol>
+    <li><b>The flood tell is keyed on the requesting client, never on the edge node it
+    lands on.</b> A server drowning under a flood is not lying about its load — it is
+    telling the truth about being overwhelmed. Blaming the node would repeat a mistake this
+    project has already made twice (§14).</li>
+    <li><b>We did not build a literal replay attack.</b> <code>verify_response</code> pops
+    the nonce on first use, so replay was already structurally impossible. Building a fake
+    version of an attack the system already defeats would have been dishonest. The real gap
+    was that the key is <b>fleet-wide</b>, so PRESENT-80 authenticates <i>possession of the
+    key</i>, not <i>the device</i> — which is exactly what source-IP pinning closes.</li>
+    <li><b><code>node_down</code> is deliberately not one of the six attacks.</b> Our
+    blackhole answers <code>/status</code> fine and drops only tasks, so “silent” is a
+    liveness failure, not an attack. Folding it in would inflate the very numbers the
+    classifier exists to measure honestly.</li>
+  </ol>
+
+  <h3>6.2 Naming an attack is harder than detecting it — and we say where the limits are</h3>
+  <p>Two of the six pairs are <b>not separable from a single detection cycle</b>, so the
+  classifier reads an evidence <i>window</i>:</p>
+  <ul>
+    <li><b>Blackhole vs grayhole</b> raise the same signal and differ only in
+    <b>magnitude</b>.</li>
+    <li><b>Sybil vs on-off</b> raise the same signals and differ only in
+    <b>intermittency</b>.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="hd">The tension we measured, and could not tune away</div>
+    <p><b>Containment quality and magnitude evidence are in direct opposition.</b> A
+    blackhole fails everything, so it is isolated fastest, so it produces the fewest
+    outcomes with which to characterise it. In one run srv6 produced 3 task outcomes in
+    312 s; the grayhole, which kept partly working, stayed in circulation and produced 24.
+    The faster the defence, the thinner the evidence for the <i>label</i>.</p>
+    <p style="margin-top:2mm">Our resolution: when no measured rate exists, the trust rail
+    establishes the <b>family</b> and the call degrades to the <i>weaker</i> claim
+    (<code>grayhole</code>), never the stronger one. <b>In every such case the attacker is
+    still caught and still quarantined — only the label degrades.</b> That is the honest
+    framing, and it is the one to use if a panellist asks about the two misclassifications
+    in §7.</p>
+  </div>
+</section>
+
+<!-- ============================== 7 ============================== -->
+<section>
+  <h2><span class="num">7</span>Results: the controlled comparison</h2>
+
+  <p class="lead">Two live runs on 2026-09-05: the same topology, the same 40 devices, the
+  same six attacks on the same schedule, launched by the same code. The arms differ in
+  exactly two things — <b>who decides where a connection goes</b>, and <b>what happens when
+  a node misbehaves</b>. This is the single most important slide in the review.</p>
+
+  {{FIG:fig8_results_comparison.png}}
+  <figcaption><b>Figure 8.</b> Baseline (no zero trust) versus the zero-trust treatment arm across the primary service, availability and security metrics.</figcaption>
+
+  <table>
+    <thead><tr><th style="width:38%">Metric</th><th class="num" style="width:18%">Baseline</th><th class="num" style="width:18%">Zero-trust</th><th>Reading</th></tr></thead>
+    <tbody>
+      <tr><td>Packet delivery ratio</td><td class="num">94.29 %</td><td class="num win">99.10 %</td><td>Fewer tasks lost outright</td></tr>
+      <tr><td>Mean per-device availability (honest devices)</td><td class="num">85.67 %</td><td class="num win">99.00 %</td><td>The service the honest fleet actually received</td></tr>
+      <tr><td>Honest devices served below 50 %</td><td class="num">5</td><td class="num win">0</td><td>Nobody is left starving behind a bad server</td></tr>
+      <tr><td>Tasks lost to timeout</td><td class="num">380</td><td class="num win">58</td><td>−85 %</td></tr>
+      <tr><td>p95 task latency</td><td class="num">260.0 ms</td><td class="num win">134.3 ms</td><td>The tail halves</td></tr>
+      <tr><td>Mean task latency</td><td class="num win">83.7 ms</td><td class="num lose">88.5 ms</td><td><b>We lose here by 4.8 ms</b> — see the note below</td></tr>
+      <tr><td>Throughput</td><td class="num">20.74 task/s</td><td class="num">20.66 task/s</td><td>Unchanged — the gain is not bought by serving less work</td></tr>
+      <tr><td>Jain fairness, honest servers only</td><td class="num">0.689</td><td class="num win">0.992</td><td>Near-perfect balance across the servers that deserve traffic</td></tr>
+      <tr><td>Requests routed to attacker nodes</td><td class="num">30.5 %</td><td class="num win">12.5 %</td><td>Less than half as much work handed to attackers</td></tr>
+      <tr><td>Anomalies raised / acted on</td><td class="num">502 / <b>0</b></td><td class="num">372 / <b>33</b></td><td><b>The control arm's cost:</b> it detects and can do nothing</td></tr>
+      <tr><td>Re-steers performed</td><td class="num">0</td><td class="num">38</td><td>In-flight work rescued off failing nodes</td></tr>
+      <tr><td>Identity spoof (iot38 → iot1)</td><td class="lose">ADMITTED at t=19.6 s</td><td class="win">REFUSED (<code>ip_pin</code>)</td><td>The attacker ran 130 tasks under a stolen identity in the baseline</td></tr>
+      <tr><td>Wrong-key devices admitted</td><td class="num">2</td><td class="num win">0</td><td>No admission control at all in the baseline</td></tr>
+      <tr><td>Trust blocks committed</td><td class="num">— (no ledger)</td><td class="num">649</td><td>The audit trail</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <div class="hd">State the loss before a panellist finds it</div>
+    <p><b>Mean latency is 4.8 ms worse in our system.</b> That is the trade, and it is a
+    good one: we pay a small cost in the mean to remove the long tail. p95 halves, timeouts
+    fall 85%, and throughput is unchanged — so the improvement is not bought by quietly
+    serving less work. Volunteering this number is worth more than the 4.8 ms costs.</p>
+  </div>
+
+  <h3>7.1 Containment: time from attack onset to isolation</h3>
+  <table>
+    <thead><tr><th style="width:14%">Server</th><th style="width:24%">Attack</th><th class="num" style="width:20%">Baseline</th><th class="num" style="width:20%">Zero-trust</th><th>Requirement</th></tr></thead>
+    <tbody>
+      <tr><td>srv3</td><td>Sybil</td><td class="num lose">never</td><td class="num win">8.2 s</td><td rowspan="4" style="vertical-align:middle">Isolation re-dispatch NFR &lt; 3 000 ms once the decision is made; detection itself is bounded by the 1 s poll interval</td></tr>
+      <tr><td>srv6</td><td>Blackhole</td><td class="num lose">never</td><td class="num win">8.7 s</td></tr>
+      <tr><td>srv8</td><td>On-off</td><td class="num lose">never</td><td class="num win">9.9 s</td></tr>
+      <tr><td>srv1</td><td>Grayhole</td><td class="num lose">never</td><td class="num win">11.3 s</td></tr>
+    </tbody>
+  </table>
+  <p><b>“Never” is not zero — it is the absence of a mechanism.</b> The baseline has no
+  quarantine path, no re-steer path, no admission control and no ledger. It raised 502
+  anomalies and acted on none of them. That is precisely the cost the experiment was built
+  to price.</p>
+
+  <h3>7.2 Trust separation per server</h3>
+  {{FIG:fig10_trust_per_server.png}}
+  <figcaption><b>Figure 10.</b> Trust trajectories per server in both arms. Read per node, never as a fleet mean — averaging a blackhole's collapse against seven healthy servers produces a gentle dip and hides the finding entirely.</figcaption>
+  <p>Two trajectories in the baseline arm are the paper's figures. The blackhole srv6
+  flatlines at trust <b>0.000 for 263 seconds</b> and is <i>never</i> isolated, because
+  nothing in the control arm acts on trust. And the on-off attacker srv8 — mean trust
+  0.677 — <b>never crosses the isolation threshold at all</b>, which is the on-off attack
+  working exactly as the literature says it does. Meanwhile <b>zero</b> honest servers were
+  falsely accused in either arm.</p>
+
+  <h3>7.3 Load distribution</h3>
+  {{FIG:fig11_load_share.png}}
+  <figcaption><b>Figure 11.</b> Share of routed requests per server in both arms.</figcaption>
+  <div class="callout">
+    <div class="hd">A metric that lies, and how we handle it</div>
+    <p>Jain fairness over the <b>whole roster</b> is 0.622 baseline versus 0.627 zero-trust
+    — almost identical, and reported alone it reads as “the load balancer made no
+    difference”. The two arms are uneven <b>for opposite reasons</b>: the baseline is
+    uneven because a flooding client is statically pinned to one server and nothing can
+    move it; our arm is uneven because it <i>deliberately starved four attackers</i>.
+    Restricted to the honest servers the figure is <b>0.689 versus 0.992</b>. We therefore
+    always report two populations — full roster and honest-only — plus the attacker share.
+    If a panellist quotes the whole-roster number back at you, this is the answer.</p>
+  </div>
+
+  <h3>7.4 The statistical evidence — 600 seeded runs</h3>
+  <p>Live runs give fidelity; they do not give confidence intervals. A separate harness
+  drives the <b>real</b> selector, the <b>real</b> trust calculator and both shipped
+  detectors inside a seeded discrete-event simulation: 5 strategies × 4 scenarios × 30
+  seeds = <b>600 runs</b>, paired on common random numbers, tested with the paired
+  <b>Wilcoxon signed-rank</b> test and corrected with <b>Holm–Bonferroni</b>.</p>
+  <table>
+    <thead><tr><th style="width:22%">Scenario</th><th class="num">vs least-conn</th><th class="num">vs random</th><th class="num">vs round-robin</th><th class="num">vs no-trust (ablation)</th></tr></thead>
+    <tbody>
+      <tr><td>Sybil attacker</td><td class="num win">−64.6 %</td><td class="num win">−29.6 %</td><td class="num win">−19.7 %</td><td class="num win">−15.1 %</td></tr>
+      <tr><td>Dropping attacker</td><td class="num win">−61.8 %</td><td class="num win">−49.4 %</td><td class="num win">−48.7 %</td><td class="num win">−25.3 %</td></tr>
+      <tr><td>Both attackers</td><td class="num win">−68.8 %</td><td class="num win">−52.3 %</td><td class="num win">−48.5 %</td><td class="num win">−29.8 %</td></tr>
+    </tbody>
+  </table>
+  <p>Reduction in SLO-violation rate, all at p<sub>adj</sub> = 7.45×10⁻⁹ with rank-biserial
+  r = +1.00 — meaning our system won in <b>30 of 30 paired seeds</b>. Failure rate falls
+  97.7% against the strongest baseline and 99.2–99.3% against the trust-blind ones.
+  <b>14 of 16 comparisons significantly favour the system.</b></p>
+  <p><b>The <code>no_trust</code> column is the one that matters.</b> It is the identical
+  selector with the trust term removed and quarantine disabled — so it attributes the
+  improvement to <i>trust</i>, not to load-aware routing in general.</p>
+  <div class="callout warn">
+    <div class="hd">The two comparisons we lose, and why we report them</div>
+    <p>Both losses are in the <b>clean</b> scenario, with no attacker present: we are 10.7%
+    worse than round-robin and 4.8% worse than random. That is a genuine cost of a
+    load-reactive strategy and we report it as one. The cause is <b>not</b> the trust term —
+    it is staleness in the load signal that <i>every</i> load-reactive strategy reads. A
+    poll-interval sweep isolates it exactly: halving the poll interval from 1.00 s to 0.50 s
+    closes most of the gap. Being able to name the mechanism behind your own loss is worth
+    more in a viva than not having the loss.</p>
+  </div>
+</section>
+
+<!-- ============================== 8 ============================== -->
+<section>
+  <h2><span class="num">8</span>Testing, NFRs and consensus evidence</h2>
+
+  <h3>8.1 Non-functional requirements</h3>
+  <table>
+    <thead><tr><th style="width:30%">NFR</th><th style="width:14%">Target</th><th>Measured</th><th style="width:11%">Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Routing decision (packet-in → flow-mod)</td><td>&lt; 200 ms</td><td>mean <b>0.53 ms</b> · p95 0.71 ms · max 6.64 ms (n = 6 611)</td><td class="win">PASS</td></tr>
+      <tr><td>Isolation (quarantine → re-dispatch)</td><td>&lt; 3 000 ms</td><td>mean <b>25.6 ms</b> · max 47.3 ms (n = 38)</td><td class="win">PASS</td></tr>
+      <tr><td>Blockchain overhead</td><td>&lt; 15 %</td><td><b>0.049 %</b> — commit mean 0.437 ms over 649 blocks, against 88.5 ms mean end-to-end task latency</td><td class="win">PASS</td></tr>
+      <tr><td>RAFT commit latency</td><td>&lt; 500 ms</td><td>mean <b>4.3–4.8 ms</b>; failover 0.21 s (standalone 3-replica cluster)</td><td class="win">PASS</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <div class="hd">The denominator trap — know this one, it is a classic viva question</div>
+    <p>An early version of our own harness divided ledger commit cost by the handling time
+    of a single uncommitted request (tens of microseconds) and reported a 0.424 ms commit
+    as <b>2 155 % overhead</b>. The correct framing amortises the commit over the batch
+    size and divides by <b>end-to-end task latency</b> — the thing the user actually waits
+    for — which gives 0.049 %. If someone challenges the “blockchain overhead” number, this
+    is the reasoning to give.</p>
+  </div>
+
+  <h3>8.2 Test suite</h3>
+  {{FIG:fig9_testing_evidence.png}}
+  <figcaption><b>Figure 9.</b> Test evidence: composition of the suite and what each family pins.</figcaption>
+  <p><b>1 004 tests collected — 993 passing, 11 skipped, 0 failing</b>, in 50.7 s. Three
+  families:</p>
+  <ul>
+    <li><b>Unit</b> — pure logic, no I/O: the classifier, the trust formula, the Merkle
+    tree, the cipher against published test vectors.</li>
+    <li><b>Integration</b> — real sockets, real processes, real <code>SIGTERM</code>: the
+    spoof is verified end-to-end over a genuine socket against the real
+    <code>/auth/verify</code>, and the RAFT leader is genuinely killed.</li>
+    <li><b>Parity</b> — the control arm must match the treatment arm key for key, so the
+    comparison in §7 stays controlled.</li>
+  </ul>
+  <p>A category worth mentioning: tests that exist so that a <i>future</i> change fails
+  loudly. Examples include a test asserting that our re-steer attribution rule reads no
+  clock (so nobody can slip a tunable threshold into it), a three-way pin on the quarantine
+  drop-rule priority, and a preflight assertion that the identity roster is actually
+  <b>populated</b> rather than merely harmless — which caught a fix that would otherwise
+  have shipped into a live run silently doing nothing.</p>
+
+  <h3>8.3 Consensus: what RAFT does and does not do here</h3>
+  {{FIG:fig12_raft_failover.png}}
+  <figcaption><b>Figure 12.</b> A recorded 45-second RAFT run: role lanes, term, chain length and commit latency, with the leader killed at 15 s and restarted at 30 s.</figcaption>
+  <p>Three real processes over real TCP, under continuous load, with the leader killed by a
+  genuine signal:</p>
+  <ul>
+    <li>Leader failover in <b>0.21 s</b>; 850 of 853 commits succeeded (<b>99.6 %</b>).</li>
+    <li>The outage is <b>three refused attempts</b> — visible only because the client never
+    pauses for the kill.</li>
+    <li>A degraded 2-of-3 cluster costs more per commit (2.23 → 3.08 → 2.58 ms after
+    rejoin). We report the observation; we have <b>not</b> established the cause and do not
+    claim one.</li>
+    <li>A restarted replica rejoins with an empty log and is caught up by the leader —
+    making the crash-fault limitation visible rather than merely documented.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="hd">Say this plainly, before you are asked</div>
+    <p>“RAFT is implemented, unit-proven for safety, and demonstrated live over real TCP
+    with a leader kill. <b>The controller still commits single-replica</b>, and the swap is
+    deliberately deferred.” Every block in every live run carries
+    <code>raft_term = 0</code> and <code>proposer_id = "controller"</code>. Three concrete
+    runtime blockers stand in the way, all identified: nothing drives the election tick
+    inside the controller; <code>commit()</code> would block an OpenFlow handler thread for
+    up to 2 s; and a <code>None</code> return is currently discarded silently, which would
+    lose trust updates on every leadership change. <b>Never let a slide imply the live runs
+    are RAFT-backed.</b></p>
+  </div>
+</section>
+
+<!-- ============================== 9 ============================== -->
+<section>
+  <h2><span class="num">9</span>Where this is used — real-world application domains</h2>
+  <p class="lead">This is the section panellists most often push on, and the trap is
+  breadth. A report that maps its architecture onto <b>one</b> real domain reads as
+  engineering; one that lists eight domains reads as marketing. Lead with MEC, keep
+  industrial IoT as the secondary, and have the rest ready only if asked.</p>
+
+  <h3>9.1 Strong fit — claim these</h3>
+
+  <h4>① Multi-access Edge Computing (MEC) and the 5G telco edge <span class="tag strong">primary</span></h4>
+  <p>Telecom operators run third-party workloads on distributed edge sites — thousands of
+  small compute nodes at base stations, central offices and aggregation points. The
+  operator genuinely cannot fully trust every node in that estate: some are in unmanned
+  cabinets, some run tenant software, some are maintained by contractors. And MEC
+  orchestrators route work by <b>self-reported host load</b> today. The mapping onto our
+  architecture is almost one-to-one:</p>
+  <table>
+    <thead><tr><th style="width:32%">Our component</th><th>MEC equivalent</th></tr></thead>
+    <tbody>
+      <tr><td>SDN controller</td><td>MEC orchestrator / MEC platform manager</td></tr>
+      <tr><td>Edge servers (srv1..srv8)</td><td>MEC hosts running tenant applications</td></tr>
+      <tr><td>IoT clients (iot1..iot40)</td><td>User equipment and connected devices</td></tr>
+      <tr><td>VIP + flow rewrite</td><td>Service-level traffic steering at the user-plane function</td></tr>
+      <tr><td>Trust score + anomaly gate</td><td>Continuous host attestation with routing consequences</td></tr>
+      <tr><td>Tamper-evident ledger</td><td>Auditable record for multi-tenant SLA disputes</td></tr>
+    </tbody>
+  </table>
+  <p><b>The pitch sentence:</b> “An operator can host a tenant's workload on a node it does
+  not fully control, and still bound its exposure: if the node starts lying or dropping,
+  traffic is revoked from it in under a second and there is a signed record of why.”</p>
+
+  <h4>② Industrial IoT and the factory / OT edge <span class="tag strong">secondary</span></h4>
+  <p>Operational-technology networks increasingly use SDN-style central control. The
+  scenario that keeps OT engineers awake is not a machine that stops — that is obvious and
+  alarms fire — it is <b>a controller that keeps “working” while lying about its state</b>,
+  because every safety and scheduling decision downstream is computed from that state. Our
+  anomaly gate is aimed at exactly that case: quarantine on <i>behaviour</i>, not merely on
+  a score. And the sub-3-second bounded isolation is the kind of number OT people ask for
+  first, because it maps onto a process safety time.</p>
+
+  <h4>③ Smart campus and smart-city gateways</h4>
+  <p>Many small operators, physically accessible cabinets on poles and in kerbside
+  enclosures, and no dedicated security operations centre watching them. The value here is
+  <b>unstaffed autonomous operation</b>: a control plane that detects, contains and
+  re-steers by itself at three in the morning, and leaves an audit trail a municipal
+  operator can hand to an auditor afterwards. This is the single clearest “nobody is
+  watching” story in the list.</p>
+
+  <h3>9.2 Plausible fit — mention only with the caveat attached</h3>
+  <table>
+    <thead><tr><th style="width:30%">Domain</th><th style="width:36%">Why it fits</th><th>The caveat you must state</th></tr></thead>
+    <tbody>
+      <tr><td><b>Federated / community edge</b> (volunteer nodes, CDN-lite)</td><td>Nodes owned by strangers is exactly where behavioural trust matters most</td><td>The controller itself becomes the trust bottleneck — who runs it? We do not address that.</td></tr>
+      <tr><td><b>Tactical / disconnected operations</b></td><td>Continuous verification with local enforcement suits contested environments; replicated state suits partition tolerance</td><td>Our ledger is <b>crash-fault</b> tolerant, not Byzantine. In a contested environment that distinction matters more, not less.</td></tr>
+      <tr><td><b>Multi-tenant private edge clouds</b></td><td>An operator hosting several tenants' workloads on shared hardware needs evidence-based, not declaration-based, placement</td><td>Requires per-tenant identity provisioning and an OpenFlow-capable or programmable data plane.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>9.3 Weak fit — <b>do not claim these</b>, and say why if asked</h3>
+  <table>
+    <thead><tr><th style="width:32%">Domain</th><th>Why we do not claim it</th></tr></thead>
+    <tbody>
+      <tr><td><b>Public cloud data centres</b></td><td>Hyperscalers own and trust their own hardware, run attested boot, and have vastly richer telemetry than a 1 Hz status poll. The problem we solve is largely not their problem.</td></tr>
+      <tr><td><b>General internet / inter-domain routing</b></td><td>There is no single control plane. Trust between operators is a contractual and reputational problem, not an SDN one.</td></tr>
+      <tr><td><b>Consumer IoT security as a product</b></td><td>“Secure your smart home with blockchain” is exactly the buzzword framing this project is structured to avoid. Our mechanisms target infrastructure operators, not consumers. Stretching it there would invite hostile questions and deserve them.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">If you are asked for one sentence on applicability</div>
+    <p>“Anywhere a central control plane must place work on compute nodes it does not fully
+    control, and where the consequence of trusting a node's self-report is a security
+    problem rather than merely an efficiency one. That is MEC and the telco edge first,
+    industrial and municipal edge second — and explicitly <i>not</i> the public cloud, where
+    the operator already owns the hardware.”</p>
+  </div>
+</section>
+
+<!-- ============================== 10 ============================== -->
+<section>
+  <h2><span class="num">10</span>Systems this maps onto</h2>
+  <p class="lead">A different and very effective way to answer “where is this used?” is to
+  name the systems a panellist already knows, and say precisely what this mechanism would
+  change about each. These are <b>architectural analogies</b>, not integrations we built —
+  say so, and the analogy becomes a strength rather than an overclaim.</p>
+
+  <table>
+    <thead><tr><th style="width:22%">Existing system</th><th style="width:34%">How it decides today</th><th>What this project would change</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Kubernetes scheduler / autoscaler</b></td>
+        <td>Places pods using resource metrics <b>reported by the kubelet on each node</b>, plus liveness and readiness probes that the node itself answers.</td>
+        <td>A node score derived from <i>observed task outcomes</i> rather than self-reports; <code>cordon</code>/<code>taint</code> becomes the equivalent of our quarantine, applied automatically on behavioural anomaly rather than on a failed binary probe.</td>
+      </tr>
+      <tr>
+        <td><b>Service mesh outlier detection</b> (Envoy / Istio)</td>
+        <td>Ejects a host from the load-balancing pool after consecutive 5xx responses or gateway failures.</td>
+        <td>Outlier detection is blind to our central case: a host that returns perfectly good <code>200</code>s while lying about capacity is <b>invisible</b> to it. Our honesty term and latency tell are exactly the signal it lacks.</td>
+      </tr>
+      <tr>
+        <td><b>Cloud load-balancer health checks</b> (ELB, GCLB, HAProxy)</td>
+        <td>A periodic probe with a binary pass/fail verdict, answered by the backend.</td>
+        <td>Replaces a binary self-answered probe with a <b>graded, continuously-updated score computed by the balancer from evidence the backend cannot fabricate</b>, plus an independent gate that can act when the score cannot.</td>
+      </tr>
+      <tr>
+        <td><b>ETSI MEC orchestrator</b></td>
+        <td>Places applications using advertised host capacity and declared capabilities.</td>
+        <td>Trust-weighted placement, and — the part that matters — <b>revocation in the data plane</b> rather than only at the next placement decision.</td>
+      </tr>
+      <tr>
+        <td><b>SD-WAN controller</b></td>
+        <td>Chooses paths using measured link SLA — loss, latency, jitter — that the controller observes itself.</td>
+        <td>This is the closest existing analogue, and a useful one: SD-WAN already trusts <i>measurement over declaration</i>, but applies it to <b>links</b>. We apply the same discipline to <b>compute nodes</b>, where declaration is still the norm.</td>
+      </tr>
+      <tr>
+        <td><b>CDN / edge cache request routing</b></td>
+        <td>Steers by geography, capacity declarations and health signals from the edge PoP.</td>
+        <td>For federated or partner-operated PoPs, behavioural trust bounds what a misbehaving PoP can absorb before it is cut out. (Caveat from §9.2 applies.)</td>
+      </tr>
+      <tr>
+        <td><b>NIST SP 800-207 Zero Trust Architecture</b></td>
+        <td>Defines a Policy Decision Point and Policy Enforcement Point, and mandates continuous verification — but leaves the mechanism open.</td>
+        <td>Our controller <i>is</i> a PDP and the OpenFlow rules <i>are</i> the PEP. The contribution is applying the model to <b>the serving infrastructure</b>, where most implementations apply it only to users and client devices.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">The strongest one-line framing in this whole document</div>
+    <p>“SD-WAN already decided that <b>measurement beats declaration</b> — for network
+    links. Nobody has finished doing the same thing for compute nodes. That is the gap this
+    project works in.”</p>
+  </div>
+
+  <h3>10.1 What a real deployment would require</h3>
+  <p>If a panellist asks “could you actually deploy this tomorrow?”, the honest answer is
+  “not tomorrow, and here is exactly what stands between”:</p>
+  <ol>
+    <li>An <b>OpenFlow 1.3-capable or otherwise programmable data plane</b> (P4, eBPF/XDP,
+    or a smart NIC). The enforcement mechanism is what makes the verdict binding; without
+    it the trust score is advisory only.</li>
+    <li><b>Per-device identity provisioning</b> — our source-IP pin is derived from a
+    provisioned roster. Real deployments would want per-device keys and a 128-bit primitive
+    behind the same <code>Authenticator</code> seam (§13).</li>
+    <li><b>Controller redundancy.</b> The controller is currently a trusted single point.
+    Wiring in the RAFT cluster we already built is the first step; full controller
+    distribution is future work.</li>
+    <li><b>Multi-host validation.</b> Everything measured here runs on one machine — real
+    processes and real sockets, but not real network separation.</li>
+  </ol>
+</section>
+
+<!-- ============================== 11 ============================== -->
+<section>
+  <h2><span class="num">11</span>The business and operations case</h2>
+  <p class="lead">Panels frequently ask a version of “so what?” that is not technical. This
+  section is the answer in the language of whoever pays for the system.</p>
+
+  <h3>11.1 What the operator actually gains</h3>
+  <table>
+    <thead><tr><th style="width:26%">Concern</th><th style="width:36%">Without this system</th><th>With it</th></tr></thead>
+    <tbody>
+      <tr><td><b>Mean time to contain</b></td><td>A misbehaving edge node is contained when a human notices — hours, if there is a SOC; never, if there is not. Our control arm measured <i>never</i>, across a full run, with 502 anomalies visible the whole time.</td><td><b>8–12 seconds</b>, unattended, for all four server-side attacks.</td></tr>
+      <tr><td><b>Blast radius</b></td><td>Five of forty honest devices dropped below 50% service because they were statically bound to a bad server and nothing could move them.</td><td><b>Zero</b> devices below 50%. Work is re-steered off a failing node while still in flight.</td></tr>
+      <tr><td><b>Wasted capacity</b></td><td>30.5% of all requests were handed to attacker nodes.</td><td>12.5%, and falling as the detectors converge.</td></tr>
+      <tr><td><b>Audit and dispute</b></td><td>No record of why anything was routed anywhere.</td><td>A hash-chained, Merkle-proven ledger of every trust decision — 649 blocks in a 313-second run — that a third party can verify without trusting our controller's own claim that it is valid.</td></tr>
+      <tr><td><b>Staffing</b></td><td>Containment requires someone watching.</td><td>Containment is autonomous; humans read the ledger afterwards.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>11.2 What it costs</h3>
+  <ul>
+    <li><b>4.8 ms of mean latency</b> — measured, stated in §7, and bought back several
+    times over in the tail.</li>
+    <li><b>0.049% ledger overhead</b> against end-to-end task latency.</li>
+    <li><b>Sub-millisecond routing decisions</b> (0.53 ms mean) — the control plane is not
+    the bottleneck.</li>
+    <li><b>A programmable data plane</b>, which most greenfield edge deployments already
+    have and most brownfield ones do not.</li>
+  </ul>
+
+  <h3>11.3 Why the ledger is not decoration</h3>
+  <p>This is worth rehearsing because “blockchain” invites cynicism, and the cynicism is
+  usually earned. Our defensible position, stated in one paragraph:</p>
+  <div class="callout">
+    <p>The ledger provides <b>tamper-evidence</b> — hash-chained, Merkle-proven history, so
+    retroactive falsification of trust records is <i>detectable and localisable to the
+    seam</i> — and <b>availability</b> through replication, within a controller cluster
+    that is itself inside the trusted computing base. It is <b>not</b> a permissionless
+    blockchain, it does <b>not</b> tolerate Byzantine replicas, and it does not need to:
+    our threat model puts malicious behaviour at the <b>edge nodes</b>, not inside the
+    controller cluster.</p>
+    <p style="margin-top:2mm">And when the inevitable follow-up comes — <i>“then why not
+    just use a signed append-only log?”</i> — the honest answer is: <b>a hash-chained
+    Merkle log replicated by RAFT essentially is one</b>, structured for per-record proofs
+    and batch commits. “Private blockchain” is the deck's name for it. Conceding that
+    gracefully costs nothing; defending the buzzword costs credibility.</p>
+  </div>
+</section>
+
+<!-- ============================== 12 ============================== -->
+<section>
+  <h2><span class="num">12</span>What is genuinely novel here</h2>
+  <p class="lead">Three findings, none of which came from the literature review. All three
+  came from building the thing and measuring it.</p>
+
+  <h3>Finding 1 — the published trust formula cannot isolate a competent liar</h3>
+  <p>Covered in full in §5. The short version: a node that lies about its load while
+  serving correctly floors at <b>T = 0.44</b> against an isolation threshold of 0.30, so a
+  perfectly-detected liar remains eligible for traffic forever. δ can subtract at most
+  0.15. The consequence is that an independent anomaly gate is <b>necessary</b>, not
+  optional — and the live run confirms it, with two attackers caught only by the gate and
+  one caught only by the score.</p>
+  <p><b>Why it is a contribution:</b> we found the published formula insufficient,
+  characterised exactly why, kept the formula intact, and added a documented gate. Quietly
+  patching the weights would have destroyed the result.</p>
+
+  <h3>Finding 2 — a Sybil lie is self-defeating when telemetry is real</h3>
+  <p>Because the node agents perform real bounded work, a liar advertising “I am idle”
+  attracts traffic it cannot serve, degrades, times out, and its trust collapses on its own.
+  This emergent self-punishment <b>cannot be produced by injected telemetry</b> — and
+  injected telemetry is what most simulation papers in this space use. The remaining
+  pathological case (a liar with spare capacity that never degrades) is precisely the case
+  Finding 1's gate covers.</p>
+
+  <h3>Finding 3 — honest packet visualisation in SDN is structurally hard</h3>
+  <p>Once a flow rule is installed, matching packets are forwarded entirely in the data
+  plane and <b>never reach the controller again</b>. A controller therefore <i>cannot</i>
+  honestly animate per-packet flow from PacketIn events. Our dashboard drives its animation
+  from 1 Hz <code>OFPFlowStatsRequest</code> counter deltas and prints the measured
+  packets-per-second on screen so the claim is checkable. It is a small but real
+  observation about SDN observability — and it is the confident answer to “why doesn't your
+  dashboard show every packet?”</p>
+
+  <h3>Supporting contributions</h3>
+  <ul>
+    <li><b>Trust decisions enforced in the data plane</b> — VIP rewrite plus cookie-scoped
+    rule deletion on trust collapse, inside a bounded isolation NFR — rather than simulated
+    in a scheduler.</li>
+    <li><b>“Unreachable equals anomalous”</b> — an unresponsive status endpoint is itself
+    an anomaly signal. This started as a bug caught by writing tests and became a design
+    rule, with a companion rule that a node which has <i>never</i> been seen is
+    <code>UNKNOWN</code>, not anomalous.</li>
+    <li><b>A control arm, not a claim.</b> Building a complete no-zero-trust version of the
+    same system, launched by the same code, is what makes §7 an experiment. Most projects at
+    this level compare against a description of a baseline rather than a running one.</li>
+    <li><b>Running a full SDN research stack on Python 3.14 / os-ken</b> with a
+    hand-written application manager, where the standard tooling does not exist.</li>
+  </ul>
+</section>
+
+<!-- ============================== 13 ============================== -->
+<section>
+  <h2><span class="num">13</span>Engineering decisions we would defend</h2>
+  <table>
+    <thead><tr><th style="width:26%">Decision</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><b>Power-of-two-choices over argmax</b></td><td>Argmax is winner-take-all and, once trust is coupled to selection, locks onto ~2 nodes regardless of fleet size. Measured to starve the fleet as N grows; p2c scales linearly. §5.3.</td></tr>
+      <tr><td><b>The anomaly gate is a separate gate, not a fourth term in the formula</b></td><td>A node that lies but serves well holds T ≈ 0.44 and never crosses the isolation line. Adding another weighted term cannot fix an arithmetic ceiling; a gate can. §5.1.</td></tr>
+      <tr><td><b>A detector with no recent evidence abstains rather than re-asserting its last verdict</b></td><td>Without this, quarantine became an <b>absorbing state</b>: isolation cuts traffic, traffic is the only thing that produces outcomes, so every detector went blind the instant it fired and the node could never be exonerated. §14.</td></tr>
+      <tr><td><b>The flood tell is keyed on the requesting client, never the edge node</b></td><td>A server drowning under a flood is telling the truth about being overwhelmed. Blaming it repeats a mistake this project already made twice.</td></tr>
+      <tr><td><b>No literal replay attack was built</b></td><td>Nonces are popped on first verification, so replay was already structurally impossible. Building a fake version of a defeated attack would have been dishonest. The real gap was fleet-wide key sharing, which source-IP pinning closes.</td></tr>
+      <tr><td><b>PRESENT-80 framed as lightweight-crypto engineering, not as strong security</b></td><td>80-bit keys are below modern margins and PRESENT-80 has published cryptanalysis. The honest framing: an ISO/IEC 29192-2 lightweight cipher appropriate to severely constrained devices, demonstrating the challenge–response <i>architecture</i>; a production deployment would drop a 128-bit primitive into the same <code>Authenticator</code> seam. <b>The seam already exists</b> — which converts a weakness into evidence of good architecture.</td></tr>
+      <tr><td><b>Re-steered work is not charged to the node that inherits it</b></td><td>When quarantine tears down in-flight TCP connections, the client blocks on a dead socket until its own timeout — and that timeout was being charged to whichever node inherited the dispatch. An honest node was quarantined twice for tasks it never received. The rule that fixed it <b>reads no clock</b>: a flow was re-steered or it was not, so there is no threshold anyone can quietly mistune later.</td></tr>
+      <tr><td><b>The scalability sweep is kept off the dashboard</b></td><td>On a page where every other panel reports the running system, a projection five fleet sizes past anything ever instantiated is not defensible under questioning. The sweep lives in CLI output, where it reads as the simulation result it is.</td></tr>
+      <tr><td><b>Structural typing for the seams</b></td><td><code>CommitBackend</code>, <code>Transport</code> and <code>Authenticator</code> are protocols: <code>RaftBackend</code> is a drop-in for <code>LocalLedgerBackend</code>, and the RAFT core did not change at all to gain a TCP transport.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================== 14 ============================== -->
+<section>
+  <h2><span class="num">14</span>The eleven-run story — what broke and what it taught</h2>
+  <p class="lead">This is optional material for the panel, but it is the most persuasive
+  thing in the project if the conversation turns to engineering process. The first
+  full-scale live run <b>collapsed completely</b>. Every subsequent fix came from measuring
+  a recording rather than from guessing.</p>
+
+  <table>
+    <thead><tr><th style="width:8%">Run</th><th style="width:32%">What went wrong</th><th>What it taught, and what shipped</th></tr></thead>
+    <tbody>
+      <tr><td><b>1</b></td><td>All 8 servers quarantined, 91.7% of routes denied. Looked like a total detection failure.</td><td>It was not. The three real attackers were caught <b>first and fast</b>; the honest nodes fell afterwards absorbing re-dispatched load. Two bookkeeping defects: a connectivity test ran before the agents started (so nodes were scored for not answering on processes that did not exist), and the controller's stale-dispatch reaper ran 15× longer than the client timeout, manufacturing phantom load.</td></tr>
+      <tr><td><b>2</b></td><td>Still collapsed, 76.1% denial.</td><td>Re-steering was resetting the client's abandonment timer, so dispatches were rejuvenated exactly when they needed to age out. And the controller was scoring nodes that had never existed — a node that has never answered is now <code>UNKNOWN</code>, not anomalous.</td></tr>
+      <tr><td><b>3</b></td><td>Clean start, then everything quarantined again — via a completely different cause.</td><td><b>Quarantine was an absorbing state.</b> Isolation cuts traffic; traffic is the only thing that produces task outcomes; so every outcome-reading detector went blind the instant it fired, and the system had no evidence-generating path out. Fixes: stale-evidence <b>abstention</b>, and <b>probation</b> — one trial task per interval for a node isolated on trust alone.</td></tr>
+      <tr><td><b>4</b></td><td>707 quarantines of a perfectly healthy server.</td><td>A dispatch-registration leak fabricated occupancy that never decremented. <b>Little's Law was the diagnostic</b>: predicted in-flight 0.01 against an actual counter of 2 proved the load was fabricated, not real — and killed a plausible wrong hypothesis that would have cost headroom and fixed nothing.</td></tr>
+      <tr><td><b>5</b></td><td>—</td><td>First clean full-scale run. Zero routing denials, 99.87% task success. Confirmed the fix on the same measurement that found the bug.</td></tr>
+      <tr><td><b>7</b></td><td>48% honest availability, 22.5% total outage.</td><td>The honesty check's <b>fallback path</b> produced <b>100% of the false quarantines</b> — the fixed path produced none. The lesson that generalises: <b>replaying a fixed recording measures only first-order effects.</b> A feedback loop is invisible to replay by construction, so a replay estimate is a lower bound and only a re-run settles it.</td></tr>
+      <tr><td><b>8</b></td><td>—</td><td>Honest availability 48% → <b>98.9%</b>, route denial 28.3% → <b>0%</b>, outage → none. Cutting one link collapsed the entire cascade.</td></tr>
+      <tr><td><b>9</b></td><td><b>An attack got in.</b> The spoofer authenticated as its victim and ran 130 tasks under the stolen identity.</td><td>Three individually-minor issues <b>composed</b> into a real vulnerability: a stdlib accept-queue of 5 against 48 hosts connecting at once, a client that treated a connection reset as a denial, and trust-on-first-use identity pinning. <b>A reset means the question was never asked; a 403 means the answer was no.</b> Fixed all three.</td></tr>
+      <tr><td><b>10</b></td><td>One honest server still mislabelled.</td><td><b>8/8 attacks classified correctly, first time.</b> And an explicit non-claim we wrote down: the victim had already claimed its identity pin before the spoof attempt, so plain TOFU would have refused this spoof too — the new roster was <b>not load-bearing in this run</b>. Saying “8/8, therefore the roster works” would claim more than the run shows.</td></tr>
+      <tr><td><b>11</b></td><td>—</td><td><b>100% honest availability, 0/40 honest mislabels, 4/4 honest nodes never quarantined, 0% route denial, 100% of the run above quorum.</b> The re-steer attribution fix fired live for the first time, and we validated it from the run's <b>own counterfactual</b> — recharging the withheld outcomes shows one honest server's timeout rate would have gone 0.00 → 0.50, while both attackers are bit-identical. Detection cost measured live: <b>zero</b>.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">The single most quotable line from this whole history</div>
+    <p><b>Every live-run defect in this project was the controller's own bookkeeping feeding
+    a working detector bad input. Not once were the detectors at fault.</b> That distinction
+    — “correctly flagged” versus “unable to be un-flagged”, “correctly isolated attacker”
+    versus “wrongly starved honest node” — is the discipline that got the project from a
+    total collapse to a perfect honest side in ten runs.</p>
+  </div>
+</section>
+
+<!-- ============================== 15 ============================== -->
+<section>
+  <h2><span class="num">15</span>Limitations, stated before anyone asks</h2>
+  <p class="lead">Volunteering these is worth more than the marks they cost. One overclaim
+  discovered by an examiner taints every honest claim around it.</p>
+
+  <table>
+    <thead><tr><th style="width:30%">Limitation</th><th>Detail and honest framing</th></tr></thead>
+    <tbody>
+      <tr><td><b>RAFT is built but not wired in</b></td><td>Core, TCP transport, 3-replica live cluster and safety proofs all exist and are demonstrated. The controller still commits single-replica — every block carries <code>raft_term = 0</code>. Three named runtime blockers; the swap is deliberately deferred. §8.3.</td></tr>
+      <tr><td><b>DDoS response is detection-only</b></td><td>Flooding is detected and correctly classified but not throttled. It needs a per-client-IP OpenFlow path; today's rate-limit machinery is per-edge-node. Deferred as real scope rather than half-built.</td></tr>
+      <tr><td><b>Detection latency is an upper bound</b></td><td>Onset is measured from agent launch, but the recording's t0 is controller start, which necessarily precedes it. The reported figure <b>overstates</b> the detector. Overstating is the safe direction; quietly subtracting an estimate would not be.</td></tr>
+      <tr><td><b>Scalability beyond 8 nodes is simulation</b></td><td>The box has 4 cores. N=64 live would measure the laptop, not the architecture. The sweep drives the <b>real</b> selector, but it is not a live run. What it supports is that the <i>selection rule</i>, not the hardware, is what stops scaling under argmax — <b>not</b> a capacity figure for 40 real machines.</td></tr>
+      <tr><td><b>Single run per configuration</b></td><td>Every live figure is one run at one seed. No confidence intervals. The paired-comparison machinery exists and produces the §7.4 statistics, but on the <i>simulation</i> harness; pointing it at live runs additionally needs a library version fix on this box.</td></tr>
+      <tr><td><b>Localhost, not multi-host</b></td><td>Three OS processes and real loopback TCP, not three separate machines. The code, the sockets and the process boundaries are real; only hardware separation is not.</td></tr>
+      <tr><td><b>The controller is a trusted single point</b></td><td>This is in genuine tension with “never trust”, and it is the standard SDN trust model. RAFT replication of ledger state is a <i>step</i> toward controller redundancy; full controller distribution is future work. Say this out loud — in a Zero-Trust-titled project, somebody will notice.</td></tr>
+      <tr><td><b>The adversary model has edges</b></td><td>We do not handle: collusion between edge nodes, adaptive adversaries that hold every signal just under threshold, on-off attacks tuned precisely against the EMA decay window, or attacks on the controller and dashboard themselves.</td></tr>
+      <tr><td><b>One false-positive flood tell</b></td><td>One honest device tripped the flood detector once, in the worst run, plausibly under retry pressure. Four later runs produced none — which supports that reading without proving it.</td></tr>
+      <tr><td><b>One detector threshold is not fully validated</b></td><td>A weighing threshold sits mid-band in a swept safe range, but the two most recent runs happened to be indifferent to it. Our own rule applies: <b>indifferent means untested, not safe.</b> We do not call it validated.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================== 16 ============================== -->
+<section>
+  <h2><span class="num">16</span>Anticipated panel questions and answers</h2>
+  <p class="lead">Rehearse these. The first eight are near-certain.</p>
+
+  <div class="qa"><div class="q">Your title says Zero Trust, but your controller is fully trusted. Isn't that a contradiction?</div>
+  <div class="a">Yes, and we state it as a limitation rather than hiding it. It is the standard SDN trust model: the control plane is inside the trusted computing base. Our Zero Trust claim is scoped to the <b>serving infrastructure</b> — the edge nodes are never trusted, are verified continuously, and are verified on observed rather than claimed behaviour. Replicating ledger state with RAFT is a first step toward controller redundancy; full controller distribution is named future work.</div></div>
+
+  <div class="qa"><div class="q">RAFT is crash-fault tolerant, not Byzantine. A malicious replica can lie and RAFT will happily replicate it. So what does your blockchain actually secure?</div>
+  <div class="a">Two things, precisely: <b>tamper-evidence</b> — the hash chain and Merkle roots make retroactive falsification detectable and localisable to the seam — and <b>availability</b> under replica crashes. Both hold within a controller cluster that is itself in the trusted computing base. It is not permissionless, it does not tolerate Byzantine replicas, and it does not need to, because our threat model puts malicious behaviour at the edge nodes. If you follow up with “then why not a signed append-only log?” — a hash-chained Merkle log replicated by RAFT essentially <i>is</i> one, structured for per-record proofs and batch commits.</div></div>
+
+  <div class="qa"><div class="q">PRESENT-80 is an 80-bit cipher. That is below modern security margins.</div>
+  <div class="a">Correct, and we frame it accordingly: an ISO/IEC 29192-2 lightweight block cipher appropriate to severely constrained IoT devices, used here to demonstrate the challenge–response <b>architecture</b>. A production deployment would drop a 128-bit primitive behind the same <code>Authenticator</code> seam — and that seam already exists, which is why this is a swap and not a rewrite. Separately, the more interesting weakness is not the key length at all: the key is <b>fleet-wide</b>, so it authenticates possession of the key rather than the device. That is the gap source-IP pinning closes.</div></div>
+
+  <div class="qa"><div class="q">Two of your eight attacks were misclassified. Isn't that a failure?</div>
+  <div class="a">Both misses are in the <b>right family</b>, so the response would have been identical either way — the attacker was still detected, still quarantined, still contained in single-digit seconds. And the cause is a limit we characterised in advance: <b>containment quality and magnitude evidence are in direct tension.</b> The faster you isolate an attacker, the less evidence exists to say <i>how much</i> it was dropping. In that run our defence was faster and cleaner than ever — which is precisely what starved the classifier. We traded two label-precision points for a perfect honest side: zero honest mislabels, zero honest quarantines, zero route denials.</div></div>
+
+  <div class="qa"><div class="q">Two servers got no traffic at all. Isn't that a load-balancing flaw?</div>
+  <div class="a">There are two distinct zero-traffic cases and they must not be conflated. A <b>malicious</b> node receiving zero traffic is the isolation working correctly. A <b>healthy</b> node receiving zero traffic is a genuine flaw — starvation — and we found it, characterised its root cause (argmax plus trust-coupled selection produces rich-get-richer lock-in onto ~2 nodes regardless of fleet size), and fixed it with power-of-two-choices plus ε-exploration. Note also that starved healthy servers receive <b>zero packets</b> — they do not <i>drop</i> anything. Only a quarantined node gets drop rules.</div></div>
+
+  <div class="qa"><div class="q">Your system is slower than round-robin when there is no attacker. Doesn't that undermine the whole thing?</div>
+  <div class="a">It is, by 10.7% on SLO violations in the clean scenario, and we report it. The cause is not the trust term — it is staleness in the load signal that <b>every</b> load-reactive strategy reads, including least-connections, which does far worse. We isolated it with a poll-interval sweep: halving the poll interval closes most of the gap. The trade is explicit: in a clean network you pay a small cost; under any of the four attack scenarios you win by 15–69%.</div></div>
+
+  <div class="qa"><div class="q">Why doesn't your dashboard show every packet?</div>
+  <div class="a">Because it structurally cannot, and animating one would be a lie. Once a flow rule is installed, matching packets are forwarded entirely in the data plane and never reach the controller again. We therefore drive the animation from 1 Hz flow-statistics counter deltas and print the measured packets-per-second on screen so the claim is checkable. This is Finding 3 — a real observation about SDN observability.</div></div>
+
+  <div class="qa"><div class="q">How do you know your results aren't just the trust mechanism getting lucky on one run?</div>
+  <div class="a">Three independent lines of evidence. First, a <b>controlled comparison</b>: same topology, same devices, same attacks on the same schedule, same launching code, differing only in whether anything acts on trust. Second, a <b>600-run seeded statistical harness</b> driving the real selector and the real calculator — 14 of 16 comparisons favour the system at p<sub>adj</sub> = 7.45×10⁻⁹ with the system winning 30 of 30 paired seeds. Third, an <b>ablation</b>: the same selector with only the trust term removed, which is what attributes the gain to trust rather than to load-aware routing generally. And we state the limitation plainly — every <i>live</i> figure is a single seed.</div></div>
+
+  <div class="qa"><div class="q">What happens if a quarantined node was innocent?</div>
+  <div class="a">It gets out. <b>Probation</b> is the half-open leg of a circuit breaker: a node isolated on the trust rail only, whose anomaly score has since fallen below the gate, receives one trial task per interval, and the trial flow installs <i>above</i> the quarantine drop rules so it is not black-holed by the rules it exists to escape. In our best run that produced 23 recoveries from 25 quarantines. We had to invent this because in an early run quarantine was an <b>absorbing state</b> — isolation starved the very evidence needed to leave it.</div></div>
+
+  <div class="qa"><div class="q">Why os-ken and not Ryu, as your deck specified?</div>
+  <div class="a">The target OS ships Python 3.14; Ryu cannot run above 3.13 and has no package for it. os-ken is the actively-maintained fork of Ryu with an identical API. It is an environment-driven engineering decision, documented, with no <code>ryu</code> dependency anywhere in the repository.</div></div>
+
+  <div class="qa"><div class="q">Would this work at 1 000 nodes?</div>
+  <div class="a">We do not know, and we will not claim it. What we measured: at 8 servers we measure live; beyond that we <b>simulate the fleet while executing the real selector</b>, up to N=64. That supports the claim that the <b>selection rule</b>, not the hardware, is what stops scaling under argmax — power-of-two-choices scales linearly where argmax saturates. It does <b>not</b> support a capacity figure for real machines. Running N=64 on a 4-core box would measure the laptop, not the architecture.</div></div>
+
+  <div class="qa"><div class="q">Where would this actually be deployed?</div>
+  <div class="a">MEC and the 5G telco edge first — the mapping is nearly one-to-one: our controller is the orchestrator, our edge servers are MEC hosts, our IoT clients are user equipment, and MEC orchestrators route on self-reported host load today. Industrial and municipal edge second. Explicitly <b>not</b> the public cloud, where the operator owns and attests its own hardware, and not consumer IoT, which would be buzzword marketing.</div></div>
+
+  <div class="qa"><div class="q">Isn't this just a health check with extra steps?</div>
+  <div class="a">A health check asks the backend a question and believes the answer, and its verdict is binary. Ours computes a graded score from evidence the backend cannot fabricate — completed versus failed outcomes, observed response time against the fleet median, and the gap between claimed load and a duty cycle the controller derives itself — and adds a second, independent gate that can act when the score arithmetically cannot. The case that separates them is our central one: a host returning perfect responses while lying about capacity passes every health check ever written.</div></div>
+
+  <div class="qa"><div class="q">Your attacker share is still 12.5%. Why not zero?</div>
+  <div class="a">Because attackers are behaviourally identical to honest nodes before onset — every attack in our configuration has a <b>delayed onset</b> precisely so that the detectors must notice a change rather than recognise a permanently odd node. The 12.5% is overwhelmingly pre-onset traffic plus the seconds before containment. The baseline's 30.5% is the same traffic plus everything that continued flowing for the rest of the run because nothing could stop it.</div></div>
+
+  <div class="qa"><div class="q">What is the single biggest weakness of this project?</div>
+  <div class="a">That every live figure comes from a single run at a single seed. We have statistical rigour on the simulation harness and fidelity on the live runs, but not both on the same measurement. That is the honest answer, and it is the first thing we would fix with more time — ahead of wiring in RAFT and ahead of DDoS throttling.</div></div>
+
+  <div class="qa"><div class="q">What did you personally learn from building this?</div>
+  <div class="a">That the hard part was never the detectors. Every single defect across eleven live runs was the controller's own bookkeeping feeding a working detector bad input — a stale counter, a rejuvenated timestamp, a task charged to the wrong node. The discipline that got us out was refusing to conflate two things that look alike in an average: “correctly isolated attacker” versus “wrongly starved honest node”, and “correctly flagged” versus “unable to be un-flagged”. Every metric in this project that touches quarantine reports those separately.</div></div>
+</section>
+
+<!-- ============================== 17 ============================== -->
+<section>
+  <h2><span class="num">17</span>What to demonstrate live, and the fallbacks</h2>
+
+  <h3>17.1 The demonstration, in order</h3>
+  <ol>
+    <li><b>Live Mininet run</b> — <code>sudo python3 run_demo.py --mode mininet --config config/params_trust_full.yaml</code></li>
+    <li><b>The dashboard</b> at <code>http://localhost:8081/</code> — quarantine, re-steer and
+    block commits are visible as they happen. Point at the trust curves diverging when each
+    attack arms.</li>
+    <li><b>Real flow tables</b> — <code>mininet&gt; dpctl dump-flows -O OpenFlow13 | grep cookie=0x5a</code>.
+    This is the proof that the decision is enforced in the data plane and not simulated.</li>
+    <li><b>The API by cURL</b> — <code>iot1 curl -s http://10.0.99.254:8081/node/status</code></li>
+    <li><b>The ledger tamper control</b> — break the chain in the browser and watch the
+    break localise to the seam. The page recomputes SHA-256 itself rather than trusting the
+    controller's own <code>valid</code> flag.</li>
+    <li><b>Recorded RAFT failover</b> — <code>python3 -m blockchain.raft_timeline --duration-s 45 --kill-at-s 15 --restart-at-s 30</code></li>
+    <li><b>The test suite</b> — <code>python3 -m pytest -q</code>, 50.7 s, 993 passing.</li>
+  </ol>
+
+  <h3>17.2 Environment prerequisites — check every one before the room</h3>
+  <ol>
+    <li><code>sudo service openvswitch-switch start</code> — WSL does not auto-start it, and
+    without it the topology hangs with no visible error.</li>
+    <li><code>sudo modprobe -a sch_htb sch_netem sch_tbf sch_prio ifb</code> — note the
+    <code>-a</code>; without it only the first module loads and the rest are treated as
+    parameters.</li>
+    <li><code>sudo mn -c</code> between runs, to clear stale veth state.</li>
+    <li><b>Controller first, topology second.</b> A switch that connects to nothing installs
+    no rules, and every connectivity test silently times out — which looks exactly like a
+    freeze.</li>
+    <li>Live mode runs under <code>sudo</code>, so outputs land owned by root. The next
+    non-sudo controller then dies with a permission error that reads like a broken
+    controller. The runner chowns artefacts back at the end of a run; older ones need
+    <code>sudo chown -R $USER data logs</code>.</li>
+  </ol>
+
+  <div class="callout warn">
+    <div class="hd">Fallbacks, in order of preference</div>
+    <p><b>1.</b> Replay a recorded run into the live dashboard —
+    <code>python3 -m dashboard.replay data/events.jsonl --loop</code>, then open
+    <code>localhost:8082</code>. It exercises every panel with real recorded events and needs
+    no sudo and no Mininet.<br>
+    <b>2.</b> Run the four offline scorers against an archived recording — NFR report,
+    confusion matrix, availability report, interval report. None needs the controller stack
+    installed.<br>
+    <b>3.</b> Run the 600-run statistical harness — it takes about 40 seconds and needs
+    nothing but Python.<br>
+    <b>4.</b> The figures in this document and the generated slide figures under
+    <code>ppt/figures/</code>.</p>
+    <p style="margin-top:2mm"><b>Archive the recording before any new run.</b> Live mode
+    unlinks <code>data/events.jsonl</code> at startup and <code>data/</code> is gitignored —
+    copy it to <code>data/events_runN.jsonl</code> the moment a run finishes, or its numbers
+    cannot be re-derived.</p>
+  </div>
+</section>
+
+<!-- ============================== 18 ============================== -->
+<section>
+  <h2><span class="num">18</span>Glossary and provenance</h2>
+
+  <h3>18.1 Terms a panellist may ask you to define</h3>
+  <div class="two">
+    <div>
+      <p><b>SDN</b> — Software-Defined Networking: the forwarding decisions are made by a
+      central controller, and switches only execute installed rules.</p>
+      <p><b>OpenFlow 1.3</b> — the protocol between controller and switch. Rules match on
+      packet fields and carry actions, priorities and cookies.</p>
+      <p><b>Flow rule / cookie</b> — an installed match-action entry. A cookie is an
+      identifier we attach so all of a node's rules can be deleted in one operation.</p>
+      <p><b>VIP</b> — Virtual IP. Clients connect to one address; the controller rewrites
+      the destination, so the client never learns and never chooses which server serves it.</p>
+      <p><b>PacketIn</b> — what a switch sends the controller when no rule matches. This is
+      where a routing decision is made.</p>
+      <p><b>EMA (λ = 0.85)</b> — exponential moving average; recent evidence dominates,
+      older evidence decays smoothly.</p>
+      <p><b>Jain fairness index</b> — 1.0 means perfectly equal shares; lower means more
+      skew. Must be read over a stated population (§7.3).</p>
+    </div>
+    <div>
+      <p><b>Merkle root</b> — one hash summarising a set of records, allowing any single
+      record to be proven a member without revealing the rest.</p>
+      <p><b>Tamper-evident</b> — modification is <i>detectable</i>, not prevented. This is
+      the correct word for our ledger.</p>
+      <p><b>Crash-fault vs Byzantine</b> — crash-fault tolerance survives replicas that
+      stop; Byzantine tolerance survives replicas that <i>lie</i>. Ours is crash-fault.</p>
+      <p><b>PRESENT-80</b> — an ISO/IEC 29192-2 lightweight block cipher for constrained
+      devices, 80-bit key.</p>
+      <p><b>TOFU</b> — trust on first use: the first host to claim an identity owns it.
+      Our fallback where no provisioned roster entry exists.</p>
+      <p><b>Power-of-two-choices</b> — sample two candidates at random, take the better.
+      Provably far better tail behaviour than picking the single best from a stale view.</p>
+      <p><b>Wilcoxon signed-rank / Holm–Bonferroni</b> — a paired non-parametric test, and
+      the correction applied because testing against four baselines four times inflates the
+      false-positive rate from 5% to ~19%.</p>
+    </div>
+  </div>
+
+  <h3>18.2 Where every number in this document comes from</h3>
+  <table>
+    <thead><tr><th style="width:38%">Claim</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>All §7 comparison figures, containment times, per-server trust, spoof outcome</td><td><code>data/comparison/comparison.txt</code> — the 2026-09-05 pair: baseline 307.5 s (<code>base_events.jsonl</code>) vs zero-trust 313.2 s (<code>events.jsonl</code>)</td></tr>
+      <tr><td>All four NFR measurements in §8.1</td><td><code>data/nfr_report.txt</code>, generated by <code>evaluation/nfr_report.py</code> from the same recording</td></tr>
+      <tr><td>RAFT failover, commit counts, per-commit cost</td><td><code>data/raft_timeline.jsonl</code>, 45 s run of 2026-09-07, plotted by <code>evaluation/plot_raft_timeline.py</code></td></tr>
+      <tr><td>The 600-run statistics, SLO reductions, p-values, poll sweep</td><td><code>docs/EVALUATION.md</code>, produced by <code>evaluation/baseline.py</code> + <code>evaluation/stats.py</code></td></tr>
+      <tr><td>Scalability figures to N=64</td><td><code>evaluation/scalability_sweep.py</code> — <b>a queueing simulation driving the real selector</b>, not a live run</td></tr>
+      <tr><td>Test counts</td><td><code>pytest -q</code>: 1 004 collected, 993 passed, 11 skipped, 0 failed</td></tr>
+      <tr><td>The eleven-run history in §14</td><td><code>SOURCE_OF_TRUTH.md</code> §5, <code>docs/LIVE_RUN_8_40_3.md</code>, and the archived per-run recordings</td></tr>
+      <tr><td>All twelve figures</td><td>Generated by <code>ppt/fig_architecture.py</code>, <code>ppt/fig_flows.py</code>, <code>ppt/fig_results.py</code> — never hand-drawn</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="hd">The three sentences to close on, if you are asked to summarise</div>
+    <p><b>1.</b> Orchestrators route work using what nodes say about themselves; we built a
+    control plane that routes on what it observes, and enforces that verdict in the data
+    plane in under a second.</p>
+    <p><b>2.</b> We proved our own published trust formula insufficient — a competent liar
+    floors at 0.44 against a 0.30 threshold — and kept the finding rather than retuning the
+    weights until the demo worked.</p>
+    <p><b>3.</b> We measured it against a full control arm running the same code with
+    enforcement removed: honest-device availability 85.7% → 99.0%, starved devices 5 → 0,
+    every attacker contained in 8–11 seconds where the baseline contained none of them,
+    ever.</p>
+  </div>
+
+  <div class="footnote">
+    Zero Trust-Enabled SDN Architecture for Secure and Intelligent Load Balancing in Edge
+    Networks · 23CSE498 Project Phase 2, Panel Review 1 · Team 50 · briefing compiled
+    2026-09-08. Figures from <code>ppt/figures/</code>. Numbers as cited in §18.2; where a
+    figure is a simulation, an estimate or an upper bound, it is labelled as such at the
+    point of use.
+  </div>
+</section>
+
+</body>
+</html>

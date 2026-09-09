@@ -177,6 +177,31 @@ def draw_end_labels(ax, ends: List[Tuple[str, float, float]], x_end: float,
                 va='center', ha='left', zorder=6)
 
 
+def save_figure(fig, stem, no_svg: bool = False, tight: bool = False) -> None:
+    """Write `{stem}.png`, and `{stem}.svg` unless `no_svg`, then close `fig`.
+
+    Promoted here when a third figure family (`plot_interactions.py`) arrived.
+    Two copies of five lines is a coincidence; three is a house rule that was
+    never written down -- and the rule matters, because the SVG is what the
+    paper embeds and the `facecolor` is what stops it rendering on a
+    transparent ground that turns the muted ink unreadable.
+
+    matplotlib is imported inside the function on purpose: every caller
+    already imports it, and keeping it out of this module's import line lets
+    the palette constants be read (by a test, or by a tool that emits SVG
+    itself) in an environment where matplotlib is not installed.
+    """
+    import matplotlib.pyplot as plt
+
+    kw = {'facecolor': SURFACE}
+    if tight:
+        kw['bbox_inches'] = 'tight'
+    fig.savefig(f'{stem}.png', **kw)
+    if not no_svg:
+        fig.savefig(f'{stem}.svg', **kw)
+    plt.close(fig)
+
+
 def jain(values) -> float:
     """Jain's fairness index over the values given, INCLUDING zeros.
 

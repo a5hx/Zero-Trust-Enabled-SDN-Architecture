@@ -77,6 +77,7 @@ from base_model.figure_style import (  # noqa: E402
     draw_end_labels,
     draw_onset,
     jain,
+    save_figure,
     style_axes,
 )
 from evaluation.interval_report import DEFAULT_BUCKET_S  # noqa: E402
@@ -265,7 +266,7 @@ def main(argv=None) -> int:
             ax.legend(loc='upper left', frameon=False, fontsize=9,
                       labelcolor=INK_SECONDARY, handlelength=1.6)
         fig.tight_layout()
-        _save(fig, out_dir / f'{node}_load', args.no_svg)
+        save_figure(fig, out_dir / f'{node}_load', args.no_svg)
 
     # -- grid ---------------------------------------------------------------- #
     cols = 4
@@ -294,7 +295,7 @@ def main(argv=None) -> int:
                ncol=len(arms) + 1, frameon=False, fontsize=9.5,
                labelcolor=INK_SECONDARY, bbox_to_anchor=(0.5, 0.02))
     fig.subplots_adjust(bottom=0.16)
-    _save(fig, out_dir / 'all_servers_load', args.no_svg, tight=True)
+    save_figure(fig, out_dir / 'all_servers_load', args.no_svg, tight=True)
 
     # -- the headline: total share ------------------------------------------- #
     _plot_share(out_dir, arms, nodes, honest, attackers, roles, args.no_svg)
@@ -398,7 +399,7 @@ def _plot_share(out_dir, arms, nodes, honest, attackers, roles, no_svg) -> None:
     ax.legend(handles=handles, loc='upper left', frameon=False, fontsize=9.5,
               labelcolor=INK_SECONDARY, handlelength=1.6)
     fig.tight_layout()
-    _save(fig, out_dir / 'load_share', no_svg)
+    save_figure(fig, out_dir / 'load_share', no_svg)
 
 
 def _share_subtitle(totals, nodes, honest) -> str:
@@ -453,17 +454,7 @@ def _plot_fairness(out_dir, arms, nodes, honest, n_buckets, bucket_s,
             ax.legend(loc='lower left', frameon=False, fontsize=9,
                       labelcolor=INK_SECONDARY, handlelength=1.6)
     fig.tight_layout()
-    _save(fig, out_dir / 'fairness_over_time', no_svg)
-
-
-def _save(fig, stem: Path, no_svg: bool, tight: bool = False) -> None:
-    kw = {'facecolor': SURFACE}
-    if tight:
-        kw['bbox_inches'] = 'tight'
-    fig.savefig(f'{stem}.png', **kw)
-    if not no_svg:
-        fig.savefig(f'{stem}.svg', **kw)
-    plt.close(fig)
+    save_figure(fig, out_dir / 'fairness_over_time', no_svg)
 
 
 if __name__ == '__main__':
