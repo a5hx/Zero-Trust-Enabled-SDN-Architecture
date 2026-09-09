@@ -1,0 +1,3 @@
+arm,routes,duplicate_routes,reports,pairs,exact_pairs,exact_share,sole_inflight_pairs,fallback_pairs,abandoned_skipped,abandoned_aged_out,abandoned_open_at_end,orphan_reports,resteer_inherited,unresolved_reports,contaminated_reports,clients_in_topology,clients_routed,clients_admitted,clients_denied,reroutes
+baseline,6773,5,6764,6764,6764,1.0,5837,0,0,0,4,0,0,0,52,40,40,39,,
+zero_trust,6368,0,6279,6211,6203,0.9987119626469168,5552,8,97,56,4,68,23,0,0,40,37,,3,25

@@ -1,0 +1,18 @@
+@startuml lb_decision
+!pragma layout smetana
+!include _style.puml
+title Secure load balancing — one routing decision
+
+start
+:packet-in / task request;
+:**eligibility filter**\ndrop quarantined nodes\nfrom the 8 candidates;
+if (any node eligible?) then (no)
+  :deny request;
+  kill
+endif
+:sample **two** at random\n(power-of-two-choices);
+:score by EdgeScore\n0.50·trust + 0.30·capacity\n+ 0.20·latency;
+:take the better of the two;
+:install OpenFlow rule\n(VIP rewrite, 5-band priority);
+stop
+@enduml

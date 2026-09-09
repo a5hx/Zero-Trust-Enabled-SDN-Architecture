@@ -53,10 +53,27 @@ python3 -m base_model.plot_trust --treatment data/events.jsonl
 
 # 5. per-server load + fairness figures -> base_model/load/
 python3 -m base_model.plot_load  --treatment data/events.jsonl
+
+# 6. client<->server interaction figures -> base_model/interactions/
+python3 -m base_model.plot_interactions --treatment data/events_canonical.jsonl
 ```
 
-(Both plotters take `--treatment` to overlay the arms, or run baseline-alone
-without it.)
+**Use `data/events_canonical.jsonl`, not `data/events.jsonl`, for anything you
+intend to quote.** `run_demo.py` DELETES `data/events.jsonl` at startup, so the
+live path is always one accidental run away from gone -- a run interrupted
+after 16 s destroyed a 132 MB recording on 2026-09-08 and it was not
+recoverable (`data/` is gitignored). After a run you are happy with:
+
+```bash
+cp data/events.jsonl data/events_canonical.jsonl
+```
+
+The plotters' `--treatment` default is deliberately left unset rather than
+pointed at the canonical file, so that a baseline-alone invocation stays the
+default behaviour when no treatment run exists yet.
+
+(All three plotters take `--treatment` to overlay the arms, or run
+baseline-alone without it.)
 
 `-E` on the first command matters: it preserves the environment `sudo` would
 otherwise strip. **Run one arm at a time** — both bind OpenFlow 6653 and the
@@ -134,7 +151,9 @@ mechanisms, not mechanisms that scored zero.
 | `figure_style.py` | the one visual system both figure families use |
 | `plot_trust.py` | per-server trust-vs-time figures -> `trust/` |
 | `plot_load.py` | per-server load + fairness figures -> `load/` |
-| `tests/` | 160 tests, all of which run without root, Mininet or a network |
+| `interactions.py` | the route<->report pairing rule and the client-resolved metrics. No matplotlib, so the rule is testable on its own |
+| `plot_interactions.py` | client<->server interaction figures -> `interactions/` |
+| `tests/` | 228 tests, all of which run without root, Mininet or a network |
 
 ### The trust figures
 
@@ -211,6 +230,137 @@ populations side by side plus the share of traffic that reached an attacker:
 
 `test_plot_load.py::test_whole_roster_jain_hides_the_difference` pins this: any
 change that makes the tool report a single whole-roster index fails.
+
+### The interaction figures
+
+`plot_interactions.py` writes into `base_model/interactions/`. Where the load
+figures ask how traffic was spread **across servers**, these ask the question
+that dimension integrates away: which *client* was served by which server, how
+fast, and how that changed over the run.
+
+| file | what it shows |
+|---|---|
+| `client_timeline.png` | **every task as one mark** — which client, which server, when. Colour = server, `x` = task lost. The baseline is 40 straight single-colour lines; the treatment arm is a mosaic |
+| `interaction_matrix.png` | client x server, one panel per arm. The headline: the baseline is a clean diagonal, the treatment arm is dense |
+| `fan_out.png` | distinct servers each client ever reached |
+| `binding_stability.png` | how much of a client's traffic went to its single busiest server |
+| `client_population.png` | share of the active fleet each server was talking to, per bucket (2x4 grid) |
+| `srvN_interaction.png` | the same per server, over its own request rate |
+| `outcome_by_server.png` | success / timeout / failure / abandoned, per server, per arm |
+| `latency_ecdf.png` | end-to-end task latency, whole distribution, log x |
+| `latency_over_time.png` | latency p50 and p95 per bucket |
+| `decision_time.png` | what the routing decision itself cost |
+| `residence_vs_latency.png` | controller-observed against client-reported, as a cross-check |
+| `speed_summary.png` | p50/p95/p99 for all three speed metrics |
+| `task_timeline.csv` | one row per task — the raw who/what/when table every other CSV here aggregates |
+| `interaction_matrix.csv`, `client_summary.csv`, `interaction_time.csv`, `speed_summary.csv` | the points plotted |
+| `pairing_audit.csv` | how the route<->report join actually went. Read this before quoting a residence number |
+
+Measured on `data/base_events.jsonl` (2026-09-05, 307.5 s) and
+`data/events_canonical.jsonl` (2026-09-08, 317.6 s):
+
+| | baseline | zero-trust |
+|---|---|---|
+| distinct servers per routed client | **1** (all 40) | **7-8** (23 of 37 reached all 8) |
+| honest-client latency p50 / p95 | 60 ms / **4,022 ms** | 94 ms / **148 ms** |
+| honest tasks that waited out the 4 s timeout | **7.5%** (335/4,463) | **0.3%** (13/4,837) |
+| tasks charged to srv6 (blackhole) | **289** | **94** |
+| ...of those, succeeded | 22.1% | 33.0% |
+| route<->report pairs joined exactly | 100.00% | 99.87% |
+
+Two things this table is careful about, and a reader should be too.
+
+**The control arm is faster at the median** -- 60 ms against 95 ms. A static
+table lookup beats a scored ranking, and a client bound to a healthy server
+never pays for anyone else's problem. What the arm cannot do is fail over, so
+7.5% of its tasks wait out the full 4 s timeout and its p95 is two decades
+worse. Both halves belong in the paper; quoting only the p95 would be as
+partial as quoting only the p50.
+
+**Zero trust does not repair the blackhole -- it stops feeding it.** srv6 was
+charged with **67% less work** (94 tasks against 289), and 51 of those 94 were
+cut off mid-flight when it was quarantined rather than completed.
+
+Its apparent success rate rises (33.0% against 22.1%), but do not lead with
+that number: it moves mostly because quarantine truncates the run before the
+server can fail as many tasks, not because the server behaves better. Scored
+over *reported* tasks alone srv6 reads as **72.1% successful**, which would
+credit enforcement with a reliability it never delivered. That is exactly why
+`outcome_by_server.png` counts `abandoned` alongside the reported statuses --
+a task dispatched and never returned is an outcome the client lived through.
+The defensible claim is about work withheld, not tasks rescued.
+
+#### Who a lost task is charged to
+
+`n` in that figure is **tasks charged to a server, not tasks that ran on it**,
+and the two differ in one specific case that looks alarming until it is
+traced. When a node is quarantined, every flow still stuck on it is re-steered
+onto a survivor at once -- 9 of them onto srv2 at t=40.5 s in this run. Those
+tasks had already been swallowed by the blackhole; the survivor inherits them
+roughly a third of a second before the client gives up, and the client's
+timeout report then names the *survivor*.
+
+Read naively that gives srv2 -- honest, never quarantined, 98.4% successful,
+sitting at 7% load throughout -- a wall of timeouts it had nothing to do with.
+The controller already refuses to make that mistake: it stamps such a report
+`charged: false` with `resteered_from`, so the survivor's trust is untouched.
+This tool reads those fields rather than re-deriving blame from `report.node`,
+which is what `blamed_on` in `task_timeline.csv` records, and it is why
+`client_timeline.png` colours a mark by the server charged with the outcome
+rather than by the one it happened to land on.
+
+`test_a_survivor_is_not_charged_for_a_task_the_quarantined_node_lost` pins it.
+23 reports in this recording are re-steer-inherited; `pairing_audit.csv`
+reports the count.
+
+`client_timeline.png` is the one to put in front of a panel. It is not an
+aggregate — it draws all ~6,500 tasks individually, deliberately unbucketed,
+because a bucket would have to pick one representative server per cell and a
+client bouncing between four servers would then look identical to a pinned one.
+It also makes the availability finding visible rather than argued: in the
+baseline, `iot6`/`iot14`/`iot22`/`iot30` are all locked to srv6 (the blackhole)
+and their rows turn into a solid wall of `x` about 30 s in, for the remaining
+four and a half minutes.
+
+Server identity there needs eight distinguishable colours, which the two
+validated series slots cannot supply. That is the one deliberate departure from
+`figure_style.py`'s two-slot rule, and it is a different kind of scale: the
+slots encode *which arm* (always two), these encode *which server* (always
+eight). The set is Okabe-Ito, CVD-safe, with its yellow swapped for a dark
+olive that passes contrast on the `#fcfcfb` surface.
+
+#### The one thing not to simplify here
+
+`report` events carry `device` and `node` but **no `client_port`**, so a report
+cannot be joined to its route by flow key. `interactions.py` matches a report to
+the oldest outstanding route *for that client whose server equals `report.node`*.
+
+The obvious rule -- pop the client's oldest outstanding route -- is wrong, and
+wrong in a way this arm structurally cannot reveal. One unreported task offsets
+that client's queue for the rest of the run: it mispairs 42% of the treatment
+arm's reports and puts its residence p95 at 6,572 ms instead of 205 ms. Under
+`static_nearest` every candidate route names the same server, so the same broken
+rule scores 0.3% error on the control arm. Agreement from this arm is not
+evidence the rule works.
+
+`test_interactions.py` pins both halves --
+`test_a_dropped_report_does_not_offset_every_later_pairing` and
+`test_a_static_arm_cannot_detect_the_same_drop_by_offset`. Six of its tests fail
+if the server-aware search is reduced to FIFO.
+
+Three smaller rules that the numbers are wrong without, each with a test:
+
+- **Identity comes from the socket.** This arm admits a spoofer, so `device`
+  names an identity that may not belong to the sender; `source_ip` is keyed on
+  instead, and the disagreement is counted as contamination (the same fact
+  `compare.py::contaminated_identities` reports).
+- **A repeated flow key is the same task**, not a second one -- a retransmitted
+  SYN, which queued twice would surface later as a task that was never dispatched.
+- **Abandonment needs an age sweep, not just the skip-scan.** See above: under a
+  static binding the skip-scan can never skip.
+
+Occupancy (`observed_load`, `claimed_cpu`) is deliberately absent for the reason
+§7 gives, and `test_occupancy_fields_are_never_read` pins it.
 
 ---
 

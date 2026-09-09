@@ -1,0 +1,79 @@
+' Shared look for every Panel Review diagram.
+' Amrita maroon accent, high contrast, big type for projection.
+!global $MAROON = "#A4123F"
+!global $INK    = "#1c1c1e"
+!global $MUTED  = "#6b6b70"
+!global $FILL   = "#fdfdfc"
+!global $ZT     = "#fdecf1"
+!global $DATA   = "#eef2f7"
+!global $WARN   = "#fff4e5"
+
+skinparam dpi 200
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundCorner 10
+skinparam padding 4
+skinparam nodesep 34
+skinparam ranksep 42
+
+skinparam ArrowColor $INK
+skinparam ArrowFontSize 15
+skinparam ArrowFontColor $MUTED
+
+skinparam rectangle {
+  BackgroundColor $FILL
+  BorderColor $MAROON
+  BorderThickness 1.6
+  FontColor $INK
+  FontSize 17
+}
+skinparam package {
+  BackgroundColor #f7f7f5
+  BorderColor $MUTED
+  FontColor $MAROON
+  FontSize 16
+  FontStyle bold
+}
+skinparam component {
+  BackgroundColor $FILL
+  BorderColor $MAROON
+  BorderThickness 1.6
+  FontColor $INK
+  FontSize 17
+}
+skinparam note {
+  BackgroundColor $WARN
+  BorderColor $MUTED
+  FontSize 15
+}
+
+skinparam activity {
+  BackgroundColor $FILL
+  BorderColor $MAROON
+  BorderThickness 1.6
+  FontColor $INK
+  FontSize 17
+  DiamondBackgroundColor $WARN
+  DiamondBorderColor $MUTED
+  DiamondFontSize 16
+  StartColor $MAROON
+  EndColor $MAROON
+  BarColor $MAROON
+}
+skinparam sequence {
+  ArrowColor $INK
+  LifeLineBorderColor $MUTED
+  LifeLineBackgroundColor #f2f2f0
+  ParticipantBackgroundColor $FILL
+  ParticipantBorderColor $MAROON
+  ParticipantFontSize 17
+  ParticipantFontColor $INK
+  MessageAlignment left
+}
+skinparam node {
+  BackgroundColor #f7f7f5
+  BorderColor $MUTED
+  FontColor $MAROON
+  FontSize 16
+}

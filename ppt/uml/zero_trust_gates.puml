@@ -1,0 +1,27 @@
+@startuml zero_trust_gates
+!pragma layout smetana
+!include _style.puml
+title Zero Trust — three gates, never trust, always verify
+
+rectangle "**Gate 1 — Identity**\nPRESENT-80 challenge/response\nsingle-use nonce, 30 s TTL\n+ source-IP pin" as G1 #fdecf1
+rectangle "**Gate 2 — Continuous verification**\nevery task updates trust\nT = αR + βB + γH − δA\nanomaly gate A ≥ 0.5 runs beside it" as G2 #fdecf1
+rectangle "**Gate 3 — Graduated response**\nfull rate → rate-limit → quarantine\nenforced as OpenFlow rules" as G3 #fdecf1
+
+rectangle "Device admitted" as OK
+rectangle "403 auth_denied\nip_pin · bad_response · nonce_expired" as NO
+rectangle "Node keeps serving" as SERVE
+rectangle "Node isolated in the data plane\nprobation lets it return" as ISO
+
+G1 -right-> OK   : verified
+G1 -down->  NO   : refused
+OK -down->  G2
+G2 -right-> SERVE : trusted
+G2 -down->  G3    : T < 0.30  **or**  A ≥ 0.50
+G3 -right-> ISO
+ISO -up->   G2    : probation, 5 s
+
+note bottom of G2
+  Two independent rails. Either one alone
+  misses attackers — see Finding 1.
+end note
+@enduml

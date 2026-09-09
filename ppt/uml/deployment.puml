@@ -1,0 +1,24 @@
+@startuml deployment
+!pragma layout smetana
+!include _style.puml
+title Deployment — one WSL2 host, three process groups
+
+node "WSL2 host (4 cores)" {
+  package "Controller process" {
+    rectangle "os-ken OpenFlow app\n+ REST/SSE on :8081" as C
+  }
+  package "Mininet namespace" {
+    rectangle "Open vSwitch\n1 core + 8 edge switches" as OVS
+    rectangle "8 server agents\n40 IoT clients" as AG
+  }
+  package "RAFT cluster (standalone)" {
+    rectangle "3 replicas over loopback TCP\n**not wired to the controller**" as R
+  }
+}
+rectangle "Browser\ndashboard" as B
+
+C   -down-> OVS : OpenFlow 1.3
+OVS -down-> AG
+AG  -up->   C   : HTTP reports
+B   -left-> C   : HTTP + SSE
+@enduml
