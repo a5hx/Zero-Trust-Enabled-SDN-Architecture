@@ -1,0 +1,18 @@
+# Edge-server task agent; the instance name is the server id (srv1, ...).
+# MALICIOUS defaults to none; set it in the env file only for an attack run.
+[Unit]
+Description=Zero-Trust SDN edge-server agent %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# AGENT_PORT, WORK_MS, MALICIOUS (none|sybil|drop|grayhole|onoff), MALICIOUS_START_S
+EnvironmentFile=/etc/ztsdn/agent-%i.env
+WorkingDirectory=/opt/ztsdn
+ExecStart=/usr/bin/python3 -u -m simulation.node_agent --node-id %i \
+    --port ${AGENT_PORT} --work-ms ${WORK_MS} \
+    --malicious ${MALICIOUS} --malicious-start-s ${MALICIOUS_START_S}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

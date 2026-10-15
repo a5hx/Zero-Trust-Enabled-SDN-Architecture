@@ -68,7 +68,8 @@ from os_ken.ofproto import inet, ofproto_v1_3
 from base_model.static_router import STRATEGY_STATIC_NEAREST, StaticRouter
 from base_model.trust_observer import BaselineTrustObserver, StatusSample
 from controller.event_bus import EventBus, NullBus
-from simulation.addressing import VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
+from contracts.inventory import Inventory
+from simulation.addressing import srv_index
 
 logger = logging.getLogger('base_model.baseline_controller')
 
@@ -111,7 +112,10 @@ class BaselineControllerApp(app_manager.OSKenApp):
 
         self.n_edge = int(sim['num_edge_nodes'])
         self.n_iot = int(sim['num_iot_devices'])
-        self.node_ids = [f'srv{i}' for i in range(1, self.n_edge + 1)]
+        # Same inventory as the treatment arm (contracts/inventory.py):
+        # generated under Mininet, configured on real hardware.
+        self.inventory = Inventory.from_config(cfg)
+        self.node_ids = self.inventory.server_ids
 
         self.vip_ip = ctrl['vip']
         self.vip_port = int(ctrl['vip_port'])
@@ -133,6 +137,8 @@ class BaselineControllerApp(app_manager.OSKenApp):
             n_edge=self.n_edge,
             strategy=base.get('strategy', 'static_nearest'),
             seed=int(base.get('seed', 1)),
+            ip_to_index={ip: int(dev[3:]) for dev, ip in self.inventory.devices.items()
+                         if dev[3:].isdigit()},
         )
 
         self.observer = BaselineTrustObserver(
@@ -344,10 +350,10 @@ class BaselineControllerApp(app_manager.OSKenApp):
         ofproto = dp.ofproto
         reply = packet.Packet()
         reply.add_protocol(ethernet.ethernet(
-            dst=eth.src, src=VIP_MAC, ethertype=ether_types.ETH_TYPE_ARP,
+            dst=eth.src, src=self.inventory.vip_mac, ethertype=ether_types.ETH_TYPE_ARP,
         ))
         reply.add_protocol(arp.arp(
-            opcode=arp.ARP_REPLY, src_mac=VIP_MAC, src_ip=self.vip_ip,
+            opcode=arp.ARP_REPLY, src_mac=self.inventory.vip_mac, src_ip=self.vip_ip,
             dst_mac=arp_pkt.src_mac, dst_ip=arp_pkt.src_ip,
         ))
         reply.serialize()
@@ -363,7 +369,7 @@ class BaselineControllerApp(app_manager.OSKenApp):
     def _install_vip_pair(self, dp, client_ip: str, client_port: int, node_id: str) -> None:
         parser = dp.ofproto_parser
         idx = srv_index(node_id)
-        s_ip, s_mac = srv_ip(idx), srv_mac(idx)
+        s_ip, s_mac = self.inventory.server_ip(node_id), self.inventory.server_mac(node_id)
         cookie = self._cookie_base | idx
 
         forward_match = parser.OFPMatch(
@@ -393,7 +399,7 @@ class BaselineControllerApp(app_manager.OSKenApp):
             tcp_src=self.node_port, tcp_dst=client_port,
         )
         reverse_actions = [
-            parser.OFPActionSetField(eth_src=VIP_MAC),
+            parser.OFPActionSetField(eth_src=self.inventory.vip_mac),
             parser.OFPActionSetField(ipv4_src=self.vip_ip),
             parser.OFPActionSetField(tcp_src=self.vip_port),
         ]
@@ -421,7 +427,7 @@ class BaselineControllerApp(app_manager.OSKenApp):
                     'dir': 'reverse',
                     'match': f'ipv4_src={s_ip},tcp_src={self.node_port},'
                              f'ipv4_dst={client_ip},tcp_dst={client_port}',
-                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip}, '
+                    'actions': f'set eth_src={self.inventory.vip_mac}, set ipv4_src={self.vip_ip}, '
                                f'set tcp_src={self.vip_port} -> goto table {self.TABLE_L2}',
                 },
             ],
@@ -557,7 +563,7 @@ class BaselineControllerApp(app_manager.OSKenApp):
         """
         import http.client
 
-        host = srv_ip(srv_index(node_id))
+        host = self.inventory.server_ip(node_id)
         start = time.monotonic()
         try:
             conn = http.client.HTTPConnection(host, self.node_port, timeout=_STATUS_TIMEOUT_S)
@@ -613,14 +619,9 @@ class BaselineControllerApp(app_manager.OSKenApp):
         logger.info("ADMITTED %s from %s (no verification performed)", device_id, source_ip)
         return token
 
-    @staticmethod
-    def _expected_ip(device_id: str) -> Optional[str]:
-        if device_id.startswith('iot'):
-            try:
-                return iot_ip(int(device_id[3:]))
-            except ValueError:
-                return None
-        return None
+    def _expected_ip(self, device_id: str) -> Optional[str]:
+        inventory = getattr(self, 'inventory', None) or Inventory.from_config(self.cfg)
+        return inventory.devices.get(device_id)
 
     def handle_client_report(
         self, client_ip: str, vip_src_port: int, device_id: str,
@@ -692,6 +693,7 @@ class BaselineControllerApp(app_manager.OSKenApp):
         with the same caveat: if that rule changes, all three copies must.
         """
         sim = self.cfg['simulation']
+        inventory = getattr(self, 'inventory', None) or Inventory.from_config(self.cfg)
         mal = {
             m['node']: m.get('attack', 'none')
             for m in sim.get('malicious_edge_nodes', []) or []
@@ -722,7 +724,9 @@ class BaselineControllerApp(app_manager.OSKenApp):
                 'id': f's{i}', 'kind': 'edge_switch', 'dpid': i + 1, 'label': f's{i}',
             })
             nodes.append({
-                'id': f'srv{i}', 'kind': 'server', 'ip': srv_ip(i), 'mac': srv_mac(i),
+                'id': f'srv{i}', 'kind': 'server',
+                'ip': inventory.servers.get(f'srv{i}', ('', ''))[0],
+                'mac': inventory.servers.get(f'srv{i}', ('', ''))[1],
                 'label': f'srv{i}',
                 # Ground truth for post-hoc marking only. This arm never acts on
                 # it -- and unlike the treatment arm, it never acts on anything
@@ -737,7 +741,8 @@ class BaselineControllerApp(app_manager.OSKenApp):
         for j in range(1, self.n_iot + 1):
             sw_idx = (j - 1) % self.n_edge      # matches ZeroTrustTopo.build()
             node = {
-                'id': f'iot{j}', 'kind': 'iot', 'ip': iot_ip(j), 'label': f'iot{j}',
+                'id': f'iot{j}', 'kind': 'iot',
+                'ip': inventory.devices.get(f'iot{j}', ''), 'label': f'iot{j}',
                 'attack': iot_mal.get(f'iot{j}', 'none'),
                 'attack_start_s': iot_onset.get(f'iot{j}', 0.0),
             }

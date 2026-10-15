@@ -56,7 +56,8 @@ from controller.trust_state import TrustState
 from security.authenticator import (
     HmacAuthenticator, NullAuthenticator, Present80Authenticator,
 )
-from simulation.addressing import CX_IP, VIP_MAC, iot_ip, srv_index, srv_ip, srv_mac
+from contracts.inventory import Inventory
+from simulation.addressing import srv_index
 
 logger = logging.getLogger(__name__)
 
@@ -295,11 +296,10 @@ def _device_roster(cfg: Dict[str, Any]) -> Dict[str, str]:
     read `cfg['topology']`, which does not exist -- the block is `simulation:`
     -- and would have shipped a no-op fix into a live run.
     """
-    sim = cfg.get('simulation') or {}
-    num_iot = sim.get('num_iot_devices')
-    if not num_iot:
-        return {}
-    return {f'iot{j}': iot_ip(j) for j in range(1, int(num_iot) + 1)}
+    # Now read through contracts.inventory: generated from addressing.py
+    # under Mininet (unchanged), or the configured `inventory.devices` on real
+    # hardware. Still {} when neither names any device.
+    return Inventory.from_config(cfg).roster()
 
 # Overridable so tests / alternate demo scales can point at a different file
 # without editing code.
@@ -360,8 +360,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
             cfg = yaml.safe_load(f)
         self.cfg = cfg
 
-        n = cfg['simulation']['num_edge_nodes']
-        node_ids = [f'srv{i}' for i in range(1, n + 1)]
+        # Every address the controller installs into a rule comes from here:
+        # generated from simulation/addressing.py under Mininet, or the
+        # configured `inventory:` block on real hardware (contracts/inventory.py).
+        self.inventory = Inventory.from_config(cfg)
+        node_ids = self.inventory.server_ids
+        logger.info("Inventory: %d servers, %d devices (source: %s)",
+                    len(node_ids), len(self.inventory.devices), self.inventory.source)
 
         # The clients' own give-up time. Read once here because two separate
         # things need it: the dispatch reaper's horizon (TrustState) and the
@@ -546,6 +551,11 @@ class TrustBalancerApp(app_manager.OSKenApp):
             latency_liar_floor_ms=ctrl_cfg.get('latency_liar_floor_ms', 40.0),
             idle_claim_threshold=ctrl_cfg.get('idle_claim_threshold', 0.25),
             latency_liar_persist=ctrl_cfg.get('latency_liar_persist', 3),
+            # Poll addresses and hardware classes come from the inventory, so
+            # the same monitor polls Mininet hosts or real machines.
+            node_hosts={nid: self.inventory.server_ip(nid) for nid in node_ids},
+            node_classes={nid: self.inventory.server_class(nid) for nid in node_ids},
+            latency_baseline=ctrl_cfg.get('latency_baseline', 'fleet'),
         )
 
         # Set in start() when the dashboard is enabled -- polls OFPFlowStats so
@@ -882,10 +892,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         reply = packet.Packet()
         reply.add_protocol(ethernet.ethernet(
-            dst=eth.src, src=VIP_MAC, ethertype=ether_types.ETH_TYPE_ARP,
+            dst=eth.src, src=self.inventory.vip_mac, ethertype=ether_types.ETH_TYPE_ARP,
         ))
         reply.add_protocol(arp.arp(
-            opcode=arp.ARP_REPLY, src_mac=VIP_MAC, src_ip=self.vip_ip,
+            opcode=arp.ARP_REPLY, src_mac=self.inventory.vip_mac, src_ip=self.vip_ip,
             dst_mac=arp_pkt.src_mac, dst_ip=arp_pkt.src_ip,
         ))
         reply.serialize()
@@ -908,9 +918,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
         probation: bool = False,
     ) -> None:
         parser = dp.ofproto_parser
-        idx = srv_index(node_id)
-        s_ip = srv_ip(idx)
-        s_mac = srv_mac(idx)
+        s_ip = self.inventory.server_ip(node_id)
+        s_mac = self.inventory.server_mac(node_id)
         cookie = self._cookie_for(node_id)
 
         # A probation trial goes in above the quarantine drop rules and expires
@@ -964,7 +973,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             tcp_src=self.node_port, tcp_dst=client_port,
         )
         reverse_actions = [
-            parser.OFPActionSetField(eth_src=VIP_MAC),
+            parser.OFPActionSetField(eth_src=self.inventory.vip_mac),
             parser.OFPActionSetField(ipv4_src=self.vip_ip),
             parser.OFPActionSetField(tcp_src=self.vip_port),
         ]
@@ -1002,7 +1011,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
                     'dir': 'reverse',
                     'match': f'ipv4_src={s_ip},tcp_src={self.node_port},'
                              f'ipv4_dst={client_ip},tcp_dst={client_port}',
-                    'actions': f'set eth_src={VIP_MAC}, set ipv4_src={self.vip_ip}, '
+                    'actions': f'set eth_src={self.inventory.vip_mac}, set ipv4_src={self.vip_ip}, '
                                f'set tcp_src={self.vip_port} -> goto table {self.TABLE_L2}',
                 },
             ],
@@ -1194,8 +1203,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # killed (`dpctl dump-flows -O OpenFlow13`, the priority=400 entries).
         # Matching the MAC as source *and* destination covers every ethertype,
         # including the node's ARP replies -- an IP-only match would not.
-        node_mac = srv_mac(srv_index(node_id))
-        node_ip = srv_ip(srv_index(node_id))
+        node_mac = self.inventory.server_mac(node_id)
+        node_ip = self.inventory.server_ip(node_id)
+        poller_ip = self.inventory.controller_ip
         for dp in list(self._datapaths.values()):
             parser = dp.ofproto_parser
             ofproto = dp.ofproto
@@ -1210,11 +1220,11 @@ class TrustBalancerApp(app_manager.OSKenApp):
             for hc_match in (
                 parser.OFPMatch(
                     eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
-                    ipv4_src=CX_IP, ipv4_dst=node_ip, tcp_dst=self.node_port,
+                    ipv4_src=poller_ip, ipv4_dst=node_ip, tcp_dst=self.node_port,
                 ),
                 parser.OFPMatch(
                     eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
-                    ipv4_src=node_ip, ipv4_dst=CX_IP, tcp_src=self.node_port,
+                    ipv4_src=node_ip, ipv4_dst=poller_ip, tcp_src=self.node_port,
                 ),
                 # ARP between the two as well, or the poll survives only as long
                 # as cx's neighbour entry does: the request is broadcast and gets
@@ -1222,11 +1232,11 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 # would hit the drop rule.
                 parser.OFPMatch(
                     eth_type=ether_types.ETH_TYPE_ARP,
-                    arp_spa=CX_IP, arp_tpa=node_ip,
+                    arp_spa=poller_ip, arp_tpa=node_ip,
                 ),
                 parser.OFPMatch(
                     eth_type=ether_types.ETH_TYPE_ARP,
-                    arp_spa=node_ip, arp_tpa=CX_IP,
+                    arp_spa=node_ip, arp_tpa=poller_ip,
                 ),
             ):
                 self._install_goto_l2(
@@ -1529,6 +1539,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         """
         n_edge = self.cfg['simulation']['num_edge_nodes']
         n_iot = self.cfg['simulation']['num_iot_devices']
+        # Bound to the instance normally; derived from config when called on a
+        # bare object (the dashboard tests call this unbound).
+        inventory = getattr(self, 'inventory', None) or Inventory.from_config(self.cfg)
         mal = {
             m['node']: m.get('attack', 'none')
             for m in self.cfg['simulation'].get('malicious_edge_nodes', [])
@@ -1582,8 +1595,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'label': f's{i}',
             })
             nodes.append({
-                'id': f'srv{i}', 'kind': 'server', 'ip': srv_ip(i),
-                'mac': srv_mac(i), 'label': f'srv{i}',
+                'id': f'srv{i}', 'kind': 'server',
+                'ip': inventory.servers.get(f'srv{i}', ('', ''))[0],
+                'mac': inventory.servers.get(f'srv{i}', ('', ''))[1],
+                'label': f'srv{i}',
                 # Surfaced only so the dashboard can mark ground truth *after*
                 # the controller catches it -- never used to pre-emptively
                 # colour a node, which would give the detection away for free.
@@ -1596,7 +1611,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
         for j in range(1, n_iot + 1):
             sw_idx = (j - 1) % n_edge          # matches ZeroTrustTopo.build()
             nodes.append({
-                'id': f'iot{j}', 'kind': 'iot', 'ip': iot_ip(j),
+                'id': f'iot{j}', 'kind': 'iot',
+                'ip': inventory.devices.get(f'iot{j}', ''),
                 'label': f'iot{j}',
                 # Ground truth only -- see iot_mal above. Same rule as the
                 # server nodes: never used to colour a device before the

@@ -1,0 +1,40 @@
+# Testbed overlay: copy config/params_trust_full.yaml (or _raft) to
+# config/params_testbed.yaml and replace/add these blocks with your machines'
+# real addresses. Collect them on each host with:  ip -br addr; ip -br link
+#
+# Then, from the controller host:
+#   python3 scripts/preflight_live_run.py --config config/params_testbed.yaml
+
+simulation:
+  num_edge_nodes: 4          # must equal the number of inventory.servers
+  num_iot_devices: 8
+
+controller:
+  vip: 192.168.50.99         # an unused address on the testbed subnet
+  latency_baseline: class    # judge each server against its hardware class
+
+inventory:
+  controller_ip: 192.168.50.10       # the controller host's testbed address
+  servers:
+    srv1: {ip: 192.168.50.101, mac: dc:a6:32:00:00:01, class: pi4}
+    srv2: {ip: 192.168.50.102, mac: dc:a6:32:00:00:02, class: pi4}
+    srv3: {ip: 192.168.50.103, mac: dc:a6:32:00:00:03, class: pi4}
+    srv4: {ip: 192.168.50.104, mac: 88:ae:dd:00:00:04, class: nuc}
+  devices:
+    iot1: 192.168.50.201
+    iot2: 192.168.50.202
+    iot3: 192.168.50.203
+    iot4: 192.168.50.204
+    iot5: 192.168.50.205
+    iot6: 192.168.50.206
+    iot7: 192.168.50.207
+    iot8: 192.168.50.208
+
+# Replicas on separate machines -- no launch_local on a real testbed.
+ledger:
+  backend: raft_remote
+  replicas:
+    n1: 192.168.50.11:9101
+    n2: 192.168.50.12:9101
+    n3: 192.168.50.13:9101
+  auth_token_env: ZTSDN_LEDGER_TOKEN

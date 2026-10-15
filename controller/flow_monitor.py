@@ -29,11 +29,11 @@ on_quarantine(node_id) for each node that just crossed the line, and
 TrustState.flush_if_stale() so a batch smaller than max_updates_per_block
 doesn't sit uncommitted indefinitely once traffic quiets down.
 
-Polls each node at its addressing.srv_ip() (the controller process itself
-runs in the root network namespace, reachable into the emulated 10.0.1.0/24
-server subnet only via the `cx` routing node -- see simulation/topology.py
-and design fact #3 in the Sprint 1 memory), never by node_id as a hostname:
-Mininet hosts have no DNS resolution for each other's names.
+Polls each node at the IP the inventory gives it (`node_hosts`, from
+contracts/inventory.py; under Mininet that is addressing.srv_ip(), reached via
+the `cx` routing node -- see simulation/topology.py), never by node_id as a
+hostname: Mininet hosts have no DNS resolution for each other's names, and real
+testbed machines need not either.
 """
 
 import http.client
@@ -57,6 +57,11 @@ from controller.attack_classifier import (
 from controller.event_bus import NullBus
 from controller.trust_state import TrustState
 from simulation.addressing import srv_index, srv_ip
+
+#: A hardware class needs this many servers for its own median to be a
+#: baseline. Below it the median is mostly the server being judged, so the
+#: fleet median is used instead.
+MIN_CLASS_SIZE = 3
 
 logger = logging.getLogger(__name__)
 
@@ -190,10 +195,34 @@ class FlowMonitor:
         latency_liar_floor_ms: float = 40.0,
         idle_claim_threshold: float = 0.25,
         latency_liar_persist: int = 3,
+        node_hosts: Optional[Dict[str, str]] = None,
+        node_classes: Optional[Dict[str, str]] = None,
+        latency_baseline: str = 'fleet',
     ) -> None:
         self.state = state
         self.node_ids = list(node_ids)
         self.agent_port = agent_port
+        # Where to poll each node. Defaults to the Mininet scheme so existing
+        # callers (tests, run_demo standalone) are unchanged.
+        self.node_hosts: Dict[str, str] = dict(node_hosts) if node_hosts else {
+            nid: srv_ip(srv_index(nid)) for nid in self.node_ids}
+        # Latency-tell baseline: 'fleet' (median of every node, the original)
+        # or 'class' (median of the node's hardware class, for mixed hardware).
+        if latency_baseline not in ('fleet', 'class'):
+            raise ValueError(f"latency_baseline must be 'fleet' or 'class', not {latency_baseline!r}")
+        self.latency_baseline_mode = latency_baseline
+        self.node_classes: Dict[str, str] = {
+            nid: (node_classes or {}).get(nid, 'default') for nid in self.node_ids}
+        if latency_baseline == 'class':
+            sizes: Dict[str, int] = {}
+            for c in self.node_classes.values():
+                sizes[c] = sizes.get(c, 0) + 1
+            small = sorted(c for c, n in sizes.items() if n < MIN_CLASS_SIZE)
+            if small:
+                logger.warning(
+                    "latency_baseline=class: class(es) %s have fewer than %d servers; "
+                    "their servers are judged against the fleet median instead",
+                    small, MIN_CLASS_SIZE)
         self.poll_interval_s = poll_interval_s
         self.honesty_deviation_threshold = honesty_deviation_threshold
         self.on_quarantine = on_quarantine
@@ -281,6 +310,7 @@ class FlowMonitor:
         # Uses only the controller's own measured RTTs -- a node cannot spoof how
         # long its reply actually took.
         latency_baseline = fleet_latency_baseline([p.rtt_ms for p in results.values()])
+        baselines = self._latency_baselines(results, latency_baseline)
 
         for node_id in self.node_ids:
             probe = results[node_id]
@@ -406,10 +436,11 @@ class FlowMonitor:
                 # condition to persist so noisy single polls can't quarantine a
                 # healthy node.
                 measured_rtt = probe.rtt_ms
+                node_baseline = baselines.get(node_id, latency_baseline)
                 tell = evaluate_latency_tell(
                     claimed_cpu=claimed_avg if has_claim else None,
                     measured_rtt_ms=measured_rtt,
-                    fleet_baseline_ms=latency_baseline,
+                    fleet_baseline_ms=node_baseline,
                     strikes=self._latency_strikes.get(node_id, 0),
                     idle_claim_threshold=self.idle_claim_threshold,
                     latency_liar_ratio=self.latency_liar_ratio,
@@ -420,15 +451,15 @@ class FlowMonitor:
                 if tell.tripped:
                     logger.warning(
                         "%s: latency tell -- claims idle (cpu %.2f) but rtt %.0fms is "
-                        "%.1fx the fleet median %.0fms (%d/%d strikes)",
-                        node_id, claimed_avg, measured_rtt, tell.ratio, latency_baseline,
+                        "%.1fx the baseline %.0fms (%d/%d strikes)",
+                        node_id, claimed_avg, measured_rtt, tell.ratio, node_baseline,
                         tell.strikes, self.latency_liar_persist,
                     )
                     anomaly_raw = 1.0
                     reasons.append(
                         f'latency tell: claims idle (cpu {claimed_avg:.2f}) but rtt '
-                        f'{measured_rtt:.0f}ms is {tell.ratio:.1f}x fleet median '
-                        f'{latency_baseline:.0f}ms (sustained)'
+                        f'{measured_rtt:.0f}ms is {tell.ratio:.1f}x '
+                        f'{self._baseline_label(node_id)} {node_baseline:.0f}ms (sustained)'
                     )
                     if tell.ratio is not None:
                         signals[SIG_LATENCY_TELL] = round(tell.ratio, 4)
@@ -630,8 +661,42 @@ class FlowMonitor:
             first_flagged_t=result.first_flagged_t,
         )
 
+    def _latency_baselines(
+        self, results: Dict[str, 'StatusProbe'], fleet: Optional[float],
+    ) -> Dict[str, Optional[float]]:
+        """Per-node latency baseline for this cycle.
+
+        'fleet': every node gets the fleet median. 'class': a node gets the
+        median of its hardware class when the class is big enough to have a
+        meaningful median (MIN_CLASS_SIZE), else the fleet median.
+        """
+        if self.latency_baseline_mode != 'class':
+            return {nid: fleet for nid in self.node_ids}
+        members: Dict[str, List[str]] = {}
+        for nid in self.node_ids:
+            members.setdefault(self.node_classes[nid], []).append(nid)
+        out: Dict[str, Optional[float]] = {}
+        for cls, nids in members.items():
+            if len(nids) < MIN_CLASS_SIZE:
+                base = fleet
+            else:
+                base = fleet_latency_baseline([results[n].rtt_ms for n in nids if n in results])
+                if base is None:
+                    base = fleet
+            for n in nids:
+                out[n] = base
+        return out
+
+    def _baseline_label(self, node_id: str) -> str:
+        if self.latency_baseline_mode == 'class':
+            cls = self.node_classes.get(node_id, 'default')
+            size = sum(1 for c in self.node_classes.values() if c == cls)
+            if size >= MIN_CLASS_SIZE:
+                return f'{cls}-class median'
+        return 'fleet median'
+
     def _fetch_status(self, node_id: str) -> StatusProbe:
-        host = srv_ip(srv_index(node_id))
+        host = self.node_hosts[node_id]
         start = time.monotonic()
         try:
             conn = http.client.HTTPConnection(host, self.agent_port, timeout=_STATUS_TIMEOUT_S)

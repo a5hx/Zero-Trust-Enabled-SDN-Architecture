@@ -86,6 +86,7 @@ class StaticRouter:
         strategy: str = DEFAULT_STRATEGY,
         seed: int = 1,
         rng: Optional[_random.Random] = None,
+        ip_to_index: Optional[dict] = None,
     ) -> None:
         if strategy not in STRATEGIES:
             raise ValueError(
@@ -96,6 +97,10 @@ class StaticRouter:
         self.n_edge = n_edge
         self.strategy = strategy
         self._rng = rng or _random.Random(seed)
+        # client IP -> device index, from the inventory on real hardware, where
+        # device addresses are not the 10.0.0.J scheme. Mininet runs pass none
+        # and fall back to parsing the address, exactly as before.
+        self._ip_to_index = dict(ip_to_index or {})
         self._rr = 0
         # Every binding this router has handed out, so a run can report the map
         # it actually used rather than one re-derived from config afterwards.
@@ -111,7 +116,7 @@ class StaticRouter:
         four minutes.
         """
         if self.strategy == STRATEGY_STATIC_NEAREST:
-            idx = iot_index(client_ip)
+            idx = self._ip_to_index.get(client_ip) or iot_index(client_ip)
             if idx is None:
                 # Not an IoT address. Hash it rather than dropping it: the
                 # binding still has to be stable per client, and a control arm
