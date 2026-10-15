@@ -69,6 +69,7 @@ from base_model.static_router import STRATEGY_STATIC_NEAREST, StaticRouter
 from base_model.trust_observer import BaselineTrustObserver, StatusSample
 from controller.event_bus import EventBus, NullBus
 from contracts.inventory import Inventory
+from security.admin_auth import load_admin_token
 from simulation.addressing import srv_index
 
 logger = logging.getLogger('base_model.baseline_controller')
@@ -115,6 +116,8 @@ class BaselineControllerApp(app_manager.OSKenApp):
         # Same inventory as the treatment arm (contracts/inventory.py):
         # generated under Mininet, configured on real hardware.
         self.inventory = Inventory.from_config(cfg)
+        # Same management-endpoint token rule as the treatment arm.
+        self.admin_token = load_admin_token(cfg)
         self.node_ids = self.inventory.server_ids
 
         self.vip_ip = ctrl['vip']

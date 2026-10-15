@@ -7,7 +7,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# ZTSDN_CONFIG (path to the testbed config) and, if used, ZTSDN_LEDGER_TOKEN.
+# ZTSDN_CONFIG (path to the testbed config), ZTSDN_ADMIN_TOKEN, ZTSDN_MASTER_KEY,
+# and ZTSDN_LEDGER_TOKEN -- whichever the config names. chmod 600.
 EnvironmentFile=/etc/ztsdn/controller.env
 WorkingDirectory=/opt/ztsdn
 ExecStart=/usr/bin/python3 -m controller.osken_manager controller.trust_balancer

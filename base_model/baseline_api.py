@@ -51,6 +51,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 from urllib.parse import urlsplit
 
+from security.admin_auth import ADMIN_PATHS, is_authorized
+
 logger = logging.getLogger('base_model.baseline_api')
 
 
@@ -142,6 +144,13 @@ def _make_handler(app: Any):
         # -- POST ----------------------------------------------------- #
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
+            if path in ADMIN_PATHS and not is_authorized(
+                    self.headers.get('Authorization'), getattr(app, 'admin_token', None)):
+                length = int(self.headers.get('Content-Length', 0) or 0)
+                if length:
+                    self.rfile.read(length)
+                self._write_json(401, {'error': 'management endpoint: missing or wrong bearer token'})
+                return
             try:
                 body = self._read_json()
             except (json.JSONDecodeError, UnicodeDecodeError):

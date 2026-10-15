@@ -12,6 +12,12 @@ simulation:
 controller:
   vip: 192.168.50.99         # an unused address on the testbed subnet
   latency_baseline: class    # judge each server against its hardware class
+  admin_token_env: ZTSDN_ADMIN_TOKEN   # protects /register, /topology/links, /monitor/pause
+
+security:
+  auth_scheme: present80
+  shared_key_env: ZTSDN_MASTER_KEY     # master key from the environment, not this file
+  key_derivation: per_device           # each device holds only its own derived key
 
 inventory:
   controller_ip: 192.168.50.10       # the controller host's testbed address
