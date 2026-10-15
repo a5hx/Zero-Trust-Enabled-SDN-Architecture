@@ -44,17 +44,30 @@ Safety properties the tests assert (paper Figure 3)
 5. **State Machine Safety** -- no two replicas apply different entries at the
    same log index.
 
-Deliberately out of scope for this milestone: log compaction / snapshotting,
-cluster membership changes, and persistence to disk. ``current_term``,
-``voted_for``, and ``log`` are held in memory, which matches the crash-fault
-(not Byzantine) model this project claims -- see ``PROBLEM_AND_IMPACT.md`` §4.
+Persistence. ``current_term``, ``voted_for`` and ``log`` are RAFT's
+*persistent* state (paper Figure 2): a server must write them to stable storage
+before it answers an RPC that depends on them, or a crash-and-restart can make
+it vote twice in one term or forget entries a majority was counting on. They go
+through a ``Storage`` seam. ``MemoryStorage`` (the default) keeps the old
+in-memory behaviour for the virtual-clock tests and the demos; ``FileStorage``
+writes them to disk so a restarted replica rejoins with its log rather than
+empty. ``commit_index`` and ``last_applied`` stay volatile, as the paper says:
+a restarted node relearns the commit point from the leader and re-applies its
+log from the start, which rebuilds the ledger deterministically.
+
+Deliberately out of scope: log compaction / snapshotting and cluster
+membership changes. The fault model is crash-fault, not Byzantine -- see
+``PROBLEM_AND_IMPACT.md`` §4.
 """
 
 import heapq
+import json
 import logging
+import os
 import random
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -160,6 +173,141 @@ class Transport(Protocol):
         ...
 
 
+# --------------------------------------------------------------------------- #
+# Persistent state
+# --------------------------------------------------------------------------- #
+
+
+class Storage(Protocol):
+    """Where a RaftNode keeps its persistent state (paper Figure 2).
+
+    Every write must be durable when the call returns: the node calls these
+    *before* sending the reply or request that depends on them.
+    """
+
+    def load(self) -> Tuple[int, Optional[str], List[LogEntry]]:
+        """(current_term, voted_for, log entries from index 1 up)."""
+        ...
+
+    def save_vote(self, term: int, voted_for: Optional[str]) -> None:
+        ...
+
+    def append(self, entries: Sequence[LogEntry]) -> None:
+        ...
+
+    def truncate(self, from_index: int) -> None:
+        """Drop every entry at index >= from_index."""
+        ...
+
+
+class MemoryStorage:
+    """No-op storage: state lives only in the RaftNode's own attributes, as it
+    always did. A 'restart' under MemoryStorage loses everything, which is what
+    the virtual-clock tests and the standalone demos model."""
+
+    def load(self) -> Tuple[int, Optional[str], List[LogEntry]]:
+        return 0, None, []
+
+    def save_vote(self, term: int, voted_for: Optional[str]) -> None:
+        pass
+
+    def append(self, entries: Sequence[LogEntry]) -> None:
+        pass
+
+    def truncate(self, from_index: int) -> None:
+        pass
+
+
+class FileStorage:
+    """Durable storage in one directory per replica.
+
+    ``meta.json`` holds term and vote, replaced atomically (write a temp file,
+    fsync, rename). ``log.jsonl`` holds one entry per line, appended and
+    fsynced; a truncation (rare: only when a new leader overwrites an
+    uncommitted conflicting suffix) rewrites the file atomically. Payloads must
+    be JSON-serialisable, which the trust ledger's always are.
+
+    ``load`` tolerates a torn final line -- the one thing a crash mid-append can
+    leave -- by stopping at the first line that does not parse or does not
+    continue the index sequence. Nothing after a gap can be trusted, and an
+    entry that never fully reached disk was never acknowledged to anyone.
+    """
+
+    def __init__(self, directory: str) -> None:
+        self._dir = Path(directory)
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._meta = self._dir / 'meta.json'
+        self._log = self._dir / 'log.jsonl'
+
+    # -- helpers ------------------------------------------------------------ #
+    @staticmethod
+    def _entry_line(entry: LogEntry) -> str:
+        return json.dumps(
+            {'term': entry.term, 'index': entry.index, 'payload': entry.payload},
+            sort_keys=True,
+        ) + '\n'
+
+    def _replace(self, path: Path, text: str) -> None:
+        tmp = path.with_suffix(path.suffix + '.tmp')
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        self._fsync_dir()
+
+    def _fsync_dir(self) -> None:
+        try:
+            fd = os.open(self._dir, os.O_RDONLY)
+        except OSError:  # pragma: no cover - platforms without directory fds
+            return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    # -- Storage ------------------------------------------------------------ #
+    def load(self) -> Tuple[int, Optional[str], List[LogEntry]]:
+        term, voted_for = 0, None
+        if self._meta.exists():
+            meta = json.loads(self._meta.read_text(encoding='utf-8'))
+            term, voted_for = int(meta['term']), meta.get('voted_for')
+
+        entries: List[LogEntry] = []
+        if self._log.exists():
+            with open(self._log, encoding='utf-8') as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                        entry = LogEntry(term=int(row['term']), index=int(row['index']),
+                                         payload=row.get('payload'))
+                    except (ValueError, KeyError, TypeError):
+                        logger.warning("%s: stopping log load at an unreadable line", self._log)
+                        break
+                    if entry.index != len(entries) + 1:
+                        logger.warning("%s: stopping log load at a gap (index %d)",
+                                       self._log, entry.index)
+                        break
+                    entries.append(entry)
+        return term, voted_for, entries
+
+    def save_vote(self, term: int, voted_for: Optional[str]) -> None:
+        self._replace(self._meta, json.dumps({'term': term, 'voted_for': voted_for}))
+
+    def append(self, entries: Sequence[LogEntry]) -> None:
+        if not entries:
+            return
+        with open(self._log, 'a', encoding='utf-8') as fh:
+            fh.write(''.join(self._entry_line(e) for e in entries))
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def truncate(self, from_index: int) -> None:
+        _, _, entries = self.load()
+        kept = [e for e in entries if e.index < from_index]
+        self._replace(self._log, ''.join(self._entry_line(e) for e in kept))
+
+
 class RaftNode:
     """A single RAFT server.
 
@@ -178,6 +326,9 @@ class RaftNode:
         heartbeat_interval: Leader's time between AppendEntries broadcasts.
         election_timeout_min: Lower bound of the randomised election timeout.
         election_timeout_max: Upper bound of the randomised election timeout.
+        storage: Where persistent state lives. Defaults to MemoryStorage
+            (nothing survives a restart); pass a FileStorage for a replica
+            that must rejoin with its log after a crash.
     """
 
     def __init__(
@@ -190,6 +341,7 @@ class RaftNode:
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         election_timeout_min: float = DEFAULT_ELECTION_TIMEOUT_MIN,
         election_timeout_max: float = DEFAULT_ELECTION_TIMEOUT_MAX,
+        storage: Optional[Storage] = None,
     ) -> None:
         self.node_id = node_id
         self.peers: List[str] = [p for p in peers if p != node_id]
@@ -201,12 +353,21 @@ class RaftNode:
         self.election_timeout_min = election_timeout_min
         self.election_timeout_max = election_timeout_max
 
-        # Persistent state (in memory here -- see the module docstring).
-        self.current_term: int = 0
-        self.voted_for: Optional[str] = None
+        # Persistent state, mirrored to self._storage before it is acted on --
+        # see the module docstring. Loaded here so a restarted replica resumes
+        # its term, its vote, and its log.
+        self._storage: Storage = storage if storage is not None else MemoryStorage()
+        term, voted_for, entries = self._storage.load()
+        self.current_term: int = term
+        self.voted_for: Optional[str] = voted_for
         # Index 0 is a sentinel so that log[i].index == i and prev_log_index=0
         # means "the very beginning of the log" without special-casing.
-        self.log: List[LogEntry] = [LogEntry(term=0, index=0, payload=None)]
+        self.log: List[LogEntry] = [LogEntry(term=0, index=0, payload=None)] + list(entries)
+        if entries:
+            logger.info(
+                "%s: restored term %d, vote %s, %d log entries from storage",
+                node_id, term, voted_for, len(entries),
+            )
 
         # Volatile state, all servers.
         self.role: Role = Role.FOLLOWER
@@ -280,6 +441,9 @@ class RaftNode:
 
         entry = LogEntry(term=self.current_term, index=len(self.log), payload=payload)
         self.log.append(entry)
+        # Durable before it is replicated: the leader counts itself towards the
+        # majority, so its own copy must survive a crash too.
+        self._storage.append([entry])
         logger.debug(
             "%s: appended entry %d (term %d)", self.node_id, entry.index, entry.term
         )
@@ -345,6 +509,7 @@ class RaftNode:
             )
         self.current_term = term
         self.voted_for = None
+        self._storage.save_vote(self.current_term, self.voted_for)
         self.role = Role.FOLLOWER
         self.leader_id = None
         self._votes.clear()
@@ -358,6 +523,9 @@ class RaftNode:
         self.current_term += 1
         self.role = Role.CANDIDATE
         self.voted_for = self.node_id
+        # Durable before any RequestVote leaves: a candidate that crashed and
+        # restarted must not vote for someone else in the term it stood in.
+        self._storage.save_vote(self.current_term, self.voted_for)
         self.leader_id = None
         self._votes = {self.node_id}
         self._reset_election_timer(now)
@@ -399,6 +567,9 @@ class RaftNode:
 
         if granted:
             self.voted_for = msg.candidate_id
+            # Durable before the reply is sent -- this is what stops a
+            # restarted follower granting a second vote in the same term.
+            self._storage.save_vote(self.current_term, self.voted_for)
             # Only reset the timer when actually granting a vote, so a
             # disruptive candidate cannot keep a healthy follower from timing
             # out and standing for election itself.
@@ -494,7 +665,9 @@ class RaftNode:
 
         # Splice. Existing entries that agree are left alone -- important,
         # because a duplicated or reordered request must not truncate a log that
-        # already holds *newer* entries from this same leader.
+        # already holds *newer* entries from this same leader. Storage follows
+        # the same edits, flushed before the reply below acknowledges them.
+        appended: List[LogEntry] = []
         for offset, entry in enumerate(msg.entries):
             index = msg.prev_log_index + 1 + offset
             if index <= self.last_log_index:
@@ -505,8 +678,15 @@ class RaftNode:
                     "%s: truncating log at %d (conflict term %d != %d)",
                     self.node_id, index, self.log[index].term, entry.term,
                 )
+                if appended:
+                    self._storage.append(appended)
+                    appended = []
                 del self.log[index:]
+                self._storage.truncate(index)
             self.log.append(entry)
+            appended.append(entry)
+        if appended:
+            self._storage.append(appended)
 
         last_new_index = msg.prev_log_index + len(msg.entries)
 

@@ -11,9 +11,11 @@ real TCP transport, a `RaftBackend` that turns RAFT's async commit into the
 synchronous `CommitBackend` the controller already expects, and a live
 3-replica demo with measured commit latency.
 
-**Nothing in the running controller uses this yet.** `LocalLedgerBackend`
-remains the default; swapping it for `RaftBackend` in `trust_balancer.py` is
-future work (see Known limitations, below).
+**Wired into the controller (October 2026), opt-in.** With a `ledger:` block
+set to `backend: raft_remote` (see `config/params_trust_raft.yaml`), the
+controller commits every trust-update batch to a separate 3-replica cluster.
+Without that block it uses `LocalLedgerBackend`, exactly as every earlier live
+run did. See "Controller integration" below.
 
 ---
 
@@ -156,24 +158,63 @@ still an honest measurement of the built system, not a simulation — same
 caveat `evaluation/baseline.py` states about its own results, the same
 discipline applied here.
 
+## Controller integration
+
+The controller is a **client** of the cluster rather than a replica in it. The
+replicas are separate `blockchain/raft_replica.py` processes (on a real
+testbed, separate machines), each with its own ticker, so nothing in the
+controller drives elections. Three pieces, all in `blockchain/commit_backend.py`:
+
+- **`RemoteRaftBackend`** posts each batch to the replica it believes is
+  leader (`POST /commit`), follows the `leader_id` hint in a 409, and moves on
+  to the next replica on a connection error. Every committed block comes back
+  in full and is appended to a local **mirror** `Ledger`, which re-validates
+  index, previous hash, Merkle root and hash itself. The mirror backs
+  `/ledger/verify` and the dashboard; if it ever disagrees with the cluster it
+  is rebuilt from `GET /blocks?from=1`.
+- **`AsyncCommitter`** takes commits off the report path:
+  `TrustState._flush_pending_locked` hands it the batch and returns at once,
+  and one worker commits batches in order, retrying with backoff until the
+  cluster accepts each one. A leadership change delays trust records; it no
+  longer loses them. A full queue drops explicitly and counts it.
+- **Idempotent commits.** Each batch carries a content hash (`batch_key`).
+  A replica that has already applied a batch returns the existing block, and
+  a batch that reached the log twice is applied once, on every replica alike.
+  This is what makes the client's retries safe.
+
+Replicas persist term, vote and log under `--data-dir` (`raft.FileStorage`),
+so a killed replica rejoins with its log. `--auth-token-env` makes every
+replica endpoint require a bearer token.
+
+`run_demo.py --mode mininet` starts the replicas itself when the config has
+`ledger.launch_local`, waits for a leader, then starts the controller.
+`GET /ledger/status` on the controller reports queue depth, retries, the
+leader last used and the last error.
+
+**Measured (localhost, 3 replica processes, real TCP, 15 Oct 2026):** 60
+batches submitted 50 ms apart, leader killed after batch 25. Two attempts
+failed during the election and were retried; all 60 batches committed exactly
+once, in order, on a valid chain, across terms 2 and 3 (proposers n2, then
+n3). Handing a batch to the queue took at most 0.08 ms.
+
+**Acceptance check for a live run:** every `block` event in the recording has
+`raft_term > 0` and a replica id as `proposer_id`; killing the leader mid-run
+leaves submitted = committed in `/ledger/status`.
+
+---
+
 ## Known limitations
 
-- **No client-side leader redirect.** A follower's `commit()` (and the HTTP
-  API's `POST /commit`) returns `None`/`409` immediately rather than
-  forwarding to the current leader. A caller that wants to survive a
-  leadership change must retry itself, using `leader_id` from `/status` as a
-  hint. This project runs one active committer at a time; the demo kills the
-  leader and switches its *own* client target to the new one rather than
-  proving seamless mid-flight failover for an unmodified caller — a
-  materially larger, separate problem.
-- **Not wired to the controller.** `trust_balancer.py` still constructs
-  `LocalLedgerBackend`. `RaftBackend`'s constructor signature was deliberately
-  kept close to it (`commit`/`latest_score`/`verify`/`chain_length`, same
-  return types) so the swap, when it happens, is confined to that one
-  call site — no other file should need to change.
-- **Crash-fault, not Byzantine**, matching `PROBLEM_AND_IMPACT.md` §4:
-  `current_term`/`voted_for`/`log` are in-memory only (no disk persistence),
-  so a genuinely crashed-and-restarted replica rejoins with an empty log
-  rather than recovering its prior state. Out of scope for this milestone,
-  same as `blockchain/raft.py`'s own module docstring already states.
+- **Redirect lives in the client.** A follower's `commit()` (and
+  `POST /commit`) still returns `None`/`409` rather than forwarding.
+  `RemoteRaftBackend` does the redirect (following `leader_id`) and
+  `AsyncCommitter` the retry, so the controller survives a leadership change;
+  any *other* client must do the same.
+- **Opt-in, and not yet run live under Mininet.** The default is still
+  `LocalLedgerBackend`; no recorded Mininet run uses the replicated ledger yet.
+  Run `config/params_trust_raft.yaml` to produce the first one.
+- **Crash-fault, not Byzantine**, matching `PROBLEM_AND_IMPACT.md` §4. A
+  malicious replica could lie. Persistence is opt-in (`--data-dir`); without
+  it a restarted replica still rejoins empty. No log compaction yet: the log
+  file grows with the run.
 - **Localhost demo, not multi-host.** See the disclosure above.

@@ -1,0 +1,91 @@
+% ieeeish.sty -- a self-contained IEEE-conference-like two-column layout.
+%
+% WHY THIS EXISTS: IEEEtran.cls is not installed in this environment
+% (`kpsewhich IEEEtran.cls` returns nothing), and this repository's build
+% discipline is that every artifact must compile from a clean checkout with
+% the tools actually present. This package reproduces the IEEE conference
+% *look* (US Letter, two columns, 10pt Times, numbered citations, compact
+% headings) on top of stock `article`, using only packages that ship with
+% the installed TeX Live.
+%
+% If you later submit to a venue that supplies IEEEtran.cls, delete this file
+% and change the \documentclass line in paper.tex -- nothing else in the
+% paper body depends on this package.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{ieeeish}[2026/09/29 IEEE-conference-like layout on article.cls]
+
+\RequirePackage[letterpaper,top=0.75in,bottom=1.0in,left=0.625in,right=0.625in]{geometry}
+\RequirePackage{mathptmx}          % Times text + math
+\RequirePackage[scaled=0.92]{helvet}
+\RequirePackage{courier}
+\RequirePackage{amsmath,amssymb}
+\RequirePackage{graphicx}
+\RequirePackage{booktabs}
+\RequirePackage{array}
+\RequirePackage{multirow}
+\RequirePackage{tabularx}
+\RequirePackage{xcolor}
+\RequirePackage{float}
+\RequirePackage{enumitem}
+\RequirePackage{microtype}
+\RequirePackage{url}
+\RequirePackage[labelfont=bf,font=small,labelsep=period,skip=4pt]{caption}
+\RequirePackage{subcaption}
+\RequirePackage{titlesec}
+\RequirePackage{cite}
+\RequirePackage{stfloats}          % \begin{figure*}[b] in two-column
+\RequirePackage[hidelinks,breaklinks]{hyperref}
+
+\setlength{\columnsep}{0.25in}
+\setlength{\parindent}{1em}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\setlength{\abovedisplayskip}{5pt plus 2pt minus 2pt}
+\setlength{\belowdisplayskip}{5pt plus 2pt minus 2pt}
+
+% --- Headings: IEEE numbers sections in Roman, subsections with letters ------
+\renewcommand{\thesection}{\Roman{section}}
+\renewcommand{\thesubsection}{\thesection-\Alph{subsection}}
+\renewcommand{\thesubsubsection}{\arabic{subsubsection})}
+\titleformat{\section}[block]{\centering\normalsize\scshape}{\thesection.}{0.6em}{}
+\titleformat{\subsection}[block]{\normalsize\itshape}{\thesubsection.}{0.5em}{}
+\titleformat{\subsubsection}[runin]{\normalsize\itshape}{\thesubsubsection}{0.4em}{}[.]
+\titlespacing*{\section}{0pt}{9pt plus 2pt minus 2pt}{4pt}
+\titlespacing*{\subsection}{0pt}{7pt plus 2pt minus 2pt}{3pt}
+\titlespacing*{\subsubsection}{0pt}{5pt plus 1pt minus 1pt}{0.4em}
+
+% --- Title block ------------------------------------------------------------
+\renewcommand{\maketitle}{%
+  \twocolumn[%
+    \begin{center}
+      {\LARGE\bfseries \@title \par}\vspace{1.2em}
+      {\large\normalfont \@author \par}\vspace{0.8em}
+    \end{center}
+    \vspace{0.6em}
+  ]%
+}
+
+% --- Abstract / index terms -------------------------------------------------
+\renewenvironment{abstract}{%
+  \small\noindent\textbf{\textit{Abstract}}---\ignorespaces
+}{\par\vspace{4pt}}
+\newcommand{\keywords}[1]{{\small\noindent\textbf{\textit{Index Terms}}---#1\par}\vspace{6pt}}
+
+% --- A theorem-ish environment without amsthm's heavier defaults ------------
+\newcounter{prop}
+\newenvironment{proposition}[1][]{%
+  \refstepcounter{prop}\par\vspace{3pt}\noindent
+  \textbf{Proposition \theprop\ifx\relax#1\relax\else\ (#1)\fi.}\itshape\ }%
+  {\par\vspace{3pt}}
+\newenvironment{proofsketch}{%
+  \par\noindent\textit{Proof.}\ }{\hfill$\square$\par\vspace{3pt}}
+
+% --- An algorithm float that does not need algorithm.sty --------------------
+\newfloat{algorithm}{tbp}{loa}
+\floatname{algorithm}{Algorithm}
+
+% --- Provenance tag: every measured number cites the artifact it came from --
+\newcommand{\src}[1]{{\footnotesize\color{black!55}\,[\texttt{#1}]}}
+
+\endinput

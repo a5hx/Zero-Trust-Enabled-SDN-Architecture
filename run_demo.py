@@ -475,6 +475,23 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
     # silently corrupt the NFR report computed at the end of this one.
     Path(events_path).unlink(missing_ok=True)
 
+    # Replicated ledger: when the config asks for a local RAFT cluster, it must
+    # be up and have elected a leader before the controller starts, because the
+    # controller syncs its ledger mirror from the cluster at start-up.
+    ledger_cfg = cfg.get('ledger') or {}
+    raft_procs: Dict[str, Any] = {}
+    if ledger_cfg.get('backend') == 'raft_remote' and ledger_cfg.get('launch_local'):
+        from blockchain.raft_replica import launch_local_cluster, wait_for_leader
+        logger.info("Starting %d local RAFT replicas...", len(ledger_cfg['launch_local']['raft_peers']))
+        raft_procs = launch_local_cluster(ledger_cfg)
+        leader = wait_for_leader(ledger_cfg)
+        if leader is None:
+            for p in raft_procs.values():
+                p.terminate()
+            print("RAFT cluster elected no leader within 15s -- see logs/raft_*.log")
+            sys.exit(1)
+        logger.info("RAFT cluster up; leader is %s.", leader)
+
     env = dict(os.environ)
     env['ZTSDN_CONFIG'] = config_path
     logger.info("Starting the trust-aware controller (config=%s)...", config_path)
@@ -509,9 +526,21 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
             controller_proc.kill()
             controller_proc.wait()
         controller_log.close()
+        # Replicas stop after the controller, so its last queued commits can land.
+        for p in raft_procs.values():
+            p.terminate()
+        for p in raft_procs.values():
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
         # Mininet forced this whole run to be root; the artefacts it leaves
         # behind must not be, or the next non-sudo command trips over them.
-        _give_back_to_invoking_user(Path(events_path), Path('logs'))
+        owned = [Path(events_path), Path('logs')]
+        data_dir = (ledger_cfg.get('launch_local') or {}).get('data_dir')
+        if raft_procs and data_dir:
+            owned.append(Path(data_dir))
+        _give_back_to_invoking_user(*owned)
 
     logger.info("Live run complete. Computing the NFR report from %s...", events_path)
     if not Path(events_path).exists():

@@ -1,0 +1,45 @@
+### data/runs/treat/r01.jsonl
+[PASS] Routing decision -- target < 200 ms
+         measured: mean 0.54 ms / p95 0.71 ms / max 5.67 ms (n=6625)
+[PASS] Isolation (re-dispatch) -- target < 3000 ms
+         measured: mean 17.34 ms / max 26.98 ms (n=20)
+[PASS] Blockchain overhead -- target < 15 %
+         measured: 0.050 % -- commit mean 0.442 ms / max 3.914 ms over 650 block(s) of ~10.0 updates = 0.0442 ms per task, against 89.0 ms mean end-to-end task latency (n=6485); 287.2 ms total in commit() across the run
+[PASS] RAFT commit -- target < 500 ms
+         measured: mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; not wired into the live controller, plan.md Step 2)
+### data/runs/treat/r02.jsonl
+[PASS] Routing decision -- target < 200 ms
+         measured: mean 0.54 ms / p95 0.71 ms / max 8.08 ms (n=6387)
+[PASS] Isolation (re-dispatch) -- target < 3000 ms
+         measured: mean 12.85 ms / max 18.64 ms (n=30)
+[PASS] Blockchain overhead -- target < 15 %
+         measured: 0.045 % -- commit mean 0.433 ms / max 1.585 ms over 626 block(s) of ~10.0 updates = 0.0433 ms per task, against 95.9 ms mean end-to-end task latency (n=6246); 271.0 ms total in commit() across the run
+[PASS] RAFT commit -- target < 500 ms
+         measured: mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; not wired into the live controller, plan.md Step 2)
+### data/runs/treat/r03.jsonl
+[PASS] Routing decision -- target < 200 ms
+         measured: mean 0.54 ms / p95 0.71 ms / max 8.24 ms (n=6742)
+[PASS] Isolation (re-dispatch) -- target < 3000 ms
+         measured: mean 12.97 ms / max 21.24 ms (n=19)
+[PASS] Blockchain overhead -- target < 15 %
+         measured: 0.052 % -- commit mean 0.447 ms / max 5.295 ms over 661 block(s) of ~10.0 updates = 0.0447 ms per task, against 86.3 ms mean end-to-end task latency (n=6583); 295.6 ms total in commit() across the run
+[PASS] RAFT commit -- target < 500 ms
+         measured: mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; not wired into the live controller, plan.md Step 2)
+### data/runs/treat/r04.jsonl
+[PASS] Routing decision -- target < 200 ms
+         measured: mean 0.55 ms / p95 0.73 ms / max 4.38 ms (n=6459)
+[PASS] Isolation (re-dispatch) -- target < 3000 ms
+         measured: mean 23.46 ms / max 32.78 ms (n=29)
+[PASS] Blockchain overhead -- target < 15 %
+         measured: 0.049 % -- commit mean 0.452 ms / max 2.853 ms over 635 block(s) of ~10.0 updates = 0.0452 ms per task, against 92.8 ms mean end-to-end task latency (n=6328); 286.9 ms total in commit() across the run
+[PASS] RAFT commit -- target < 500 ms
+         measured: mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; not wired into the live controller, plan.md Step 2)
+### data/runs/treat/r05.jsonl
+[PASS] Routing decision -- target < 200 ms
+         measured: mean 0.55 ms / p95 0.73 ms / max 8.62 ms (n=6370)
+[PASS] Isolation (re-dispatch) -- target < 3000 ms
+         measured: mean 18.14 ms / max 26.38 ms (n=27)
+[PASS] Blockchain overhead -- target < 15 %
+         measured: 0.048 % -- commit mean 0.451 ms / max 5.058 ms over 625 block(s) of ~10.0 updates = 0.0451 ms per task, against 94.2 ms mean end-to-end task latency (n=6226); 281.7 ms total in commit() across the run
+[PASS] RAFT commit -- target < 500 ms
+         measured: mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; not wired into the live controller, plan.md Step 2)

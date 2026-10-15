@@ -23,7 +23,7 @@ import yaml
 from contracts.trust_update import TrustUpdate
 from trust_engine.trust_calculator import TrustCalculator
 from blockchain.block import build_block
-from blockchain.commit_backend import LocalLedgerBackend, TimingCommitBackend
+from blockchain.commit_backend import build_commit_backend
 from blockchain.ledger import Ledger
 
 from os_ken.base import app_manager
@@ -413,12 +413,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
         else:
             self.bus = NullBus()
 
-        # Times every real commit() call so the live full-scale demo can
-        # measure the blockchain-overhead NFR (<15%, evaluation/nfr_report.py)
-        # -- see TimingCommitBackend's docstring for why this can't be
-        # inferred from TrustState alone.
-        self._commit_backend = TimingCommitBackend(
-            LocalLedgerBackend(), on_commit=self._on_block_committed,
+        # The ledger backend comes from the config's `ledger:` block. Absent
+        # (every config so far) means the single in-memory ledger, committed
+        # synchronously, exactly as before. `backend: raft_remote` commits to a
+        # separate RAFT cluster through AsyncCommitter, so a replicated commit
+        # never runs on the report path. Either way TimingCommitBackend times
+        # every real commit() for the blockchain-overhead NFR (<15%,
+        # evaluation/nfr_report.py) and publishes the 'block' event.
+        self._commit_backend = build_commit_backend(
+            cfg.get('ledger'), on_commit=self._on_block_committed,
         )
 
         self.state = TrustState(
@@ -435,6 +438,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
             anomaly_gate=trust_cfg['anomaly_gate'],
             rate_limit_trust=trust_cfg.get('rate_limit_trust', DEFAULT_RATE_LIMIT_TRUST),
             anomaly_warn=trust_cfg.get('anomaly_warn', DEFAULT_ANOMALY_WARN),
+            # false only in the score-only ablation arm
+            # (config/params_trust_scoreonly.yaml): Ā scores but never acts.
+            anomaly_rail_enforced=bool(trust_cfg.get('anomaly_rail_enforced', True)),
             anomaly_lambda=trust_cfg['lambda_decay'],
             selection_strategy=selection_strategy,
             d_choices=d_choices,
@@ -1254,6 +1260,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'quarantine', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
             isolation_threshold=self.state.isolation_threshold,
             anomaly_gate=self.state.anomaly_gate,
+            anomaly_rail_enforced=self.state.anomaly_rail_enforced,
         )
         self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
 
@@ -1295,6 +1302,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'recovered', node=node_id, trust=round(t, 4), anomaly=round(a, 4),
             isolation_threshold=self.state.isolation_threshold,
             anomaly_gate=self.state.anomaly_gate,
+            anomaly_rail_enforced=self.state.anomaly_rail_enforced,
         )
         self.bus.publish('flow_delete', node=node_id, cookie=cookie, dpids=dpids)
 
@@ -1626,6 +1634,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             'thresholds': {
                 'isolation': self.state.isolation_threshold,
                 'anomaly_gate': self.state.anomaly_gate,
+                'anomaly_rail_enforced': self.state.anomaly_rail_enforced,
             },
             # How the winner is chosen among eligible nodes, so the dashboard can
             # show whether routing is winner-take-all (argmax) or the
