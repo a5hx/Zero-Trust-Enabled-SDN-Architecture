@@ -168,3 +168,20 @@ class TestLoadEvents:
         path.write_text('\n' + json.dumps(_route(1.0)) + '\nnot json\n')
         events = load_events(str(path))
         assert events == [_route(1.0)]
+
+
+def test_raft_nfr_is_measured_live_when_blocks_carry_a_term():
+    events = [
+        {'type': 'block', 'accepted': True, 'raft_term': 2, 'proposer_id': 'n1', 'commit_ms': 12.0},
+        {'type': 'block', 'accepted': True, 'raft_term': 3, 'proposer_id': 'n3', 'commit_ms': 30.0},
+        {'type': 'block', 'accepted': False, 'raft_term': None, 'commit_ms': 900.0},  # failed attempt
+    ]
+    result = raft_commit_nfr(events)
+    assert result.passed is True and result.n == 2
+    assert 'this run' in result.metric and "'n1', 'n3'" in result.measured
+
+
+def test_raft_nfr_falls_back_to_the_standalone_figure_for_a_local_ledger_run():
+    events = [{'type': 'block', 'accepted': True, 'raft_term': 0, 'commit_ms': 0.4}]
+    result = raft_commit_nfr(events)
+    assert 'standalone' in result.metric and result.n == 0

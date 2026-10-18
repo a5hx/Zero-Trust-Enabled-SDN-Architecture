@@ -19,10 +19,12 @@ control plane:
        is the relative slowdown that commit adds to that one report's
        handling time, compared to a report that didn't trigger one.
 
-RAFT commit latency (< 500 ms) is NOT computed here: it is measured directly,
-against the standalone 3-replica cluster, by `blockchain/raft_demo.py` (see
-docs/RAFT.md) -- RAFT is not wired into the live controller (deliberately
-deferred, see plan.md Step 2), so no live event for it exists yet.
+    4. RAFT commit < 500 ms        -- 'block' events whose raft_term > 0,
+       i.e. a run with `ledger.backend: raft_remote`: commit_ms is the
+       controller-side time for the cluster to accept the block. For a run on
+       the local ledger (every block at term 0) there is no live figure, and the
+       standalone 3-replica measurement (blockchain/raft_demo.py, docs/RAFT.md)
+       is reported instead, labelled as such.
 """
 
 import argparse
@@ -152,19 +154,40 @@ def blockchain_overhead_nfr(events: Sequence[Dict[str, Any]]) -> NfrResult:
         f'task, against {mean_latency:.1f} ms mean end-to-end task latency (n={len(latencies)}); '
         f'{sum(blocks):.1f} ms total in commit() across the run'
     )
+    if _raft_blocks(events):
+        measured += ('; replicated ledger: commits run off the report path '
+                     '(AsyncCommitter), so this is the cost if they were inline, not '
+                     'latency added to any task')
     return NfrResult('Blockchain overhead', 'commit cost per task / end-to-end task latency',
                       f'< {BLOCKCHAIN_OVERHEAD_TARGET_PCT:.0f} %', measured,
                       overhead_pct < BLOCKCHAIN_OVERHEAD_TARGET_PCT, len(blocks))
 
 
-def raft_commit_nfr() -> NfrResult:
-    """Not computed from live events -- see module docstring. Reports the
-    figure already measured in isolation (docs/RAFT.md) so the summary table
-    still shows all four deck NFRs together."""
+def _raft_blocks(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [e for e in _by_type(events, 'block')
+            if e.get('accepted') and (e.get('raft_term') or 0) > 0 and 'commit_ms' in e]
+
+
+def raft_commit_nfr(events: Sequence[Dict[str, Any]] = ()) -> NfrResult:
+    """Live when the run used the replicated ledger (blocks carry a RAFT term);
+    otherwise the standalone figure, labelled as not from this run."""
+    live = _raft_blocks(events)
+    if live:
+        ms = sorted(e['commit_ms'] for e in live)
+        p95 = ms[min(len(ms) - 1, int(len(ms) * 0.95))]
+        terms = sorted({e['raft_term'] for e in live})
+        proposers = sorted({str(e.get('proposer_id')) for e in live})
+        return NfrResult(
+            'RAFT commit', 'commit latency (this run, replicated ledger)', '< 500 ms',
+            f'mean {statistics.mean(ms):.2f} ms / p95 {p95:.2f} ms / max {ms[-1]:.2f} ms '
+            f'(n={len(ms)}; terms {terms}, proposers {proposers}; committed off the '
+            f'report path by AsyncCommitter)',
+            ms[-1] < 500.0, len(ms),
+        )
     return NfrResult(
         'RAFT commit', 'commit latency (blockchain/raft_demo.py, standalone 3-replica cluster)',
-        '< 500 ms', 'mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; not wired into the '
-        'live controller, plan.md Step 2)', True, 0,
+        '< 500 ms', 'mean 4.3-4.8 ms / max 29-42 ms (see docs/RAFT.md; this run used the '
+        'local single-replica ledger, so no live RAFT figure)', True, 0,
     )
 
 
@@ -175,7 +198,7 @@ def build_report(
         routing_decision_nfr(events),
         isolation_nfr(events, poll_interval_s),
         blockchain_overhead_nfr(events),
-        raft_commit_nfr(),
+        raft_commit_nfr(events),
     ]
 
 
