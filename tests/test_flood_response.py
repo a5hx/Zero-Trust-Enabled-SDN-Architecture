@@ -199,3 +199,29 @@ class TestThrottleConfig:
         full['controller']['dashboard'].pop('record_path')
         assert thr == full
         assert FloodResponseConfig.from_config({'flood_response': block}).mode == 'meter'
+
+
+class TestHeavyFloodArms:
+    """The heavy-flood experiment's two arms must differ ONLY in whether the
+    throttle acts, or a difference in honest service cannot be credited to it."""
+
+    def _load(self, name):
+        with open(f'config/params_{name}.yaml') as fh:
+            return yaml.safe_load(fh)
+
+    def test_arms_differ_only_in_flood_response_and_record_path(self) -> None:
+        off, on = self._load('flood_off'), self._load('flood_on')
+        assert on['controller'].pop('flood_response')['mode'] == 'meter'
+        assert 'flood_response' not in off['controller']
+        assert off['controller']['dashboard'].pop('record_path') == 'data/events_flood_off.jsonl'
+        assert on['controller']['dashboard'].pop('record_path') == 'data/events_flood_on.jsonl'
+        assert off == on
+
+    def test_only_the_flood_is_heavier_than_the_shipped_config(self) -> None:
+        full, off = self._load('trust_full'), self._load('flood_off')
+        flood = off['simulation'].pop('malicious_flood_devices')
+        full['simulation'].pop('malicious_flood_devices')
+        off['controller']['dashboard'].pop('record_path')
+        full['controller']['dashboard'].pop('record_path')
+        assert off == full
+        assert flood == [{'device': 'iot37', 'start_s': 60, 'concurrency': 12, 'interval_s': 0.1}]

@@ -9,6 +9,9 @@
 #   # theta sweep: the score-only arm at isolation_threshold 0.40/0.45/0.50
 #   sudo ARMS="scoreonly_t040 scoreonly_t045 scoreonly_t050" tools/run_replicates.sh
 #
+#   # any arm X with a config/params_X.yaml, e.g. the heavy-flood experiment
+#   sudo ARMS="flood_off flood_on" tools/run_replicates.sh
+#
 # Any arm named <scoreonly|treat>_tNNN runs that parent arm at theta = NNN/100,
 # with its config derived by tools/derive_config.py (theta <= initial_score 0.5).
 #
@@ -60,12 +63,22 @@ give_back() { chown -R "$OWNER": "$@" 2>/dev/null || true; }
 is_sweep() { [[ "$1" =~ ^[a-z]+_t[0-9]{3}$ ]]; }
 sweep_cfg() { echo "logs/params_$1.yaml"; }
 
+# Any other arm X runs config/params_X.yaml as-is (e.g. flood_off, flood_on),
+# recording to whatever that config's controller.dashboard.record_path says.
+cfg_of() { echo "config/params_$1.yaml"; }
+is_cfg_arm() { [[ "$1" =~ ^[a-z0-9_]+$ ]] && [ -f "$(cfg_of "$1")" ]; }
+record_path_of() {
+  python3 -c 'import sys, yaml; c = yaml.safe_load(open(sys.argv[1])); print(c["controller"]["dashboard"]["record_path"])' "$1"
+}
+
 cmd_for() {
   case "$1" in
     base)      echo "python3 -m base_model.run_base" ;;
     scoreonly) echo "python3 run_demo.py --mode mininet --config config/params_trust_scoreonly.yaml" ;;
     treat)     echo "python3 run_demo.py --mode mininet --config config/params_trust_full.yaml" ;;
-    *) is_sweep "$1" && echo "python3 run_demo.py --mode mininet --config $(sweep_cfg "$1")" || return 1 ;;
+    *) if is_sweep "$1"; then echo "python3 run_demo.py --mode mininet --config $(sweep_cfg "$1")"
+       elif is_cfg_arm "$1"; then echo "python3 run_demo.py --mode mininet --config $(cfg_of "$1")"
+       else return 1; fi ;;
   esac
 }
 recording_for() {
@@ -73,7 +86,8 @@ recording_for() {
     base)      echo "data/base_events.jsonl" ;;
     scoreonly) echo "data/events_scoreonly.jsonl" ;;
     treat)     echo "data/events.jsonl" ;;
-    *)         echo "data/events_$1.jsonl" ;;   # set by derive_config.py
+    *) if is_cfg_arm "$1" && ! is_sweep "$1"; then record_path_of "$(cfg_of "$1")"
+       else echo "data/events_$1.jsonl"; fi ;;   # sweep arms: set by derive_config.py
   esac
 }
 mkdir -p logs
@@ -175,6 +189,7 @@ run_one() {
   cp -p logs/controller.log "$dir/r$rep.controller.log" 2>/dev/null || true
   [ "$arm" = base ] && cp -p logs/params_base_effective.yaml "$dir/r$rep.params.yaml" 2>/dev/null
   is_sweep "$arm" && cp -p "$(sweep_cfg "$arm")" "$dir/r$rep.params.yaml"
+  is_cfg_arm "$arm" && ! is_sweep "$arm" && cp -p "$(cfg_of "$arm")" "$dir/r$rep.params.yaml"
   # Only if THIS run wrote it -- the base arm writes none, and must not
   # inherit the previous treatment run's report under its own name.
   if [ data/nfr_report.txt -nt "$dir/.run_started" ]; then
