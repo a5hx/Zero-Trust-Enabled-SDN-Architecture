@@ -3,7 +3,36 @@
 State of the draft against the checks a reviewer, a supervisor and most venues
 apply. `[x]` done, `[ ]` open. Target: **conference**.
 
-## What changed in this revision (2026-09-29)
+## What changed in revision 3 (2026-10-19)
+
+1. **Headline reframed by the live θ sweep** (15 more runs, prediction registered
+   first). "The score is structurally unable / blind" is withdrawn. The claim is
+   now margin and speed: at θ = 0.45 the score isolates both task-completing
+   attackers, 3.4× and 20× slower than the gate, in a band a few hundredths
+   wide that honest servers under load also reach. New §VII-D, Table V, Fig. 2.
+2. **"Sybil" renamed** to load-misreporting server (Douceur cited for why).
+3. **§V rewritten:** the 0.44 and 0.302 floors reconciled; the tested attacker is
+   stated not to be latency-faithful, and the circularity is in §IX.
+4. **Fig. 1** is now a TikZ diagram; the slide with stale single-run numbers is gone.
+   The standalone Raft figure is dropped in favour of the live failover result.
+5. **New results:** per-client flood meter under a heavy flood (§VII-F, Table VII;
+   honest latency improves, 10 runs); replicated ledger with a live leader kill
+   (§VII-H; 649/649 committed, failover 0.47 s).
+6. **Related work widened** with 13 references checked by web search this session.
+7. **AI-use declaration restored**; test count corrected (1,166); UCB1 in all arms
+   stated in §VI-B.
+
+### Still open after revision 3
+
+- [ ] Per-class recall / balanced accuracy in §VII-G (accuracy is dominated by the 40 honest subjects)
+- [ ] A load-misreporting server that does not slow itself (§IX, §X item 1) — one config + 10 runs
+- [ ] Page count is **13** (the misreporting related work and §V-B route-share paragraph added 2026-10-19); trim to the chosen venue's limit (order below)
+- [ ] Choose the venue; swap in `IEEEtran.cls`; anonymise if double-blind
+- [ ] Data DOI, CRediT roles, confirm the `rfc9334` author list
+- [ ] Confirm the volume/issue/page ranges of `burke2023misreporting` (MONET 28(4) 1482–1497) and `yu2024stealthy` (ToN 32(4) 3622–3635) against the publisher; they were taken from saha2025's reference list
+- [ ] Fix the Generative AI declaration: the 2026-10-19 edit left the fragment "of §VII-D came about."
+
+## What changed in revision 2 (2026-09-29)
 
 The previous draft rested on one live run per arm and led with an analytic
 proposition. Five things changed:
@@ -54,7 +83,7 @@ switched off. See `NUMBERS.md` § Table III.
 - [x] p-value floor at n=30 disclosed rather than presented as strength
 - [x] Fairness over two populations, with the trap explained
 - [x] Detection latency reported as measured, with the poll-interval bound named
-- [x] Raft stated as built-but-not-wired, blockers named
+- [x] Raft: replicated ledger measured live with a leader kill; ablation/sweep/flood runs stated as using the in-process ledger
 - [x] PRESENT-80 framed as architecture, not security
 - [x] Figures referenced at source; superseded figures removed rather than reused
 

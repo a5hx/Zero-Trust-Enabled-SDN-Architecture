@@ -111,6 +111,14 @@ class AttackerRun:
     #: onset-4.9 s, packet-drop tell on a 0.50 timeout rate) that
     #: availability_report prints as "contained -4.9s after onset".
     pre_onset_quarantines: int = 0
+    #: Share of all routing decisions after onset that chose this attacker,
+    #: and that share minus a fair 1/N. The point of misreporting load is to
+    #: attract traffic, so this is what the attack gained -- whether or not
+    #: anything ever isolated it. The shipped sybil's is NEGATIVE: its fixed
+    #: 0.1 claim is above the ~0 an honest server truthfully reports at ~1%
+    #: duty, and its slowness drags T down, so the lie repels traffic.
+    route_share: Optional[float] = None
+    excess_share: Optional[float] = None
 
 
 @dataclass
@@ -175,24 +183,45 @@ def attribute_rail(rail_enforced: Optional[bool],
     return 'indeterminate'
 
 
-def _quarantines(path: str) -> Dict[str, List[Dict[str, Any]]]:
-    """node -> every quarantine event, in order, each with t_rel. score_arm
-    keeps only the first time; containment needs the first one AFTER onset,
-    and the rail attribution needs the T and A-bar that event carried."""
-    out: Dict[str, List[Dict[str, Any]]] = {}
+def _timeline(path: str) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[float, str]]]:
+    """One pass over the recording for the two things score_arm summarises
+    away:
+
+    * node -> every quarantine event, in order, each with t_rel. score_arm
+      keeps only the first time; containment needs the first one AFTER onset,
+      and the rail attribution needs the T and A-bar that event carried.
+    * every routing decision as (t_rel, chosen). score_arm keeps whole-run
+      totals; an attacker's gain is its share AFTER onset.
+    """
+    quarantines: Dict[str, List[Dict[str, Any]]] = {}
+    routes: List[Tuple[float, str]] = []
     t0: Optional[float] = None
     for ev in stream_events(path):
         ts = ev.get('ts')
         if t0 is None and ts is not None:
             t0 = float(ts)          # same anchor as score_arm: the first event
-        if ev.get('type') != 'quarantine':
+        etype = ev.get('type')
+        t_rel = float(ts) - t0 if (ts is not None and t0 is not None) else None
+        if etype == 'route':
+            if ev.get('chosen') and t_rel is not None:
+                routes.append((t_rel, ev['chosen']))
+            continue
+        if etype != 'quarantine':
             continue
         node = ev.get('node')
         if node:
             row = dict(ev)
-            row['t_rel'] = float(ts) - t0 if (ts is not None and t0 is not None) else None
-            out.setdefault(node, []).append(row)
-    return out
+            row['t_rel'] = t_rel
+            quarantines.setdefault(node, []).append(row)
+    return quarantines, routes
+
+
+def route_share_after(routes: List[Tuple[float, str]], node: str,
+                      onset: float) -> Optional[float]:
+    """Fraction of the routing decisions at or after `onset` that chose
+    `node` (probation trials included, as score_arm counts them)."""
+    after = [chosen for t, chosen in routes if t >= onset]
+    return sum(1 for c in after if c == node) / len(after) if after else None
 
 
 def score_run(arm: str, path: str, theta: float = DEFAULT_THETA) -> RunResult:
@@ -229,7 +258,8 @@ def score_run(arm: str, path: str, theta: float = DEFAULT_THETA) -> RunResult:
         'spoof_admitted': float(len(res.spoof_admitted)),
     }
 
-    quarantines = _quarantines(path) if res.quarantine_events else {}
+    quarantines, routes = _timeline(path)
+    fair = 1.0 / len(truth.servers) if truth.servers else None
     for evs in quarantines.values():
         if 'anomaly_rail_enforced' in evs[0]:
             run.rail_enforced = bool(evs[0]['anomaly_rail_enforced'])
@@ -246,6 +276,9 @@ def score_run(arm: str, path: str, theta: float = DEFAULT_THETA) -> RunResult:
                 if tr < theta:
                     a.score_cross_s = t - onset
                     break
+        a.route_share = route_share_after(routes, node, onset)
+        if a.route_share is not None and fair is not None:
+            a.excess_share = a.route_share - fair
         qs = [q for q in quarantines.get(node, []) if q.get('t_rel') is not None]
         a.pre_onset_quarantines = sum(1 for q in qs if q['t_rel'] < onset)
         q = next((q for q in qs if q['t_rel'] >= onset), None)
@@ -413,6 +446,7 @@ BOUNDS = {
     'pdr': (0.0, 1.0), 'honest_device_availability': (0.0, 1.0),
     'jain_honest': (0.0, 1.0), 'jain_all': (0.0, 1.0),
     'attacker_route_share': (0.0, 1.0), 'trust': (0.0, 1.0),
+    'route_share': (0.0, 1.0), 'excess_share': (-1.0, 1.0),
     'timeouts': (0.0, None), 'starved_honest_devices': (0.0, None),
     'honest_false_quarantines': (0.0, None),
     'honest_node_eligible': (0.0, 1.0), 'attacker_isolated_frac': (0.0, 1.0),
@@ -512,6 +546,10 @@ def format_report(results: Dict[str, List[RunResult]], theta: float,
             w(f'    {"":<10}   time to cross     : {_fmt_times([a.score_cross_s for a in rows], n)}')
             w(f'    {"":<10} min T after onset   : '
               f'{_fmt_ci([a.min_trust for a in rows], 1.0, ".3f", "", BOUNDS["trust"])}')
+            w(f'    {"":<10} route share (post-onset): '
+              f'{_fmt_ci([a.route_share for a in rows], 100.0, ".2f", "%", BOUNDS["route_share"])}')
+            w(f'    {"":<10}   minus fair 1/N    : '
+              f'{_fmt_ci([a.excess_share for a in rows], 100.0, "+.2f", "%", BOUNDS["excess_share"])}')
             if isolated or arm != 'base':
                 w(f'    {"":<10} quarantined         : {_fmt_prop(isolated, n)}')
                 w(f'    {"":<10}   containment       : {_fmt_times([a.contain_s for a in rows], n)}')
@@ -609,7 +647,8 @@ PER_RUN_FIELDS = (('arm', 'run', 'duration_s', 'theta', 'rail_enforced')
                   + ('tasks_total', 'attacks_total', 'quarantine_events',
                      'anomaly_events', 'spoof_admitted', 'honest_quarantined'))
 ATTACKER_FIELDS = ('arm', 'run', 'node', 'attack', 'onset_s', 'score_cross_s', 'min_trust',
-                   'contain_s', 'rail', 't_at_q', 'a_at_q', 'pre_onset_quarantines')
+                   'contain_s', 'rail', 't_at_q', 'a_at_q', 'pre_onset_quarantines',
+                   'route_share', 'excess_share')
 
 
 def write_csvs(out_dir: Path, results: Dict[str, List[RunResult]]) -> None:

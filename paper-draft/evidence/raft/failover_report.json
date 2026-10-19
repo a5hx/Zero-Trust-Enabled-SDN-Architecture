@@ -1,0 +1,86 @@
+{
+  "config": "config/params_trust_raft.yaml",
+  "events": [
+    {
+      "t": 1792418630.3784523,
+      "msg": "waiting for the controller and replicated commits..."
+    },
+    {
+      "t": 1792418665.8508174,
+      "msg": "traffic flowing",
+      "committed": 61
+    },
+    {
+      "t": 1792418665.877081,
+      "msg": "SIGKILL leader n3 (pid 4915, term 2)"
+    },
+    {
+      "t": 1792418666.3497183,
+      "msg": "new leader: n1 after 0.472 s (term 4)"
+    },
+    {
+      "t": 1792418726.8741043,
+      "msg": "restarted n3 with its original command line (pid 9415)"
+    },
+    {
+      "t": 1792418727.879343,
+      "msg": "n3 rejoined and caught up: chain 186 >= leader n1's 186 after 1.005 s"
+    }
+  ],
+  "killed": "n3",
+  "term_before": 2,
+  "killed_cmdline": [
+    "/usr/bin/python3",
+    "-m",
+    "blockchain.raft_replica",
+    "--id",
+    "n3",
+    "--peers",
+    "n1=127.0.0.1:9001,n2=127.0.0.1:9002,n3=127.0.0.1:9003",
+    "--http-host",
+    "127.0.0.1",
+    "--http-port",
+    "9103",
+    "--commit-timeout-s",
+    "2.0",
+    "--data-dir",
+    "data/raft"
+  ],
+  "new_leader": "n1",
+  "failover_s": 0.472,
+  "term_after": 4,
+  "last_ledger_status": {
+    "queue_depth": 0,
+    "submitted": 649,
+    "committed": 649,
+    "retries": 1,
+    "dropped": 0,
+    "backend": "raft_remote",
+    "replicas": {
+      "n1": "127.0.0.1:9101",
+      "n2": "127.0.0.1:9102",
+      "n3": "127.0.0.1:9103"
+    },
+    "leader_hint": "n1",
+    "mirror_chain_length": 650,
+    "mirror_resyncs": 0,
+    "last_error": null,
+    "chain_length": 650
+  },
+  "restarted_at": 1792418726.8741024,
+  "rejoin": {
+    "after_s": 1.005,
+    "chain_length": 186,
+    "role": "follower"
+  },
+  "verdict": {
+    "failover_s": 0.472,
+    "submitted": 649,
+    "committed": 649,
+    "retries": 1,
+    "dropped": 0,
+    "queue_depth": 0,
+    "no_updates_lost": true,
+    "killed_replica_rejoined": true
+  }
+}

@@ -1,11 +1,12 @@
 # paper-draft — research paper draft
 
-**"When the Trust Score Cannot Fire: An Ablation of Two-Rail Continuous
-Verification for Zero-Trust Edge Load Balancing"**
+**"Trust Scores versus Anomaly Gates for Load-Misreporting Edge Servers:
+A Live Ablation and Threshold Sweep of Zero-Trust Load Balancing"** (revision 3,
+2026-10-19; see `CHECKLIST.md` for what changed)
 
 A conference-length (IEEE-style, two-column) research paper drawing together
 the project's findings, measurements and negative results. `paper.pdf` is the
-current build: **11 pages, 21 references (all cited), 6 tables, 2 figures, 1 proposition.**
+current build: **12 pages, 35 references (all cited), 7 tables, 2 figures (both drawn in LaTeX), 1 proposition.**
 
 ---
 

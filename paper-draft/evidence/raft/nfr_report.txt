@@ -1,0 +1,17 @@
+NFR VALIDATION REPORT
+============================================================
+[PASS] Routing decision -- target < 200 ms
+         decision_ms (packet-in -> flow-mod)
+         measured: mean 0.56 ms / p95 0.77 ms / max 5.36 ms (n=6595)
+
+[PASS] Isolation (re-dispatch) -- target < 3000 ms
+         resteer_ms (quarantine -> re-dispatch)
+         measured: mean 9.92 ms / max 11.74 ms (n=16); detection itself bounded by one poll interval (1000 ms)
+
+[PASS] Blockchain overhead -- target < 15 %
+         commit cost per task / end-to-end task latency
+         measured: 1.581 % -- commit mean 14.074 ms / max 143.597 ms over 650 block(s) of ~10.0 updates = 1.4074 ms per task, against 89.0 ms mean end-to-end task latency (n=6472); 9148.3 ms total in commit() across the run; replicated ledger: commits run off the report path (AsyncCommitter), so this is the cost if they were inline, not latency added to any task
+
+[PASS] RAFT commit -- target < 500 ms
+         commit latency (this run, replicated ledger)
+         measured: mean 14.06 ms / p95 20.24 ms / max 143.60 ms (n=649; terms [2, 4], proposers ['n1', 'n3']; committed off the report path by AsyncCommitter)

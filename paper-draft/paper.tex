@@ -1,5 +1,5 @@
 % ===========================================================================
-%  When the Trust Score Cannot Fire -- research paper draft
+%  Trust Scores versus Anomaly Gates -- research paper draft (revision 3)
 %
 %  BUILD (from inside paper-draft/):  make
 %
@@ -8,7 +8,8 @@
 %  its source (tools/regenerate.sh). Figures are referenced at their source
 %  paths via \graphicspath so they cannot drift; nothing is copied here.
 %
-%  Numbers current as of 2026-09-29, from 15 live runs (3 arms x 5).
+%  Revision 3 (2026-10-19): reframed around the live theta sweep (30 runs in
+%  all), the flood-response experiment and the replicated-ledger run.
 %  NUMBERS.md carries the full number -> artifact -> command table.
 %  CHECKLIST.md carries the submission checklist and open placeholders.
 % ===========================================================================
@@ -16,6 +17,10 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{ieeeish}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.16}
 
 \graphicspath{{./}{figures/}{../ppt/figures/}{../base_model/}{../data/figures/}}
 
@@ -27,9 +32,11 @@
 \newcommand{\armbase}{\textsc{control}}
 \newcommand{\armscore}{\textsc{score-only}}
 \newcommand{\armfull}{\textsc{both-rails}}
+% Visible marker for a number not yet measured. Must not survive to submission.
+\newcommand{\pending}[1]{\textbf{[PENDING: #1]}}
 
-\title{When the Trust Score Cannot Fire: An Ablation of Two-Rail\\
-       Continuous Verification for Zero-Trust Edge Load Balancing}
+\title{Trust Scores versus Anomaly Gates for Load-Misreporting Edge Servers:\\
+       A Live Ablation and Threshold Sweep of Zero-Trust Load Balancing}
 
 \author{%
   K R Jeevan Raj, \quad Aravind Kumar M, \quad Arjun Krishnakumar, \quad
@@ -44,33 +51,31 @@
 \maketitle
 
 \begin{abstract}
-Zero Trust doctrine requires continuous verification of every entity, but says
-nothing about how a network control plane verifies the \emph{serving
-infrastructure} of an edge network or acts on the verdict in the forwarding
-path. Trust-aware schedulers answer with a \emph{trust score}: a weighted sum
-of service-derived features, thresholded to decide eligibility. We show by
-ablation that a score of this form is structurally unable to isolate an
-important class of adversary, and that a second, independent decision rail is
-therefore necessary rather than merely convenient. We build a Zero-Trust SDN
-load balancer in which trust \emph{ranks} eligible nodes while an anomaly gate
-\emph{excludes} them, with decisions installed as OpenFlow~1.3 rules so a
-quarantine is a change to the forwarding table. On an 8-server, 40-device
-emulated edge carrying six concurrently armed attacks, we run three arms of
-five live runs each: no enforcement, score-rail enforcement only, and both
-rails. The score-only arm is the full controller with the gate switched off,
-so the arms differ in one mechanism. Across all 15 runs the trust score of the
-two attackers that never fail a task --- a load-lying Sybil and an on-off
-attacker --- \emph{never once} falls below the isolation threshold (0/15), and
-with only the score rail enforced neither is ever quarantined (0/5 each). With
-the gate enabled both are quarantined in every run (5/5 each), at trust scores
-of $0.71$ against a $0.30$ threshold. The two attackers that do fail tasks are
-isolated by the score alone in every run. Enabling the gate cuts the share of
-traffic reaching attackers from $17.4\%$ to $11.6\%$ and $p95$ latency from
-$176$\,ms to $137$\,ms, with no significant change in delivery ratio,
-throughput or honest availability --- it buys containment, not service. We also
-report a negative result: a containment-versus-attribution trade we claimed in
-earlier work is \emph{not} supported by these runs ($\rho = -0.52$, $p = 0.12$,
-$n = 10$), and we retract it.
+Zero Trust requires continuous verification of every entity, but leaves open
+how a network control plane should verify the servers it routes work to and
+act on the verdict in the forwarding path. Trust-aware schedulers answer with a
+\emph{trust score}, a weighted sum of service-derived features compared with an
+isolation threshold. We built a Zero-Trust SDN load balancer in which that score
+\emph{ranks} eligible servers while an independent anomaly gate \emph{excludes}
+them, with every decision installed as OpenFlow~1.3 rules, and evaluated it on
+an emulated edge of 8 servers and 40 devices carrying six concurrent attacks.
+An ablation of five live runs per arm shows that at the shipped threshold
+($\theta = 0.30$) the score never isolated the two attackers that complete
+every task, a load-misreporting server and an on-off attacker (0/5 each),
+while the gate isolated both in every run (5/5) at trust $\approx 0.71$. A live
+threshold sweep qualifies the result rather than overturning it: at
+$\theta = 0.45$ the score alone isolated both (5/5) but $3.4\times$ and
+$20\times$ more slowly than the gate, honest servers under load fell to
+0.417--0.421 in other runs, within a few hundredths of the attackers' floor of
+$\approx 0.40$, and at $\theta = 0.50$ an honest server was quarantined. The
+score therefore has a usable band only a few hundredths wide; the gate has a
+wide margin and is fast. The gate buys containment, not service: delivery,
+throughput and honest availability do not change. A second enforcement
+mechanism, a per-client OpenFlow meter on a flooding device, does improve honest
+service under a heavy flood (mean latency $105 \to 92$~ms, $p95$
+$178 \to 139$~ms) while cutting the flooder's served tasks by 97\%. We also
+retract an earlier containment--attribution claim that replication did not
+support.
 \end{abstract}
 
 \keywords{Zero Trust, software-defined networking, edge computing, trust-aware
@@ -99,51 +104,54 @@ threshold~\cite{huang2024trustmultitier,ali2023ztmec}. We implemented exactly
 such a score, and then asked the question an ablation asks: \emph{if we remove
 everything except the score, what stops working?}
 
-The answer is specific and, we argue, general. An adversary that misreports its
-load but completes every task it accepts keeps its outcome-derived features
-pinned near their maxima. The only terms that can move against it are bounded
-by their weights, and those weights are what is left over after the features
-that measure whether a node is actually doing its job. In 15 live runs, the
-trust score of such an adversary never once crossed our isolation threshold.
-With only the score rail enforced, it was never isolated at all.
+An adversary that misreports its load but completes every task it accepts
+keeps its outcome-derived features near their maxima. Only the terms with the
+smallest weights can move against it, so its score settles well above zero. In
+15 live runs at our shipped threshold the score of such an adversary never
+crossed it. Raising the threshold does make the score fire, and a live sweep
+measures what that costs: the threshold must sit within a few hundredths of
+where honest servers fall under load, and even then the score is several times
+slower than an independent gate. Score-based and criteria-based trust
+algorithms are the two variants NIST SP~800-207 describes~\cite{rose2020zta};
+our system is a hybrid of the two, and this paper measures what each part
+buys.
 
 \subsection{Contributions}
 
 \begin{enumerate}[leftmargin=1.2em,itemsep=2pt,topsep=2pt]
-\item \textbf{An ablation showing a second rail is necessary}
-  (\S\ref{sec:res:ablation}). We add a \armscore{} arm --- the shipping
-  controller with the anomaly gate switched off and nothing else changed --- and
-  run it live alongside a no-enforcement control and the full system, five runs
-  each. Two of four server attacks are \emph{never} contained without the gate
-  (0/5 each) and always contained with it (5/5 each). This is the paper's
-  central result and it is an experiment, not an argument.
+\item \textbf{A live ablation of the two rails}
+  (\S\ref{sec:res:ablation}). The \armscore{} arm is the shipping controller
+  with the gate's enforcement switched off and nothing else changed. At the
+  shipped threshold, two of four server attacks are never contained without the
+  gate (0/5 each) and always contained with it (5/5 each).
 
-\item \textbf{An explanation with a testable prediction}
-  (\S\ref{sec:analysis}). We state the score floor an adversary of this class
-  can hold, show it is a property of the additive-score family rather than of
-  our constants, and report that the measured floor respected the bound in all
-  10 non-enforcing runs --- while also reporting that the bound is
-  \emph{conservative}, and why.
+\item \textbf{A live threshold sweep} (\S\ref{sec:res:sweep}), registered as a
+  written prediction before it ran. It shows the score \emph{can} isolate both
+  attackers, but only in a band a few hundredths wide above their floor, which
+  honest servers under load also reach, and $3.4\times$ to $20\times$ more
+  slowly than the gate.
 
-\item \textbf{A measured account of what the gate costs and buys}
-  (\S\ref{sec:res:service}). Against the score-only arm the gate delivers
-  containment and tail latency, and delivers no significant improvement in
-  delivery ratio, throughput or honest availability. We report the null
-  results with the positive ones.
+\item \textbf{An explanation} (\S\ref{sec:analysis}): the score floor an
+  adversary of this class can hold, why the honesty term barely registers the
+  lie, and why the tested attacker is not latency-faithful.
+
+\item \textbf{What enforcement buys} (\S\ref{sec:res:service},
+  \S\ref{sec:res:flood}). The gate buys containment and the latency tail, not
+  delivery or availability. A per-client meter against a flooding device does
+  improve honest-device latency under a heavy flood, measured over repeated
+  runs with the throttle on and off.
 
 \item \textbf{A defect specific to data-plane enforcement}
-  (\S\ref{sec:disc:feedback}). Quarantine tears down in-flight connections, and
-  the client-side timeouts that follow are charged to whichever node inherited
-  the flow unless attribution is made explicit. The correction fires on
-  $0.38\%$ of reports and decides whether honest nodes are quarantined.
+  (\S\ref{sec:disc:feedback}): quarantine tears down in-flight connections and
+  the resulting timeouts are charged to the server that inherited the flow
+  unless attribution is made explicit.
 
-\item \textbf{A retraction} (\S\ref{sec:disc:retract}). An earlier version of
-  this work claimed a containment-versus-attribution trade. Replication does
-  not support it, and we say so.
+\item \textbf{A retraction} (\S\ref{sec:disc:retract}) of a
+  containment--attribution trade an earlier version of this work claimed.
 
-\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 15 archived live
-  recordings, an aggregator reporting between-run intervals, 1\,059 tests, and
-  a provenance tag on every number.
+\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 40 archived live
+  recordings, an aggregator reporting between-run intervals, 1\,166 automated
+  tests, and a source tag on every number.
 \end{enumerate}
 
 \subsection{Scope}
@@ -151,7 +159,8 @@ This is a prototype-scale study on an emulated network~\cite{lantz2010mininet}.
 We claim ``demonstrated in emulation'', never ``proven in production''. The
 adversary model is behavioural and non-adaptive (\S\ref{sec:threat}); the
 ledger is crash-fault tolerant, not Byzantine; the controller is inside the
-trusted computing base. Each is revisited in \S\ref{sec:validity}.
+trusted computing base; and the attackers were built by the same team as the
+detectors. Each is revisited in \S\ref{sec:validity}.
 
 % ===========================================================================
 \section{Related Work}
@@ -172,6 +181,43 @@ form our ablation removes the second rail from.
 TREN~\cite{tren2025smartcity} applies SDN and Zero Trust to smart-city edge
 networks. ETSI GS MEC~003~\cite{etsi_mec003} supplies the deployment mapping we
 adopt: controller~$\to$~MEC orchestrator, edge servers~$\to$~MEC hosts.
+
+\paragraph*{Edge and SDN security}
+Edge-security surveys list rogue and compromised edge nodes among the central
+threats of fog and multi-access edge computing~\cite{roman2018mec,xiao2019edgesec}.
+SDN security work treats the controller as both an enforcement point and a
+target~\cite{kreutz2013secure,scotthayward2016sdnsec}; our controller sits in
+the trusted computing base for that reason (\S\ref{sec:threat}). In practice,
+Zero Trust verifies infrastructure by remote attestation~\cite{rfc9334}, which
+proves what software a machine booted; behavioural verification of the kind
+studied here is complementary, since a correctly booted server can still
+misbehave. Multivocal reviews of Zero Trust note that academic work has
+concentrated on architecture~\cite{buck2021zt}; this paper is about one
+decision inside it.
+
+\paragraph*{Misreporting attacks on load balancers}
+Load misreporting against SDN load balancing is an established attack, so far
+studied at the switch. A compromised switch falsifies its own traffic
+statistics and draws a chosen share of load through itself~\cite{burke2023misreporting};
+with reconnaissance it can do so while evading threshold-based
+detectors~\cite{yu2024stealthy}; and a learned detector can flag such reports
+on a research testbed, without acting on them~\cite{saha2025misreporting}.
+SPHINX checks flow statistics for consistency between the switches along a
+path~\cite{dhawan2015sphinx}. We study the server-side counterpart: the edge
+server misreports its own load in an application-level self-report, the
+controller cross-checks the claim against what it observes itself, and the
+verdict is enforced in the forwarding path.
+
+\paragraph*{Gray failure and outlier ejection}
+A server that answers health checks but serves slowly is a \emph{gray
+failure}~\cite{huang2017gray}; detecting it needs observations from the
+requester's side~\cite{huang2018panorama}, and isolating fail-slow components
+measurably cuts tail latency in production~\cite{lu2023perseus}. Production
+proxies already separate ranking from exclusion: Envoy's least-request balancer
+uses power-of-two-choices while a separate outlier-detection rule ejects hosts,
+on error and success-rate criteria~\cite{envoy_outlier}. Our anomaly gate is an
+exclusion rail of this kind, driven by a controller-side latency and honesty
+check rather than error counts.
 
 \paragraph*{Load balancing under stale information}
 Our first selector used $\arg\max$ over a composite score and starved the
@@ -201,9 +247,13 @@ pattern~\cite{nygard2018releaseit} is the ancestor of our probation mechanism.
 
 \paragraph*{What is ours}
 The load-balancing and consensus results are established theory we reproduce on
-a running system. What we claim as ours is the ablation and its consequence
-(\S\ref{sec:res:ablation}), the data-plane enforcement-feedback defect
-(\S\ref{sec:disc:feedback}), and the retraction (\S\ref{sec:disc:retract}).
+a running system. What we claim as ours is the live measurement of what each rail buys, at the
+shipped threshold and across a threshold sweep (\S\ref{sec:res:ablation},
+\S\ref{sec:res:sweep}), the flood-response result (\S\ref{sec:res:flood}),
+the data-plane enforcement-feedback defect (\S\ref{sec:disc:feedback}), and the
+retraction (\S\ref{sec:disc:retract}). Separating a veto from a weighted score
+is not new in itself; the contribution is the measured size of the score's
+margin and delay against attackers that complete their tasks.
 
 % ===========================================================================
 \section{Threat Model and Assumptions}
@@ -213,7 +263,9 @@ a running system. What we claim as ours is the ablation and its consequence
 \subsection{Adversary}
 The adversary controls a minority of edge servers and clients. A compromised
 server may misreport its load in the direction that attracts traffic
-(\emph{Sybil-style load lying}); accept tasks and never complete them
+(\emph{load misreporting}; our code and recordings label this attacker
+\texttt{sybil}, although a Sybil attack in the usual sense is one entity
+presenting many identities~\cite{douceur2002sybil}); accept tasks and never complete them
 (\emph{blackhole}); drop a configurable fraction (\emph{grayhole}); or
 alternate faithful and malicious phases on a period (\emph{on-off}). A
 compromised client may flood the service, present another device's identity
@@ -222,9 +274,11 @@ the wrong key. All seven behaviours arm on a delayed onset, so every attack has
 a clean baseline interval and an attacker is behaviourally identical to an
 honest node until it arms.
 
-Two consequences shaped the design. A load-lying server that still serves
-faithfully never fails a task, so no outcome-derived feature can condemn it;
-this is the adversary of \S\ref{sec:analysis}. And a server \emph{drowning
+Two consequences shaped the design. A load-misreporting server that still
+serves never fails a task, so no outcome-derived feature can condemn it; this
+is the adversary of \S\ref{sec:analysis}. Our implementation of it burns CPU in
+the background while claiming to be nearly idle, so it is also slow, which
+matters for how it is caught (\S\ref{sec:analysis:conservative}). And a server \emph{drowning
 under a client's flood} is not lying about its load --- it is telling the truth
 about being overwhelmed --- so the flood detector is keyed on the requesting
 client, never on the edge node the flood lands on.
@@ -258,12 +312,28 @@ rather than defend a label.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{fig6_zero_trust_flow.png}
-\caption{The two decision rails. Trust \emph{ranks} eligible nodes; the anomaly
-gate \emph{excludes} them, and exclusion is applied before ranking rather than
-as a score penalty. The disjunction at the bottom is what the \armscore{} arm
-ablates: $\Tscore < \theta$ \textbf{or} $\Agate \ge g$ becomes
-$\Tscore < \theta$ alone.}
+\begin{tikzpicture}[
+  font=\footnotesize, >=Stealth,
+  box/.style={draw, rounded corners=1.5pt, align=center, inner sep=3pt, minimum height=7mm},
+  rail/.style={box, fill=black!6, text width=2.75cm},
+  act/.style={box, text width=2.15cm}]
+  \node[box, text width=3.3cm] (ev) at (0,0) {Evidence\\[-1pt]\scriptsize task outcomes, latency,\\[-1pt]\scriptsize claimed vs.\ observed load};
+  \node[rail] (score) at (-2.0,-1.45) {\textbf{Rail 1: trust score}\\[-1pt]\scriptsize $T=\alpha\bar R+\beta\bar B+\gamma\bar H-\delta\bar A$};
+  \node[rail] (gate) at (2.0,-1.45) {\textbf{Rail 2: anomaly gate}\\[-1pt]\scriptsize latency, timeout-rate and\\[-1pt]\scriptsize honesty tells $\rightarrow \bar A$};
+  \node[box, text width=4.9cm, fill=black!12] (dec) at (0,-2.95)
+    {\textbf{Quarantine if} $T<\theta$ \textbf{or} $\bar A\ge g$\\[-1pt]\scriptsize \armscore{} arm: $T<\theta$ only};
+  \node[act] (rank) at (-2.0,-4.3) {\textbf{Eligible:} ranked by EdgeScore, power-of-two choices};
+  \node[act] (drop) at (2.0,-4.3) {\textbf{Excluded:} OpenFlow drop rules, in-flight work re-steered};
+  \draw[->] (ev) -- (score); \draw[->] (ev) -- (gate);
+  \draw[->] (score) -- (dec); \draw[->] (gate) -- (dec);
+  \draw[->] (dec) -- (rank); \draw[->] (dec) -- (drop);
+  \draw[->, dashed] (score.west) to[out=210, in=150] node[left, font=\scriptsize] {ranks} (rank.west);
+\end{tikzpicture}
+\caption{The two decision rails. The trust score \emph{ranks} eligible servers;
+the anomaly gate \emph{excludes} them, and exclusion is applied before ranking
+rather than as a score penalty. $\bar A$ also enters the score through its
+$-\delta\bar A$ term in every arm. The \armscore{} ablation removes only the
+gate's ability to act: $T<\theta$ \textbf{or} $\bar A\ge g$ becomes $T<\theta$.}
 \label{fig:rails}
 \end{figure}
 
@@ -288,7 +358,7 @@ $\lambda = 0.85$:
   b &= \max\!\left(0,\, 1 - \tfrac{\ell}{500\,\mathrm{ms}}\right)\\[2pt]
   h &= \max\!\left(0,\, 1 - \tfrac{\lvert c_{\mathrm{rep}} - c_{\mathrm{obs}}\rvert}{0.5}\right)
   &
-  a &= \mathbb{1}[\text{anomaly raised}]
+  a &= \mathbf{1}[\text{anomaly raised}]
 \end{align*}
 and the composite is
 \begin{equation}
@@ -353,78 +423,87 @@ key}, not the \emph{device}; we close that with a source-IP pin against a
 provisioned roster. A refusal returns HTTP~403 \emph{and} publishes an event,
 so a denial is visible to the recording --- without which a spoof leaves no
 trace and cannot appear in a confusion matrix. Trust updates are batched ten to
-a block into a hash-chained ledger with a Merkle root per block; the dashboard
+a block into a hash-chained ledger with a Merkle root per block, committed to a
+single in-process ledger or, optionally, to a three-replica Raft cluster
+(\S\ref{sec:res:nfr}); the dashboard
 re-derives the chain in the browser rather than displaying the controller's own
 validity flag, because a panel rendering that flag could never contradict it.
 
 % ===========================================================================
-\section{Why a Score Alone Cannot Isolate a Faithful Liar}
+\section{What a Score Can Do Against a Load-Misreporting Server}
 \label{sec:analysis}
 % ===========================================================================
 
-This section states what we expected the ablation to find, and why. It
+This section states what we expected the experiments to find, and why. It
 concerns scores of the form of Eq.~\ref{eq:trust}: a convex combination of
 service-derived features minus a bounded suspicion term.
 
-\subsection{The faithful liar}
-Define a \emph{faithful liar} as a node that misreports its resource state in
-the direction that attracts traffic, but completes every task it accepts.
-This adversary is the freeloading or traffic-harvesting node rather than the
-saboteur, and it is the one an orchestrator scheduling on self-reported
-telemetry is most exposed to. Against it the outcome-derived features are
-pinned near their maxima: $\bar{R} \to 1$ because it never fails a task, and
-$\bar{B} \to b$, its honest-latency value. Only $\bar{H}$ and $\Agate$ can move.
+\subsection{A floor under the score}
+Consider a server that misreports its load in the direction that attracts
+traffic but completes every task it accepts. Against it the outcome feature is
+pinned near its maximum, $\bar{R} \to 1$, and the latency feature sits at
+whatever its own service latency gives, $\bar{B} = b$. Only $\bar{H}$ and
+$\Agate$ can move against it.
 
 \begin{proposition}[Score floor]
 \label{prop:floor}
 Let $\Tscore = \alpha\bar{R} + \beta\bar{B} + \gamma\bar{H} - \delta\Agate$ with
 $\alpha+\beta+\gamma+\delta = 1$, all weights non-negative and all smoothed
-features in $[0,1]$. For a faithful liar with $\bar{R}=1$ and $\bar{B}=b$, and
+features in $[0,1]$. For a server with $\bar{R}=1$ and $\bar{B}=b$, and
 for \emph{any} values of the remaining features,
 $\Tscore \ge \alpha + \beta b - \delta$, attained at $\bar{H}=0$, $\Agate=1$.
 \end{proposition}
 
 \begin{proofsketch}
 $\Tscore$ is non-decreasing in $\bar{H}$ and non-increasing in $\Agate$, so it
-is minimised at $\bar{H}=0$, $\Agate=1$, giving $\alpha + \beta b - \delta$. No
-further dishonesty reduces it, because the only negative term is scaled by
-$\delta$ and $\Agate$ is already saturated.
+is minimised at $\bar{H}=0$, $\Agate=1$, giving $\alpha + \beta b - \delta$.
 \end{proofsketch}
 
-The bound is elementary. What matters is what it is a bound \emph{on}: the
-penalty available to any member of this score family is capped by
-$\delta \le 1 - \alpha - \beta - \gamma$, \ie by whatever weight is left over
-after the features that measure whether a node is doing its job. Isolating the
-liar by score requires $\theta > \alpha + \beta b - \delta$; with our weights
-and $b = 0.96$ at a $20$\,ms service latency that is $\theta > 0.44$, against a
-shipped $\theta = 0.30$. Equivalently it requires $\delta > 0.29$, nearly
-doubling the suspicion weight at the direct expense of the service terms. Both
-moves make an honest node with one anomalous poll isolatable.
+The bound is elementary; what matters is what it bounds. In a weighted sum, good
+service compensates for dishonesty: the penalty available is capped by $\delta$,
+the weight left over after the features that measure service. Isolating such a
+server by score therefore needs $\theta > \alpha + \beta b - \delta$. With our
+weights that is $0.20 + 0.25\,b$: $0.44$ for a server as fast as an honest one
+($b = 0.96$ at 20\,ms), and lower for a slower one. The gate is the opposite kind
+of rule: a veto, which no amount of good service can offset.
 
-\subsection{The bound is valid and conservative}
+\subsection{The tested attacker, and why the bound is loose}
 \label{sec:analysis:conservative}
-Proposition~\ref{prop:floor} predicts that the Sybil's score stays above
-$\alpha + \beta b - \delta$. Computing that bound from each run's
-\emph{measured} mean service latency for the Sybil node gives a predicted floor
-of $0.302$ on average (range $0.278$--$0.328$) across the ten non-enforcing
-runs. The measured minimum was $0.399$--$0.409$. The bound held in every run,
-and it held loosely: the realised floor sat about $0.10$ above it.
+Three measured facts qualify the proposition.
 
-The gap is instructive, and we prefer to explain it than to present the bound
-as tighter than it is. The proposition's worst case assumes $\bar{H} \to 0$,
-\ie that the honesty term is driven to zero. It is not. Over the Sybil's runs
-the claimed-versus-observed load gap averaged $0.084$, so
-$h = 1 - \text{gap}/0.5$ averaged $0.83$ and $\gamma\bar{H}$ contributed about
-$+0.10$ to the score throughout. \emph{The term designed to punish lying barely
-registered the lie}, because the normaliser assumes a gap the adversary never
-has to open: under-reporting by a modest amount is enough to attract traffic
-and leaves $\bar{H}$ high. The floor an adversary actually enjoys is therefore
-higher than the analytic worst case, which strengthens rather than weakens the
-conclusion.
+\emph{The tested attacker is not latency-faithful.} Our load-misreporting
+server burns CPU in the background, so it answers slowly. Computing the floor
+from each run's measured latency for that server gives $0.302$ on average
+(range $0.278$--$0.328$) across the ten runs that let it keep serving, which
+corresponds to a mean service latency near 300\,ms, far above the fleet's. That
+slowness is what the gate's latency tell detects, and it is why the 0.44
+figure above, which assumes honest latency, does not apply to this attacker. A
+misreporting server that does \emph{not} slow itself was not tested
+(\S\ref{sec:validity}).
 
-What the proposition does not do is establish that the score fails in practice;
-a bound of $0.30$ straddles $\theta = 0.30$. That is an empirical question, and
-\S\ref{sec:res:ablation} answers it by experiment.
+\emph{The honesty term barely registers the lie.} The measured minimum score was
+$0.399$--$0.409$, about $0.10$ above the bound, because $\bar H$ never approached
+zero: the claimed-versus-observed load gap averaged only $0.084$, so
+$h = 1 - \text{gap}/0.5$ averaged $0.83$ and $\gamma\bar H$ added about $+0.10$
+throughout. The normaliser assumes a gap the adversary never has to open.
+
+\emph{The lie did not attract traffic.} The point of misreporting load is to
+draw work, yet after onset the load-misreporting server received $1.98\%$
+[1.59, 2.36] of routing decisions in \armscore{}, against a fair share of
+$12.5\%$, and $9.22\%$ even with no enforcement at all. At this workload's
+occupancy of about $1\%$ an honest server truthfully reports a load of about
+zero, so the attacker's fixed claim of $0.10$ ranks \emph{below} the truth,
+and its slowness lowers $T$. The gate then took an attacker the score had
+already starved from $1.98\%$ to $0.45\%$; the on-off attacker, which kept
+$9.53\%$ under the score alone, is where the gate's containment mattered
+($5.04\%$ with it). Whether the gate holds against a liar whose lie works is
+the first open question of \S\ref{sec:limits}.
+\src{evidence/replicates/summary.txt}
+
+So the proposition says a threshold low enough to be safe for honest servers
+leaves a floor the attacker can sit above; it does not say how high a
+threshold would have to go in practice, or what that would cost honest servers.
+\S\ref{sec:res:sweep} measures both.
 
 % ===========================================================================
 \section{Evaluation Methodology}
@@ -438,22 +517,25 @@ and forty IoT client processes on a four-core host. Servers perform \emph{real
 bounded work} --- hash loops sized by a configured budget --- rather than
 sleeping, which is what makes the telemetry measured rather than injected. Each
 device reports every $2.0$\,s with a $15$\,ms task budget and a $4.0$\,s client
-timeout: ${\sim}20$ requests/s from honest devices plus ${\sim}12$/s from the
-flooding device. The rate is chosen so the \emph{control plane} --- the thing
-under test --- is measured rather than starved.
+timeout: ${\sim}20$ requests/s from honest devices plus the flooding device
+(three workers paced at $0.25$\,s; twelve at $0.1$\,s in the heavy-flood arms of
+\S\ref{sec:res:flood}). The rate is chosen so the \emph{control plane}, which is
+what is under test, is measured rather than starved by the host.
 
 Six attacks plus wrong-credential devices arm on a staggered schedule inside
-every run: srv3 Sybil at $20$\,s, srv6 blackhole at $30$\,s, srv1 grayhole
+every run: srv3 load misreporting at $20$\,s, srv6 blackhole at $30$\,s, srv1 grayhole
 ($0.5$ drop rate) at $40$\,s, srv8 on-off ($20$\,s period, $0.5$ duty) at
 $50$\,s, iot37 flood at $60$\,s, iot38 identity spoof at $15$\,s, and iot39--40
 with wrong keys. Four servers and thirty-six devices are honest and must not be
 flagged.
 
-\subsection{The three arms}
+\subsection{The arms}
 \label{sec:method:arms}
 
 \begin{table}[t]
-\caption{The three arms. Each differs from the one above it by one mechanism.}
+\caption{The arms. Each of the first three differs from the one above it by
+one mechanism; the sweep and flood arms differ from their parent by the settings
+shown.}
 \label{tab:arms}
 \centering\footnotesize
 \begin{tabularx}{\columnwidth}{@{}lX@{}}
@@ -465,6 +547,10 @@ flagged.
 \armscore{} & trust rail only. Quarantine, rate-limit and probation
               eligibility decided by $\Tscore < \theta$ alone.\\
 \armfull{}  & both rails. $\Tscore < \theta$ \textbf{or} $\Agate \ge g$.\\
+\midrule
+sweep      & \armscore{} with $\theta \in \{0.40, 0.45, 0.50\}$ in place of $0.30$.\\
+flood off/on & \armfull{} with a heavier flood; \emph{on} adds the per-client
+              flood meter of \S\ref{sec:res:flood}.\\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -481,14 +567,20 @@ would have disabled the gate but \emph{also} removed the $\Agate$ term from
 Eq.~\ref{eq:trust}, silently changing the score family and making the arms
 incomparable. Instead the anomaly rail has a separate \emph{enforcement}
 switch: $\Agate$ still enters the score in both arms, and only its ability to
-\emph{act} is removed. Rows the \armbase{} arm cannot produce are reported as
+\emph{act} is removed. Every treatment arm also runs the same online UCB1
+weight optimizer~\cite{auer2002ucb1}, which chooses among five EdgeScore weight
+presets; it never changes the trust score, the thresholds or eligibility, so it
+moves ranking among eligible servers equally in every arm. Rows the \armbase{}
+arm cannot produce are reported as
 \emph{not measured}, never as zero --- an absent mechanism is not a mechanism
 that scored zero.
 
 \subsection{Replication and statistical treatment}
-\textbf{The unit of replication is the run.} Five runs per arm, fifteen live
-runs in total, each ${\sim}320$\,s, executed in rotating arm order so machine
-drift does not land on one arm. Per-task or per-route observations inside a run
+\textbf{The unit of replication is the run.} Five runs per arm, each
+${\sim}320$\,s, executed in rotating arm order so machine drift does not land on
+one arm: fifteen for the ablation, fifteen for the threshold sweep and ten for
+the flood experiment. The sweep's outcome was predicted in writing, from the
+ablation's recordings, before any sweep run existed. Per-task or per-route observations inside a run
 are not independent replicates and are never pooled across runs.
 
 Continuous metrics are reported as mean with a two-sided $95\%$ Student-$t$
@@ -531,11 +623,11 @@ All live figures come from fifteen runs archived under \texttt{data/runs/},
 scored by one aggregator whose output ships with this draft.
 \src{evidence/replicates/summary.txt}
 
-\subsection{The ablation: what the score rail cannot reach}
+\subsection{The ablation at the shipped threshold}
 \label{sec:res:ablation}
 
 \begin{table}[t]
-\caption{The central result. \emph{Score crossed $\theta$} is the trust rail's
+\caption{The ablation at $\theta = 0.30$. \emph{Score crossed $\theta$} is the trust rail's
 own verdict, recorded in every arm including those that never act on it.
 \emph{Quarantined} is what the arm actually did. Proportions carry Wilson
 $95\%$ intervals; $\min \Tscore$ is the mean over runs of the lowest score
@@ -556,7 +648,7 @@ reached after onset.}
 & quarantined            & ---  & \textbf{5/5} & \textbf{5/5}\\
 & $\min \Tscore$         & 0.000 & 0.180 & 0.129\\
 \midrule
-\multicolumn{5}{@{}l}{\textit{srv3 --- Sybil (\textbf{never fails a task})}}\\
+\multicolumn{5}{@{}l}{\textit{srv3 --- load misreporting (\textbf{never fails a task})}}\\
 & score crossed $\theta$ & \textbf{0/5} & \textbf{0/5} & \textbf{0/5}\\
 & quarantined            & ---  & \textbf{0/5} & \textbf{5/5}\\
 & $\min \Tscore$         & 0.399 & 0.404 & 0.617\\
@@ -576,18 +668,17 @@ $\theta = 0.30$. Wilson $95\%$ interval for 5/5 is $[57\%, 100\%]$ and for
 \end{minipage}
 \end{table}
 
-Table~\ref{tab:ablation} is the paper's central result and it divides the four
-server attacks into two groups along exactly the line
-\S\ref{sec:analysis} predicts.
+Table~\ref{tab:ablation} divides the four server attacks into two groups along
+the line \S\ref{sec:analysis} predicts.
 
 The two attackers that \textbf{fail tasks} --- the blackhole and the grayhole ---
 drive $\bar{R}$ down, and their scores cross $\theta$ in every one of fifteen
 runs. The score rail isolates them unaided: in \armscore{}, both are
 quarantined 5/5.
 
-The two attackers that \textbf{never fail a task} --- the Sybil and the on-off
-attacker --- are a different matter. Their scores \textbf{never once cross
-$\theta$}, in any arm, in any run: 0/15 each. Their minimum trust over a
+The two attackers that \textbf{never fail a task}, the load-misreporting server
+and the on-off attacker, are a different matter. At $\theta = 0.30$ their scores
+\textbf{never cross it}, in any arm, in any run: 0/15 each. Their minimum trust over a
 $320$\,s run settles at $0.399$--$0.411$ in the arms that let them keep serving,
 comfortably above the threshold and consistent with
 \S\ref{sec:analysis:conservative}. With only the score rail enforced, neither
@@ -595,9 +686,9 @@ is \emph{ever} quarantined (0/5 each, Wilson $[0\%, 43\%]$). With the gate
 enabled, both are quarantined in \emph{every} run (5/5 each, Wilson
 $[57\%, 100\%]$).
 
-This is the ablation's answer. The second rail is not a refinement of the
-first. For half the server attacks in this threat model it is the only thing
-that works at all.
+At the shipped threshold, then, the gate is the only mechanism that contains
+half of the server attacks. Whether a different threshold would let the score do
+it alone is the question \S\ref{sec:res:sweep} answers.
 
 \subsection{Which rail fired, and at what score}
 \label{sec:res:rails}
@@ -614,7 +705,7 @@ $95\%$ $t$-interval).}
 \midrule
 srv6 & blackhole & score 4/5, both 1/5 & 0.130 [0.074, 0.185]\\
 srv1 & grayhole  & both 3/5, gate 2/5  & 0.220 [0.066, 0.374]\\
-srv3 & Sybil     & \textbf{gate 5/5}   & \textbf{0.710} [0.630, 0.791]\\
+srv3 & load misreport. & \textbf{gate 5/5}   & \textbf{0.710} [0.630, 0.791]\\
 srv8 & on-off    & \textbf{gate 5/5}   & \textbf{0.709} [0.641, 0.777]\\
 \bottomrule
 \end{tabular}
@@ -627,8 +718,8 @@ in that case would overstate it.
 \end{minipage}
 \end{table}
 
-Table~\ref{tab:rails} shows the same split from the enforcement side. The Sybil
-and the on-off attacker are quarantined at a trust score of $0.71$ --- $2.4
+Table~\ref{tab:rails} shows the same split from the enforcement side. The
+load-misreporting server and the on-off attacker are quarantined at a trust score of $0.71$ --- $2.4
 \times$ the isolation threshold --- by a rail that is not part of the score.
 The blackhole is isolated by the score in four of five runs, with the gate
 merely concurring in the fifth. The grayhole sits between: both rails qualify
@@ -657,23 +748,113 @@ range. \armbase{} never contains anything.}
 \midrule
 srv6 & blackhole & 10.7 (9.8--12.0)  & 10.1 (9.3--11.7)\\
 srv1 & grayhole  & 15.6 (12.1--22.6) & 15.5 (12.3--31.7)\\
-srv3 & Sybil     & \textbf{never}    & \textbf{7.6} (5.9--10.2)\\
+srv3 & load misreport. & \textbf{never}    & \textbf{7.6} (5.9--10.2)\\
 srv8 & on-off    & \textbf{never}    & \textbf{10.4} (9.8--37.5)\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Where both arms contain an attacker they contain it at the same speed: the
-score rail is not slower, it is simply blind to two of the four. The gate is
-also the \emph{fastest} single detector in the set --- it reaches the Sybil in a
-median $7.6$\,s, faster than the score reaches either of the task-failing
-attackers --- because a latency tell needs three consecutive polls whereas a
-timeout rate needs enough dispatches to accumulate.
+Where both arms contain an attacker they contain it at the same speed. The
+gate is also the fastest single detector in the set: it reaches the
+load-misreporting server in a median $7.6$\,s, faster than the score reaches
+either task-failing attacker, because a latency tell needs three consecutive
+polls whereas a timeout rate needs enough dispatches to accumulate.
 
 Detection and response are effectively simultaneous: over the twenty
 node-run pairs in the \armfull{} arm the gap between a node's first anomaly
 event and its first quarantine ranged from $3.5$ to $12.5$\,ms, so the
 latencies above are detection latencies. \src{data/runs/treat/}
+
+\subsection{The threshold sweep: a narrow, slow band}
+\label{sec:res:sweep}
+
+\begin{table}[t]
+\caption{The score rail alone at four thresholds, against the gate. Runs out of 5
+in which each node was isolated after its attack began; in brackets, the median
+time from onset to isolation. Five runs per row.}
+\label{tab:sweep}
+\centering\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Arm} & \textbf{srv3 load mis.} & \textbf{srv8 on-off} & \textbf{Honest q.} & $p95$\\
+\midrule
+score, $\theta{=}0.30$ & 0/5 & 0/5 & 0/5 & 176\,ms\\
+score, $\theta{=}0.40$ & 0/5 & 1/5 (229\,s) & 0/5 & 173\,ms\\
+score, $\theta{=}0.45$ & \textbf{5/5} (26\,s) & \textbf{5/5} (207\,s) & 0/5 & 157\,ms\\
+score, $\theta{=}0.50$ & 5/5 (50\,s) & 5/5 (76\,s) & \textbf{1/5}$^{\dagger}$ & 149\,ms\\
+\midrule
+both rails, $\theta{=}0.30$ & 5/5 (7.6\,s) & 5/5 (10.4\,s) & 0/5 & 137\,ms\\
+\bottomrule
+\end{tabular}
+
+\vspace{3pt}
+\begin{minipage}{\columnwidth}\scriptsize\raggedright
+$^{\dagger}$Plus one attacker quarantined before its attack began. Wilson $95\%$
+intervals: 5/5 $[57\%,100\%]$, 1/5 $[4\%,62\%]$, 0/5 $[0\%,43\%]$.
+\src{evidence/theta\_sweep/summary.txt}
+\end{minipage}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.98\columnwidth, height=4.0cm, ymode=log,
+  xlabel={isolation threshold $\theta$ (score rail alone)},
+  ylabel={median s to isolation}, xmin=0.425, xmax=0.525,
+  xtick={0.45,0.50}, xticklabels={0.45,0.50}, ytick={5,10,30,100,300}, yticklabels={5,10,30,100,300},
+  ymin=4, ymax=400, legend columns=2,
+  legend style={font=\scriptsize, at={(0.5,-0.42)}, anchor=north, draw=none, column sep=4pt},
+  tick label style={font=\scriptsize}, label style={font=\scriptsize}]
+  \addplot+[mark=square*, thick] coordinates {(0.45,26.2) (0.50,50.1)};
+  \addplot+[mark=triangle*, thick] coordinates {(0.45,207.3) (0.50,76.1)};
+  \addplot[dashed, domain=0.425:0.525, samples=2] {7.6};
+  \addplot[dotted, thick, domain=0.425:0.525, samples=2] {10.4};
+  \legend{srv3 load mis.\ (score), srv8 on-off (score), srv3 (gate), srv8 (gate)}
+\end{axis}
+\end{tikzpicture}
+\caption{Time from attack onset to isolation. At $\theta \le 0.40$ the score
+isolates neither attacker in most runs (Table~\ref{tab:sweep}); where it does, it
+is $3.4\times$ to $20\times$ slower than the gate at the shipped threshold
+(horizontal lines).}
+\label{fig:sweep}
+\end{figure}
+
+The obvious objection to Table~\ref{tab:ablation} is that $\theta = 0.30$ was our
+choice. Before running anything we wrote down a prediction from the ablation's
+own recordings: at $\theta = 0.45$ the score would cross for both attackers in
+every run with no honest server affected, and at $0.50$ an honest server would
+dip below once. We then ran the score-only arm live at three higher thresholds,
+five runs each (Table~\ref{tab:sweep}, Fig.~\ref{fig:sweep}). The prediction held
+at $0.45$ and $0.50$; at $0.40$ it expected the on-off attacker to be caught in
+four runs and it was caught in one.
+
+\textbf{The score is not blind.} At $\theta = 0.45$ it isolated both attackers
+in every run with no honest server quarantined. Three things limit what that
+buys.
+
+\emph{It is slow.} Median time to isolation was 26\,s for the load-misreporting
+server and 207\,s for the on-off attacker, against 7.6\,s and 10.4\,s for the
+gate: $3.4\times$ and $20\times$ slower.
+
+\emph{The band is narrow.} While they keep serving, the two attackers' scores
+bottom out at about $0.40$--$0.41$, so a threshold must sit above that to fire.
+Honest servers, absorbing load from isolated attackers, fell to $0.417$ and
+$0.420$ in two of the $\theta = 0.40$ runs and to $0.421$ in one both-rails
+run. The usable gap between the attackers' floor and where honest servers go is
+a few hundredths at best. $\theta = 0.45$ held in its five runs, but a run with
+an honest dip like those would have quarantined an honest server.
+
+\emph{The ceiling is close.} Every server starts at $\Tscore = 0.5$, so no
+threshold can go much higher, and at $\theta = 0.50$ an honest server was
+quarantined in one run and an attacker before its attack began in another.
+
+The gate, by contrast, isolated both attackers in every run while their trust
+was about $0.71$: its decision does not depend on where the threshold sits. That
+is the measured difference between a score-based and a criteria-based trust
+algorithm in this setting: a margin of a few hundredths and a delay of tens to
+hundreds of seconds, against a wide margin and a delay of seconds.
 
 \subsection{Service, availability and fairness}
 \label{sec:res:service}
@@ -748,6 +929,61 @@ unfairness.} Over the four honest servers, where the metric means what it is
 for, the arms separate hard. We report both populations plus the attacker
 share, and recommend the same for any trust-aware balancer evaluation.
 
+\subsection{Data-plane response to a flooding client}
+\label{sec:res:flood}
+
+Detecting a flood is not the same as stopping it. When the flood tell fires,
+the controller installs a rule on every switch that matches only that client's
+\emph{new} connections to the virtual IP, above the rule that punts new
+connections to the controller and below the per-connection rules of
+connections already admitted. In the default mode those new connections pass
+through a per-client OpenFlow meter set to twice an honest device's expected
+rate, so a misjudged client is slowed, not cut off; a switch without meter
+support drops them instead. The rule expires on its own, after $10$\,s for a
+first offence and twice as long for each repeat, up to five minutes.
+
+\begin{table}[t]
+\caption{A heavy flood (twelve workers at $0.1$\,s) with the flood meter off and
+on, \armfull{} otherwise. Mean over runs with $95\%$ $t$-interval; honest-device
+rows exclude every attacking device.}
+\label{tab:flood}
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Metric} & \textbf{meter off} ($n{=}5$) & \textbf{meter on} ($n{=}4$)\\
+\midrule
+Honest mean latency & 105.0 [101.2, 108.9] ms & \textbf{91.7} [89.4, 94.0] ms\\
+Honest $p95$ latency & 177.7 [160.9, 194.5] ms & \textbf{139.4} [132.9, 145.8] ms\\
+Honest task success & 98.91 [98.51, 99.31]\% & 98.79 [98.52, 99.06]\%\\
+Tasks served to flooder & 8\,951 & \textbf{293}\\
+Honest devices throttled & 0 & 0\\
+\bottomrule
+\end{tabular}
+
+\vspace{3pt}
+\begin{minipage}{\columnwidth}\scriptsize\raggedright
+One meter-on run is excluded: the host suspended mid-run (recording span
+24\,331\,s). Truncating it to its 316\,s of normal recording gives the same
+reading (91.7$\to$93.0\,ms, 139.4$\to$141.3\,ms).
+\src{evidence/flood/summary\_primary.txt}
+\end{minipage}
+\end{table}
+
+Table~\ref{tab:flood} compares a heavy flood with the meter off (five runs) and
+on (four usable runs). Unlike the anomaly gate, this response \emph{does} improve service for
+honest devices: their mean latency falls by 13\% and their $p95$ by 22\%, with
+intervals that do not overlap, back to about the level seen without a heavy
+flood. Task success does not change. The flooder's served tasks fall by 97\%,
+and no honest device was ever metered.
+
+Two run-wide figures move the other way and must not be read as harms: total
+throughput falls from 41 to 15 tasks/s and run-wide mean latency rises, both
+because the flooder's own tasks dominate them. The flooder's connections that
+exceed the meter are dropped and retried by TCP, so its own tasks take seconds.
+This is the same two-population lesson as the fairness index above: report the
+attacker apart from the honest population.
+
 \subsection{Detection quality}
 \label{sec:res:detect}
 Scoring all 48 subjects --- eight attackers and forty honest --- against ground
@@ -786,27 +1022,25 @@ shortening persistence, and persistence is exactly what keeps healthy nodes out
 of quarantine on a jitter blip. And tamper-evidence at this batch size is
 effectively free.
 
-\textbf{Raft is implemented, unit-proven for safety and demonstrated live over
-TCP with a leader kill --- and the controller still commits single-replica.} A
-recorded $45$\,s failover (Fig.~\ref{fig:raft}) shows $850$ of $853$ commits
-succeeding, failover in $0.21$\,s, and an outage of three refused attempts.
-Every block of every live run in this paper carries term $0$ and a single
-proposer. Three runtime blockers stand between the built component and the
-wired one: nothing drives the election tick, a commit would block an OpenFlow
-handler thread for up to the commit timeout, and the current flush path
-discards a \texttt{None} return, which under Raft means losing trust updates on
-every leadership change. We name them rather than imply the live runs are
-consensus-backed.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{raft_failover.png}
-\caption{Recorded Raft failover on a standalone three-replica cluster under
-continuous load: leader killed at $15$\,s, restarted at $30$\,s. The gaps are
-deliberate --- a dead replica's missing samples are left as gaps rather than
-bridged, because a bridged line would assert it held its term while down.}
-\label{fig:raft}
-\end{figure}
+\textbf{The ledger can be replicated, and the report path does not wait for it.}
+The controller can commit to a separate three-replica Raft
+cluster~\cite{ongaro2014raft} instead of its in-process ledger. It is a client of
+the cluster: a background committer queues each batch off the report path,
+retries it until the cluster accepts it, and keeps a local copy of the chain that
+it re-validates block by block. A retried batch is recognised by a content hash
+and never becomes a second block. In a live run with this ledger we killed the
+leader with SIGKILL after 61 blocks: another replica was leader $0.47$\,s
+later, the one batch attempted during the election was retried, and all 649
+submitted batches were committed exactly once (blocks 1--61 at Raft term 2,
+62--649 at term 4), in order, with every block linked to the one before it. The
+killed replica, restarted a minute later from its on-disk log, caught up within
+$1.0$\,s. Commit time was 14\,ms mean and 20\,ms $p95$ (max 144\,ms), and
+routing decisions stayed at 0.77\,ms $p95$.
+\src{evidence/raft/failover\_report.json, events\_raft.jsonl}
+Replicas keep their term, vote and
+log on disk, so a restarted replica rejoins with its log. All ablation, sweep and
+flood runs in this paper used the in-process ledger; the replicated one is
+crash-fault tolerant, not Byzantine.
 
 \subsection{Simulation: baselines and scale}
 \label{sec:res:sim}
@@ -926,12 +1160,13 @@ measurable trade at this scale.
 \label{sec:disc:ablation}
 A comparison against an external baseline answers ``is our system better than
 theirs?'' An ablation answers ``which of our parts is doing the work?'', and
-only the second question has an actionable answer. Here it produced three
-findings a baseline comparison would have missed: that the gate is
-\emph{necessary} for half the attacks rather than merely helpful; that it
-contributes \emph{nothing} to the service metrics a paper would naturally lead
-with; and that the score rail, far from being slow, is simply blind --- it
-contains what it can see at the same speed the gate does.
+only the second question has an actionable answer. Here the ablation and the
+sweep together produced three findings a baseline comparison would have
+missed: at the shipped threshold the gate is the only mechanism that contains
+half the server attacks; it contributes nothing measurable to the delivery and
+availability metrics a paper would naturally lead with; and the score, where it
+can be made to fire against those attackers at all, does so only inside a
+narrow band and several times more slowly.
 
 The ablation was cheap only because of the architectural rule in
 \S\ref{sec:arch}: the request path writes evidence and the control loop reads
@@ -963,11 +1198,11 @@ is protected against confounds \emph{between} arms, not against a common-mode
 error.
 
 \paragraph*{Construct}
-The central measurement --- ``did the score ever cross $\theta$'' --- is
-threshold-relative, so it inherits our choice of $\theta = 0.30$. A
-substantially higher $\theta$ would catch the Sybil and, per
-\S\ref{sec:analysis}, would also put honest nodes at risk; we did not sweep
-$\theta$ live and that is the most direct attack on this result. Isolation
+The central measurement, whether the score ever crossed $\theta$, is
+threshold-relative. We therefore swept $\theta$ live (\S\ref{sec:res:sweep});
+the sweep has five runs per threshold, so the narrowness of the band rests on
+three honest-server dips observed in other arms, not on a measured rate of
+false quarantine at each threshold. Isolation
 stands in for the wireless-sensor notion of ``node death'' in our availability
 metric because no energy model exists here and inventing one for mains-powered
 servers would be a fabricated number; readers comparing against WSN lifetime
@@ -990,7 +1225,13 @@ by design. Where arms overlap we say so rather than describing the point
 estimates.
 
 \paragraph*{Adversary}
-The attacker model is \textbf{fixed and non-adaptive}. An adversary that
+The attackers were built by the same team as the detectors, and the
+load-misreporting server we tested slows itself by burning CPU, which is
+exactly what the gate's latency tell detects (\S\ref{sec:analysis:conservative}).
+A misreporting server that does not slow itself was not tested; whether the
+gate catches it, and what harm it does, are open. The attacker model is also
+\textbf{fixed and non-adaptive}, whereas security evaluations are
+expected to include adaptive attackers~\cite{carlini2019evaluating,tramer2020adaptive}. An adversary that
 observes its own detection and modulates --- keeping the claimed-versus-observed
 gap just under the honesty normaliser, or timing an on-off period against the
 EMA window --- would evade the tells we implement. Our claim is bounded to the
@@ -1005,43 +1246,39 @@ is small.
 % ===========================================================================
 
 \begin{enumerate}[leftmargin=1.2em,itemsep=2pt,topsep=2pt]
-\item \textbf{No live $\theta$ sweep.} The ablation shows the gate is necessary
-  at the shipped threshold. It does not show no threshold would do, and
-  \S\ref{sec:analysis} argues rather than measures that raising $\theta$ costs
-  honest nodes. Sweeping $\theta$ live across the three arms is the single most
-  valuable next experiment.
-\item \textbf{DDoS response is detection-only.} Flooding is detected,
-  attributed to the client and classified, but not throttled; that needs a
-  per-client-IP OpenFlow path, and the present machinery is per-edge-node.
-\item \textbf{Raft is not wired into the controller}
-  (\S\ref{sec:res:nfr}); the three blockers are named and each is a real change.
-\item \textbf{Five runs per arm}, one host, one topology size.
-\item \textbf{Hand-set weights.} An online bandit explores a fixed arm set.
-  Whether learned weights beat hand-tuned ones is well-posed in our harness and
-  we have not answered it.
+\item \textbf{A load-misreporting server that does not slow itself} was not
+  tested, nor one whose claim undercuts the honest servers' and so actually
+  attracts traffic (\S\ref{sec:analysis:conservative}). It is the most direct
+  test of whether the gate's success depends on the attacker's own slowness.
+\item \textbf{Five runs per arm}, one host, one topology size, one workload
+  shape. The false-quarantine rate at each threshold is not measured directly.
+\item \textbf{No adaptive adversary.} A server that watches its own anomaly
+  level and stays just under the gate is the most valuable next attacker.
 \item \textbf{The controller is a trusted single point}, in tension with the
-  doctrine the system implements. Full control-plane distribution is the honest
-  long-term item.
-\item \textbf{PRESENT-80 is an architecture demonstration}, not a security
-  claim.
+  doctrine the system implements, and the replicated ledger tolerates crashes,
+  not malicious replicas.
+\item \textbf{Hand-set weights.} The online bandit explores a fixed set of
+  weight presets; whether learned weights beat hand-tuned ones is unanswered.
+\item \textbf{PRESENT-80 with a fleet-wide key is an architecture
+  demonstration}, not a security claim; per-device keys are implemented but
+  were not used in these runs.
 \end{enumerate}
 
-The most valuable next adversary is an \emph{adaptive} one: a node that watches
-its own anomaly level and modulates to stay beneath the gate.
-\S\ref{sec:analysis} says a score cannot catch a faithful liar; the open
-question this work leaves is how much evidence a gate needs before an adversary
-can starve it.
+The open question this work leaves is how much evidence a gate needs before an
+adaptive adversary can starve it, and how small a score's margin can become
+before a criteria-based rule is the only workable one.
 
-% ===========================================================================
 \section{Reproducibility}
 \label{sec:repro}
 % ===========================================================================
 Every number carries the artifact it was read from. The offline scorers read
 the same append-only recordings the live dashboard streams, and none needs the
-controller stack installed. Fifteen run recordings are archived under
+controller stack installed. Forty run recordings are archived under
 \texttt{data/runs/<arm>/}; one aggregator produces every live figure in
-\S\ref{sec:results}. On the machine used for this draft the test suite reports
-$832$ passing and $11$ skipped, with no failures. Commands, with \texttt{EV} for \texttt{evaluation}:
+\S\ref{sec:results}. The code that produced the ablation and sweep runs is
+commit \texttt{8998a7c}; the flood runs, \texttt{7a2d795}. At the time of
+writing the test suite reports 1\,166 passing and 11 skipped, with no failures.
+Commands, with \texttt{EV} for \texttt{evaluation}:
 
 \begin{table}[H]
 \centering\footnotesize
@@ -1049,12 +1286,14 @@ $832$ passing and $11$ skipped, with no failures. Commands, with \texttt{EV} for
 \toprule
 \textbf{Result} & \textbf{Command} (prefix \texttt{python3 -m})\\
 \midrule
-Tables \ref{tab:ablation}--\ref{tab:service} & \texttt{EV.replicates data/runs}\\
+Tables \ref{tab:ablation}--\ref{tab:service} & \texttt{EV.replicates data/runs --arms base,\allowbreak scoreonly,\allowbreak treat}\\
+Table~\ref{tab:sweep} & \texttt{EV.replicates data/runs --arms scoreonly,\allowbreak scoreonly\_t040,\allowbreak scoreonly\_t045,\allowbreak scoreonly\_t050,\allowbreak treat}\\
+Table~\ref{tab:flood} & \texttt{EV.replicates data/runs --arms flood\_off,flood\_on}\\
 \S\ref{sec:res:nfr} & \texttt{EV.nfr\_report data/runs/treat/rNN.jsonl}\\
 \S\ref{sec:res:sim} baselines & \texttt{EV.baseline --runs 30 --csv r.csv}\\
  & \texttt{EV.stats r.csv}\\
 \S\ref{sec:res:sim} scale & \texttt{EV.scalability\_sweep --ns 4,8,16,32,64}\\
-The live runs themselves & \texttt{sudo tools/run\_replicates.sh}\\
+The live runs themselves & \texttt{sudo ARMS="\ldots" tools/run\_replicates.sh}\\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1068,35 +1307,34 @@ re-scored}, a discipline this project learned by losing one.
 \section{Conclusion}
 % ===========================================================================
 Zero Trust requires continuous verification and grants no standing trust.
-Applied to the serving infrastructure of an edge network, that demand has a
-consequence a trust \emph{score} cannot satisfy on its own. We removed the
-second decision rail from a working Zero-Trust SDN load balancer and ran it
-live: the two attackers that never fail a task were never isolated, in any of
-five runs, while their trust scores sat around $0.40$ against a $0.30$
-threshold --- and never crossed it in any of fifteen runs across all three arms.
-Restoring the gate isolated both in every run, at trust scores of $0.71$. The
-two attackers that do fail tasks were isolated by the score alone, at the same
-speed, in every run. The score rail is not slow; for half of this threat model
-it is blind.
+Applied to the servers of an edge network, it raises a concrete question: can a
+weighted trust score do the verifying on its own? Against attackers that fail
+tasks, yes: the score isolated them as fast as an independent gate. Against
+attackers that complete every task while misreporting their load, only barely.
+At the shipped threshold the score never isolated them, in any of fifteen runs.
+Raising the threshold made it fire, but only in a band a few hundredths wide
+above their floor of about 0.40, close to where honest servers fall under load
+and just below the 0.5 every server starts at, and three to twenty times more
+slowly than the gate, which isolated them in every run at trust scores near
+0.71.
 
-We report equally that the gate bought no measurable improvement in delivery
-ratio, throughput, mean latency, honest availability or fairness over the score
-rail alone --- it bought containment and the latency tail --- and that a
-containment-versus-attribution trade we previously claimed does not survive
-replication, and is withdrawn.
+We report equally what enforcement did not buy. The gate improved containment
+and the latency tail but not delivery, throughput or honest availability, and a
+containment-versus-attribution trade we previously claimed did not survive
+replication. A second data-plane response, a per-client meter on a flooding
+device, did improve honest service: under a heavy flood it brought honest
+latency back to its unflooded level while cutting the flooder's service by 97\%.
 
-The broader methodological point is that the ablation, not the baseline
-comparison, is what produced every one of those findings. It was available only
-because enforcement could be removed without touching the trust engine, and
-only because disabling the gate's \emph{action} was kept separate from removing
-its \emph{term} from the score. Both are cheap design decisions that a system
-of this shape should make early, for the evaluation they make possible as much
-as for the architecture.
+Two design decisions made these measurements cheap: enforcement could be
+removed without touching the trust engine, and disabling the gate's
+\emph{action} was kept separate from removing its \emph{term} from the score.
+A system of this shape should make both early, for the evaluation they make
+possible as much as for the architecture.
 
 % ===========================================================================
 \section*{Data Availability}
 % ===========================================================================
-The fifteen live recordings, the aggregator output, and the simulation CSVs
+The forty live recordings, the aggregator output, and the simulation CSVs
 behind every table are archived with the project repository under
 \texttt{data/runs/}, \texttt{data/replicates/} and
 \texttt{paper-draft/evidence/}. Recordings are JSONL event streams of
@@ -1114,6 +1352,15 @@ statement is: \emph{Conceptualization, Methodology} --- all authors;
 \emph{Software, Investigation, Data curation} --- all authors;
 \emph{Formal analysis, Visualization, Writing --- original draft} --- all
 authors; \emph{Supervision} --- R.~N.
+
+\section*{Declaration of Generative AI Use}
+An AI coding assistant (Claude, Anthropic) was used  in this work:
+for implementing parts of the evaluation tooling;
+of \S\ref{sec:res:sweep} came about. All experiments were designed by the
+authors and executed on the authors' hardware, and every reported number was
+produced by the cited tool from an archived recording rather than generated by
+a model. The authors verified the reference list and are responsible for all
+content.
 
 \section*{Conflicts of Interest}
 The authors declare no competing interests.
