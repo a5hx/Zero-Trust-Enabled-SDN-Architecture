@@ -193,3 +193,32 @@ class TestRailAttribution:
 
     def test_a_straddling_sample_is_not_guessed(self):
         assert attribute_rail(True, 0.7, 0.1, 0.3, 0.5) == 'indeterminate'
+
+
+class TestDeviceSplit:
+    """Honest-device service is scored apart from the attacking devices."""
+
+    def test_honest_and_flood_devices_are_separated(self, tmp_path) -> None:
+        import json as _json
+        from evaluation.replicates import _device_split
+        topo = {'type': 'topology', 'ts': 0.0, 'graph': {'nodes': [
+            {'id': 'iot1', 'kind': 'iot', 'ip': '10.0.0.1', 'attack': 'none'},
+            {'id': 'iot2', 'kind': 'iot', 'ip': '10.0.0.2', 'attack': 'none'},
+            {'id': 'iot37', 'kind': 'iot', 'ip': '10.0.0.37', 'attack': 'flood'},
+        ]}}
+        rows = [topo,
+                {'type': 'report', 'device': 'iot1', 'status': 'success', 'latency_ms': 100.0},
+                {'type': 'report', 'device': 'iot2', 'status': 'success', 'latency_ms': 200.0},
+                {'type': 'report', 'device': 'iot2', 'status': 'timeout', 'latency_ms': 4000.0},
+                {'type': 'report', 'device': 'iot37', 'status': 'success', 'latency_ms': 2500.0},
+                {'type': 'report', 'device': 'iot37', 'status': 'success', 'latency_ms': 2500.0},
+                {'type': 'client_throttled', 'client_ip': '10.0.0.37'},
+                {'type': 'client_throttled', 'client_ip': '10.0.0.37'}]
+        path = tmp_path / 'r01.jsonl'
+        path.write_text(''.join(_json.dumps(r) + '\n' for r in rows))
+        m = _device_split(str(path))
+        assert m['honest_mean_latency_ms'] == 150.0          # the flooder's 2.5 s excluded
+        assert m['honest_success_rate'] == pytest.approx(2 / 3)
+        assert m['flood_tasks_served'] == 2.0
+        assert m['client_throttles'] == 2.0
+        assert m['honest_clients_throttled'] == 0.0

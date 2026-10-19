@@ -271,7 +271,67 @@ def score_run(arm: str, path: str, theta: float = DEFAULT_THETA) -> RunResult:
     run.metrics['pre_onset_quarantines'] = float(
         sum(a.pre_onset_quarantines for a in run.attackers.values()))
     run.metrics.update(_classification_and_containment(path))
+    run.metrics.update(_device_split(path))
     return run
+
+
+def _device_split(path: str) -> Dict[str, Optional[float]]:
+    """Service seen by HONEST devices, kept apart from the attacking ones.
+
+    A run-wide latency mean mixes in the attackers' own requests. Under the
+    flood throttle (controller/flood_response.py) the flooder's tasks take
+    seconds -- its excess connection attempts are dropped and TCP retries them
+    -- which doubled the run-wide mean in the first throttle run while honest
+    devices were unchanged. So honest-device latency and success are reported
+    on their own, beside how much service the flooding device(s) still got and
+    whether the throttle ever touched an honest device.
+    """
+    attack_of: Dict[str, str] = {}
+    ip_attack: Dict[str, str] = {}
+    lat: List[float] = []
+    honest_total = honest_ok = 0
+    flood_served = 0
+    throttles = 0
+    throttled_ips: set = set()
+    with open(path) as fh:
+        for line in fh:
+            if '"topology"' in line[:80] and not attack_of:
+                e = json.loads(line)
+                if e.get('type') == 'topology':
+                    for n in (e.get('graph') or e).get('nodes', []):
+                        if n.get('kind') == 'iot':
+                            attack_of[n['id']] = n.get('attack', 'none')
+                            if n.get('ip'):
+                                ip_attack[n['ip']] = n.get('attack', 'none')
+                continue
+            if '"report"' in line[:60]:
+                e = json.loads(line)
+                if e.get('type') != 'report':
+                    continue
+                attack = attack_of.get(e.get('device'), 'none')
+                if attack == 'none':
+                    honest_total += 1
+                    if e.get('status') == 'success':
+                        honest_ok += 1
+                        if e.get('latency_ms') is not None:
+                            lat.append(float(e['latency_ms']))
+                elif attack == 'flood' and e.get('status') == 'success':
+                    flood_served += 1
+            elif '"client_throttled"' in line[:80]:
+                e = json.loads(line)
+                if e.get('type') == 'client_throttled':
+                    throttles += 1
+                    throttled_ips.add(e.get('client_ip'))
+    lat.sort()
+    honest_throttled = sum(1 for ip in throttled_ips if ip_attack.get(ip, 'none') == 'none')
+    return {
+        'honest_mean_latency_ms': statistics.mean(lat) if lat else None,
+        'honest_p95_latency_ms': lat[min(len(lat) - 1, int(len(lat) * 0.95))] if lat else None,
+        'honest_success_rate': honest_ok / honest_total if honest_total else None,
+        'flood_tasks_served': float(flood_served),
+        'client_throttles': float(throttles),
+        'honest_clients_throttled': float(honest_throttled),
+    }
 
 
 def _classification_and_containment(path: str) -> Dict[str, Optional[float]]:
@@ -336,6 +396,12 @@ METRIC_ROWS = (
     ('attacks_family', 'attacks in the right family (of 8)', 1.0, '.2f', ''),
     ('honest_mislabelled', 'honest subjects mislabelled', 1.0, '.2f', ''),
     ('class_accuracy', 'classification accuracy, all subjects', 100.0, '.2f', '%'),
+    ('honest_mean_latency_ms', 'honest devices: mean latency', 1.0, '.1f', ' ms'),
+    ('honest_p95_latency_ms', 'honest devices: p95 latency', 1.0, '.1f', ' ms'),
+    ('honest_success_rate', 'honest devices: task success', 100.0, '.2f', '%'),
+    ('flood_tasks_served', 'tasks served to flooding device(s)', 1.0, '.1f', ''),
+    ('client_throttles', 'client throttles applied', 1.0, '.2f', ''),
+    ('honest_clients_throttled', 'honest devices ever throttled', 1.0, '.2f', ''),
     ('duration_s', 'run length', 1.0, '.1f', ' s'),
 )
 
@@ -353,6 +419,9 @@ BOUNDS = {
     'attacks_exact': (0.0, 8.0), 'attacks_family': (0.0, 8.0),
     'honest_mislabelled': (0.0, None), 'pre_onset_quarantines': (0.0, None), 'class_accuracy': (0.0, 1.0),
     'honest_min_trust': (0.0, 1.0),
+    'honest_success_rate': (0.0, 1.0), 'honest_mean_latency_ms': (0.0, None),
+    'honest_p95_latency_ms': (0.0, None), 'flood_tasks_served': (0.0, None),
+    'client_throttles': (0.0, None), 'honest_clients_throttled': (0.0, None),
 }
 
 
