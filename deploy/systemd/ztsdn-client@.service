@@ -1,0 +1,22 @@
+# IoT client; the instance name is the device id (iot1, ...). Several can run
+# on one machine only if each has its own source IP listed in the inventory.
+[Unit]
+Description=Zero-Trust SDN IoT client %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# VIP, VIP_PORT, CONTROLLER, CONTROLLER_PORT, INTERVAL_S, TIMEOUT_S, and
+# ZTSDN_DEVICE_KEY. Keep this file root-only (chmod 600): the key is passed on
+# the command line until task 4 moves it to an environment read.
+EnvironmentFile=/etc/ztsdn/client-%i.env
+WorkingDirectory=/opt/ztsdn
+ExecStart=/usr/bin/python3 -u -m simulation.iot_client --device-id %i \
+    --vip ${VIP} --vip-port ${VIP_PORT} \
+    --controller ${CONTROLLER} --controller-port ${CONTROLLER_PORT} \
+    --interval-s ${INTERVAL_S} --timeout-s ${TIMEOUT_S} \
+    --auth-scheme present80 --auth-key-hex ${ZTSDN_DEVICE_KEY}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

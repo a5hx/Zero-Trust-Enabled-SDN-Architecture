@@ -1,0 +1,18 @@
+# Trust-aware SDN controller (one per testbed). Install on the controller host:
+#   sudo cp deploy/systemd/ztsdn-*.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl start ztsdn-controller
+[Unit]
+Description=Zero-Trust SDN controller (os-ken, OpenFlow 1.3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# ZTSDN_CONFIG (path to the testbed config) and, if used, ZTSDN_LEDGER_TOKEN.
+EnvironmentFile=/etc/ztsdn/controller.env
+WorkingDirectory=/opt/ztsdn
+ExecStart=/usr/bin/python3 -m controller.osken_manager controller.trust_balancer
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

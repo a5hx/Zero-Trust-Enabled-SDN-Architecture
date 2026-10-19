@@ -1,0 +1,21 @@
+# One RAFT ledger replica; the instance name is the replica id (n1, n2, n3).
+# Run each on a different machine for real fault tolerance.
+#   sudo systemctl start ztsdn-raft@n1
+[Unit]
+Description=Zero-Trust SDN ledger replica %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# RAFT_PEERS (n1=host:9001,n2=host:9002,n3=host:9003), HTTP_HOST, HTTP_PORT,
+# and ZTSDN_LEDGER_TOKEN if the controller config sets ledger.auth_token_env.
+EnvironmentFile=/etc/ztsdn/raft-%i.env
+WorkingDirectory=/opt/ztsdn
+ExecStart=/usr/bin/python3 -m blockchain.raft_replica --id %i --peers ${RAFT_PEERS} \
+    --http-host ${HTTP_HOST} --http-port ${HTTP_PORT} \
+    --data-dir /var/lib/ztsdn/raft --auth-token-env ZTSDN_LEDGER_TOKEN
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
