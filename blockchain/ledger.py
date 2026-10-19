@@ -154,6 +154,17 @@ class Ledger:
         """Return the hash of the tip block (the previous_hash for the next one)."""
         return self._chain[-1].hash
 
+    def block_at(self, index: int) -> Optional[Block]:
+        """The block at `index` (0 = genesis), or None if the chain is shorter."""
+        if 0 <= index < len(self._chain):
+            return self._chain[index]
+        return None
+
+    def blocks_from(self, start: int) -> List[Block]:
+        """Every block from `start` to the tip, in order (a copy of the list,
+        not of the blocks). Used to serve a catching-up mirror its gap."""
+        return list(self._chain[max(0, start):])
+
     def get_all_scores(self) -> Dict[str, float]:
         """Return the latest trust score for every node ever recorded.
 

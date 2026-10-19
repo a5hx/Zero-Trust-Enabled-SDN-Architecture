@@ -17,6 +17,9 @@ Endpoints:
         happens on the VIP data-plane path)
     GET  /node/status     [?node_id=] -> TrustState.snapshot(), full or one node
     GET  /ledger/verify   -> {valid, chain_length, max_updates_per_block}
+    GET  /ledger/status   -> which ledger backend is live; for raft_remote also
+                             queue_depth, submitted, committed, retries, dropped,
+                             leader_hint, last_error
     POST /report          {device_id, vip_src_port, status, latency_ms} -- a
         client's task-completion report. Not one of the deck's original five
         endpoints, but required for the demo to function: this is how
@@ -192,6 +195,16 @@ def _make_handler(app: Any, state: TrustState):
                         'chain_length': state.commit_backend.chain_length(),
                         'max_updates_per_block': state.max_updates_per_block,
                     })
+                elif path == '/ledger/status':
+                    # Which backend is live and, for the replicated one, how
+                    # far behind the cluster is: queue depth, retries, the
+                    # leader we last committed through, the last error.
+                    backend = state.commit_backend
+                    status_fn = getattr(backend, 'status', None)
+                    out = status_fn() if callable(status_fn) else {'backend': 'local'}
+                    out.setdefault('backend', 'local')
+                    out['chain_length'] = backend.chain_length()
+                    self._write_json(200, out)
                 else:
                     self._write_json(404, {'error': 'not found'})
             except Exception:

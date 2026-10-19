@@ -1,0 +1,27 @@
+Paired Wilcoxon signed-rank: zt_sdn vs baselines on malicious_share
+Holm-Bonferroni corrected within scenario, alpha = 0.05
+
+ scenario     baseline   n   system     base    delta    impr     p_raw     p_adj      r     W/L/T  
+--------------------------------------------------------------------------------------------------------
+     both   least_conn  30   0.0035   0.1534  +0.1499   97.7%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+     both     no_trust  30   0.0035   0.1430  +0.1394   97.5%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+     both       random  30   0.0035   0.2497  +0.2462   98.6%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+     both  round_robin  30   0.0035   0.2499  +0.2464   98.6%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+    clean   least_conn  30   0.0000   0.0000  +0.0000      --  1.00e+00  1.00e+00  +0.00   0/ 0/30 ns
+    clean     no_trust  30   0.0000   0.0000  +0.0000      --  1.00e+00  1.00e+00  +0.00   0/ 0/30 ns
+    clean       random  30   0.0000   0.0000  +0.0000      --  1.00e+00  1.00e+00  +0.00   0/ 0/30 ns
+    clean  round_robin  30   0.0000   0.0000  +0.0000      --  1.00e+00  1.00e+00  +0.00   0/ 0/30 ns
+     drop   least_conn  30   0.0009   0.0544  +0.0535   98.3%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+     drop     no_trust  30   0.0009   0.0397  +0.0388   97.7%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+     drop       random  30   0.0009   0.1229  +0.1220   99.3%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+     drop  round_robin  30   0.0009   0.1250  +0.1240   99.3%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+    sybil   least_conn  30   0.0022   0.0546  +0.0523   95.9%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+    sybil     no_trust  30   0.0022   0.0759  +0.0737   97.0%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+    sybil       random  30   0.0022   0.1229  +0.1207   98.2%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+    sybil  round_robin  30   0.0022   0.1250  +0.1227   98.2%  1.86e-09  7.45e-09  +1.00  30/ 0/0  yes
+--------------------------------------------------------------------------------------------------------
+12/16 comparisons significantly favour zt_sdn; 0 significantly favour the baseline.
+
+delta = baseline median - system median (positive favours the system).
+r = matched-pairs rank-biserial effect size. W/L/T = per-seed wins/losses/ties.
+null distribution used (exact: 12, none: 4).

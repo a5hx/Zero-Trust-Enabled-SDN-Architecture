@@ -140,6 +140,7 @@ class TrustState:
         time_source: Optional[Callable[[], float]] = None,
         task_timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
         probation_interval_s: float = DEFAULT_PROBATION_INTERVAL_S,
+        anomaly_rail_enforced: bool = True,
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
         # can drive observed_load's averaging window from its simulated clock.
@@ -184,6 +185,13 @@ class TrustState:
         self.anomaly_gate = anomaly_gate
         self.rate_limit_trust = rate_limit_trust
         self.anomaly_warn = anomaly_warn
+        # False = the score-only ablation arm: Ā still enters the trust score
+        # through the anomaly flag (record_task_outcome), but the gate and the
+        # warn band stop ACTING -- quarantine, rate-limit and probation
+        # eligibility are decided by trust alone. Use the _enforced_* values
+        # below at every enforcement site and self.anomaly_gate only where Ā
+        # feeds the score, or the ablation silently changes the score family.
+        self.anomaly_rail_enforced = anomaly_rail_enforced
         self.anomaly_lambda = anomaly_lambda
         self.max_updates_per_block = max_updates_per_block
         self.block_commit_timeout_s = block_commit_timeout_s
@@ -1009,11 +1017,21 @@ class TrustState:
     # ------------------------------------------------------------------ #
     # Routing / quarantine                                                #
     # ------------------------------------------------------------------ #
+    @property
+    def _enforced_gate(self) -> float:
+        """The Ā level that quarantines -- inf when the anomaly rail is off."""
+        return self.anomaly_gate if self.anomaly_rail_enforced else float('inf')
+
+    @property
+    def _enforced_warn(self) -> float:
+        """The Ā level that rate-limits -- inf when the anomaly rail is off."""
+        return self.anomaly_warn if self.anomaly_rail_enforced else float('inf')
+
     def is_quarantined(self, node_id: str) -> bool:
         with self._lock:
             t = self.trust_calc.get_score(node_id)
             a = self._anomaly.get(node_id, 0.0)
-            return t < self.isolation_threshold or a >= self.anomaly_gate
+            return t < self.isolation_threshold or a >= self._enforced_gate
 
     def band(self, node_id: str) -> str:
         """The graduated-response band this node is in right now: 'full',
@@ -1027,8 +1045,8 @@ class TrustState:
                 anomaly=self._anomaly.get(node_id, 0.0),
             )
             return trust_band(
-                ns, self.isolation_threshold, self.anomaly_gate,
-                self.rate_limit_trust, self.anomaly_warn,
+                ns, self.isolation_threshold, self._enforced_gate,
+                self.rate_limit_trust, self._enforced_warn,
             )
 
     def poll_quarantine_transitions(self) -> Tuple[List[str], List[str]]:
@@ -1099,7 +1117,7 @@ class TrustState:
 
     def _is_on_probation_locked(self, node_id: str) -> bool:
         return (
-            self._anomaly.get(node_id, 0.0) < self.anomaly_gate
+            self._anomaly.get(node_id, 0.0) < self._enforced_gate
             and self.trust_calc.get_score(node_id) < self.isolation_threshold
         )
 
@@ -1157,7 +1175,7 @@ class TrustState:
             ]
             weights = self.optimizer.active_weights()
             chosen, score, ranked = select_edge_node(
-                states, weights, self.isolation_threshold, self.anomaly_gate,
+                states, weights, self.isolation_threshold, self._enforced_gate,
                 strategy=self.selection_strategy, d_choices=self.d_choices,
                 epsilon=self.epsilon, rng=self._selection_rng,
             )

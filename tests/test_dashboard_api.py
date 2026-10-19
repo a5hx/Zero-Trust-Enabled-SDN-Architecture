@@ -404,6 +404,7 @@ def test_the_real_controller_merges_link_params_into_its_graph(cfg):
     class _S:
         edge_weights = _W()
         isolation_threshold, anomaly_gate = 0.3, 0.5
+        anomaly_rail_enforced = True
         selection_strategy, d_choices, epsilon = 'p2c', 2, 0.05
 
     bare.state = _S()

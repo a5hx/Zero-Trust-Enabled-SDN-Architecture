@@ -1,0 +1,12 @@
+# LaTeX build artifacts. paper.pdf is deliberately NOT ignored -- the built
+# draft is the deliverable, and reviewers should not need a TeX install.
+*.aux
+*.bbl
+*.blg
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
