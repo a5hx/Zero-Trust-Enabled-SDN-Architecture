@@ -60,10 +60,20 @@ def load(path):
         return yaml.safe_load(f)
 
 
+def key_of(cmd):
+    """The device key a launch command provisions. Since task 4 the key rides
+    in the environment (`ZTSDN_DEVICE_KEY=<hex> python3 ...`), never in argv."""
+    m = re.search(r'ZTSDN_DEVICE_KEY=([0-9a-f]+)', cmd)
+    return m.group(1) if m else None
+
+
 def argv_for(cmd):
-    """Strip `python3 -u -m module` and the shell redirection off a command."""
+    """Strip env assignments, `python3 -u -m module` and the shell
+    redirection off a command."""
     body = cmd.split('>')[0].strip()
     parts = shlex.split(body)
+    while parts and '=' in parts[0] and not parts[0].startswith('-'):
+        parts.pop(0)
     assert parts[0] == 'python3', parts[0]
     m = parts.index('-m')
     return parts[m + 1], parts[m + 2:]
@@ -170,14 +180,19 @@ class TestConfiguredAttacksReachTheAgents(unittest.TestCase):
         contain five attacks while the report expects six."""
         good = self.cfg['security']['shared_key_hex']
         for m in self.cfg['simulation'].get('malicious_spoof_devices', []):
-            self.assertIn(f'--auth-key-hex {good}', self.cmds[m['device']])
+            self.assertEqual(key_of(self.cmds[m['device']]), good)
 
     def test_wrong_key_devices_really_get_a_different_key(self):
         good = self.cfg['security']['shared_key_hex']
         for device in self.cfg['security'].get('malicious_iot_devices', []) or []:
-            cmd = self.cmds[device]
-            self.assertIn('--auth-key-hex', cmd)
-            self.assertNotIn(f'--auth-key-hex {good}', cmd)
+            key = key_of(self.cmds[device])
+            self.assertIsNotNone(key)
+            self.assertNotEqual(key, good)
+
+    def test_no_key_ever_appears_on_a_command_line(self):
+        """argv is world-readable through `ps`; the environment is not."""
+        for name, cmd in self.cmds.items():
+            self.assertNotIn('--auth-key-hex', cmd, name)
 
 
 class TestGroundTruthMatchesWhatIsLaunched(unittest.TestCase):
@@ -239,7 +254,7 @@ class TestGroundTruthMatchesWhatIsLaunched(unittest.TestCase):
                 # The one attack with no --malicious mode: it is expressed
                 # purely as being handed the wrong key.
                 self.assertEqual(armed, 'none')
-                self.assertIn('--auth-key-hex', cmd)
+                self.assertIsNotNone(key_of(cmd))
             else:
                 self.assertNotEqual(
                     armed, 'none',

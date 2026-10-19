@@ -132,11 +132,13 @@ def test_the_launcher_arms_the_same_attackers_from_the_baseline_config(tmp_path,
     good = cfg['security']['shared_key_hex']
     wrong = bytes(b ^ 0xFF for b in bytes.fromhex(good)).hex()
     for name in ('iot39', 'iot40'):
-        assert f'--auth-key-hex {wrong}' in joined[name]
-    assert f'--auth-key-hex {good}' in joined['iot1']
+        assert f'ZTSDN_DEVICE_KEY={wrong} ' in joined[name]
+    assert f'ZTSDN_DEVICE_KEY={good} ' in joined['iot1']
     # The spoofer holds the REAL key -- that is what makes it an insider rather
     # than a device that never had credentials.
-    assert f'--auth-key-hex {good}' in joined['iot38']
+    assert f'ZTSDN_DEVICE_KEY={good} ' in joined['iot38']
+    # Carried in the environment, never on argv (`ps` shows argv to every user).
+    assert not any('--auth-key-hex' in c for c in joined.values())
 
     # Workload intensity reaches the agents from the baseline config.
     assert '--work-ms 15' in joined['srv1']

@@ -21,6 +21,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from simulation.addressing import CX_IP, iot_ip, iot_mac, srv_ip, srv_mac
+from security.admin_auth import admin_headers, derive_device_key, resolve_shared_key_hex
 
 logger = logging.getLogger(__name__)
 
@@ -277,12 +278,21 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     # controller denies them at admission and they generate no VIP traffic.
     sec_cfg = cfg.get('security', {})
     auth_scheme = sec_cfg.get('auth_scheme', 'present80')
-    good_key_hex = sec_cfg.get('shared_key_hex')
+    good_key_hex = resolve_shared_key_hex(sec_cfg)
     malicious_iot = set(sec_cfg.get('malicious_iot_devices', []))
-    wrong_key_hex = (
-        bytes(b ^ 0xFF for b in bytes.fromhex(good_key_hex)).hex()
-        if good_key_hex else None
-    )
+    per_device = sec_cfg.get('key_derivation', 'fleet') == 'per_device'
+
+    def _device_key_hex(device_id: str) -> str:
+        """The key this device is provisioned with: the fleet key, or its own
+        derived key in per-device mode. A wrong-key device gets that key with
+        every byte flipped. A spoofing device holds only ITS OWN key -- in
+        per-device mode that is exactly why its spoof now fails."""
+        key = bytes.fromhex(good_key_hex)
+        if per_device:
+            key = derive_device_key(key, device_id)
+        if device_id in malicious_iot:
+            key = bytes(b ^ 0xFF for b in key)
+        return key.hex()
     # Flood/DDoS IoT devices (plan_adv.md Phase 1) -- a different mechanism
     # from malicious_iot_devices above (wrong-key/denied-admission): a
     # flooding device authenticates normally and is admitted, then hammers
@@ -306,9 +316,12 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         device_id = f'iot{j}'
         host = net.get(device_id)
         auth_args = ''
+        key_env = ''
         if good_key_hex:
-            key_hex = wrong_key_hex if device_id in malicious_iot else good_key_hex
-            auth_args = f'--auth-scheme {auth_scheme} --auth-key-hex {key_hex} '
+            # Through the environment, not argv: `ps` shows every user the
+            # command line, but not another user's environment.
+            key_env = f'ZTSDN_DEVICE_KEY={_device_key_hex(device_id)} '
+            auth_args = f'--auth-scheme {auth_scheme} --auth-key-env ZTSDN_DEVICE_KEY '
         flood = flood_by_device.get(device_id)
         spoof = spoof_by_device.get(device_id)
         flood_args = ''
@@ -328,7 +341,7 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
                 f'--flood-interval-s {float(flood.get("interval_s", 0.0))} '
             )
         cmd = (
-            f'python3 -u -m simulation.iot_client --device-id {device_id} '
+            f'{key_env}python3 -u -m simulation.iot_client --device-id {device_id} '
             f'--vip {ctrl_cfg["vip"]} --vip-port {ctrl_cfg["vip_port"]} '
             f'--controller {CX_IP} --controller-port {ctrl_cfg["api_port"]} '
             f'--interval-s {report_interval} --timeout-s {task_timeout} '
@@ -375,7 +388,7 @@ def _publish_link_table(cfg: Dict[str, Any], topo: Any) -> None:
         body = json.dumps({'links': links}).encode()
         req = urllib.request.Request(
             f'http://{host}:{port}/topology/links', data=body,
-            headers={'Content-Type': 'application/json'}, method='POST',
+            headers={'Content-Type': 'application/json', **admin_headers(cfg)}, method='POST',
         )
         with urllib.request.urlopen(req, timeout=2.0):
             logger.info("Reported %d link parameters to the controller", len(links))
@@ -405,7 +418,7 @@ def _pause_controller_monitor(cfg: Dict[str, Any]) -> None:
     try:
         req = urllib.request.Request(
             f'http://{host}:{port}/monitor/pause', data=b'{}',
-            headers={'Content-Type': 'application/json'}, method='POST',
+            headers={'Content-Type': 'application/json', **admin_headers(cfg)}, method='POST',
         )
         with urllib.request.urlopen(req, timeout=2.0):
             logger.info("Controller monitor paused for teardown")

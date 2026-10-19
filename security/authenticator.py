@@ -282,12 +282,19 @@ class Present80Authenticator:
     def __init__(
         self, shared_key: bytes,
         expected_ips: Optional[Dict[str, str]] = None,
+        per_device: bool = False,
     ) -> None:
         if len(shared_key) != 10:
             raise ValueError(
                 f"PRESENT-80 key must be 10 bytes (80 bits), got {len(shared_key)}"
             )
         self._key = shared_key
+        # per_device: each device holds derive_device_key(master, its id)
+        # instead of the master itself (security/admin_auth.py). A captured
+        # device then yields only its own key, so it can no longer produce a
+        # valid response for another device_id -- the fleet-key weakness the
+        # source-IP pin otherwise has to cover alone.
+        self.per_device = per_device
         self._nonces: Dict[str, tuple[bytes, float]] = {}
         self._sessions: Dict[str, str] = {}
         self.binding = IdentityBinding(expected_ips)
@@ -297,11 +304,20 @@ class Present80Authenticator:
         self._nonces[device_id] = (nonce, time.time())
         return nonce
 
-    def expected_response(self, nonce: bytes) -> bytes:
-        """What a legitimate device holding the shared key must send back:
-        the nonce encrypted under PRESENT-80."""
+    def key_for(self, device_id: str) -> bytes:
+        """The key `device_id` must hold: the master key, or its own derived
+        key in per-device mode."""
+        if self.per_device:
+            from security.admin_auth import derive_device_key
+            return derive_device_key(self._key, device_id)
+        return self._key
+
+    def expected_response(self, nonce: bytes, device_id: Optional[str] = None) -> bytes:
+        """What a legitimate device must send back: the nonce encrypted under
+        PRESENT-80 with the key that device holds (see key_for)."""
         from security.present_cipher import encrypt_bytes
-        return encrypt_bytes(self._key, nonce)
+        key = self.key_for(device_id) if device_id is not None else self._key
+        return encrypt_bytes(key, nonce)
 
     def verify_response(
         self, device_id: str, response: bytes, source_ip: Optional[str] = None,
@@ -319,7 +335,7 @@ class Present80Authenticator:
                 AUTH_DENY_NONCE_EXPIRED,
             )
 
-        if not hmac.compare_digest(self.expected_response(nonce), response):
+        if not hmac.compare_digest(self.expected_response(nonce, device_id), response):
             raise AuthError(
                 f"Bad auth response from {device_id}", AUTH_DENY_BAD_RESPONSE,
             )

@@ -35,6 +35,7 @@ data plane rather than just advisory.
 """
 
 import argparse
+import os
 import http.client
 import json
 import logging
@@ -436,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='shared key as hex. If omitted, the device skips authentication '
              '(plain runs). A wrong key is refused at admission.',
     )
+    parser.add_argument(
+        '--auth-key-env', default=None,
+        help='name of an environment variable holding the key as hex. Preferred '
+             'over --auth-key-hex: a command-line key is readable by every user '
+             'on the machine through `ps`.',
+    )
     parser.add_argument('--malicious', choices=['none', 'flood', 'spoof'], default='none')
     parser.add_argument(
         '--malicious-start-s', type=float, default=0.0,
@@ -475,7 +482,12 @@ def parse_args(argv=None):
 def main() -> None:
     args = parse_args()
 
-    auth_key = bytes.fromhex(args.auth_key_hex) if args.auth_key_hex else None
+    key_hex = args.auth_key_hex
+    if args.auth_key_env:
+        key_hex = os.environ.get(args.auth_key_env, '').strip()
+        if not key_hex:
+            raise SystemExit(f'--auth-key-env {args.auth_key_env}: variable is unset or empty')
+    auth_key = bytes.fromhex(key_hex) if key_hex else None
 
     logging.basicConfig(
         level=logging.INFO,

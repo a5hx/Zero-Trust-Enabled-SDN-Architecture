@@ -57,6 +57,7 @@ from security.authenticator import (
     HmacAuthenticator, NullAuthenticator, Present80Authenticator,
 )
 from contracts.inventory import Inventory
+from security.admin_auth import load_admin_token, resolve_shared_key_hex
 from simulation.addressing import srv_index
 
 logger = logging.getLogger(__name__)
@@ -260,16 +261,23 @@ def _build_authenticator(cfg: Dict[str, Any]):
     scheme = sec.get('auth_scheme', 'present80')
     if scheme == 'null':
         return NullAuthenticator(expected_ips=expected_ips)
+    # shared_key_env (an environment variable) or shared_key_hex (the config
+    # file itself); the env form keeps the key out of git and out of `ps`.
     if scheme == 'hmac':
-        key_hex = sec.get('shared_key_hex')
+        key_hex = resolve_shared_key_hex(sec)
         key = bytes.fromhex(key_hex) if key_hex else _DEMO_HMAC_KEY
         return HmacAuthenticator(shared_key=key, expected_ips=expected_ips)
     if scheme == 'present80':
-        key_hex = sec.get('shared_key_hex')
+        key_hex = resolve_shared_key_hex(sec)
         if not key_hex:
-            raise ValueError("security.auth_scheme=present80 requires shared_key_hex (10 bytes)")
+            raise ValueError(
+                "security.auth_scheme=present80 requires shared_key_env or shared_key_hex (10 bytes)")
+        derivation = sec.get('key_derivation', 'fleet')
+        if derivation not in ('fleet', 'per_device'):
+            raise ValueError(f"security.key_derivation must be 'fleet' or 'per_device', not {derivation!r}")
         return Present80Authenticator(
             shared_key=bytes.fromhex(key_hex), expected_ips=expected_ips,
+            per_device=(derivation == 'per_device'),
         )
     raise ValueError(f"unknown security.auth_scheme: {scheme!r}")
 
@@ -364,6 +372,15 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # generated from simulation/addressing.py under Mininet, or the
         # configured `inventory:` block on real hardware (contracts/inventory.py).
         self.inventory = Inventory.from_config(cfg)
+        # Management-endpoint token (security/admin_auth.py). Raises if the
+        # config names a variable that is unset: asking for protection and
+        # silently running without it is the one outcome not allowed.
+        self.admin_token = load_admin_token(cfg)
+        if self.admin_token is None:
+            logger.warning(
+                "controller.admin_token_env not set: /register, /topology/links and "
+                "/monitor/pause accept unauthenticated requests (fine on a single "
+                "Mininet host, not on a shared network)")
         node_ids = self.inventory.server_ids
         logger.info("Inventory: %d servers, %d devices (source: %s)",
                     len(node_ids), len(self.inventory.devices), self.inventory.source)

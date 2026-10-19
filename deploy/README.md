@@ -42,8 +42,26 @@ The code goes to `/opt/ztsdn` on every host; per-instance settings go in
    answers `/status`, `controller_ip` is local, and the ledger has one leader.
 6. IoT clients.
 
-## Not done yet (task 4)
+## Secrets
 
-The management endpoints (`/register`, `/topology/links`, `/monitor/pause`)
-are unauthenticated, and the device key is still passed on the client's
-command line. Do not put this on a network you do not control until task 4.
+| Secret | Config setting | Who needs it |
+|---|---|---|
+| Management token | `controller.admin_token_env` | Controller; anything that calls `/register`, `/topology/links`, `/monitor/pause` |
+| PRESENT-80 master key | `security.shared_key_env` | Controller only, with `key_derivation: per_device` |
+| A device's own key | -- | That device only (`ZTSDN_DEVICE_KEY`); print it with `python3 tools/device_key.py iotN` |
+| Ledger token | `ledger.auth_token_env` | Controller and every replica |
+
+All are read from environment variables, never from the config file or a
+command line. If the config names a variable that is unset, the controller
+refuses to start. Generate tokens with `python3 -c "import secrets; print(secrets.token_hex(16))"`
+and a master key with `python3 -c "import secrets; print(secrets.token_hex(10))"`.
+
+With `key_derivation: per_device`, a device that is captured reveals only its
+own key, so it cannot authenticate as another device. Note what this changes in
+an attack run: the spoofing device (iot38 posing as iot1) is now refused for a
+bad response, so it is labelled bad credentials, not spoof. Keep the shipped
+configs on `fleet` when reproducing the earlier experiments.
+
+Still not covered: the dashboard and read-only GET endpoints are open, and
+traffic is plain HTTP. Keep the management network separate from client
+traffic, or put TLS in front of it.
