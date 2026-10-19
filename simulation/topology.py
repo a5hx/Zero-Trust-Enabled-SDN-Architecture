@@ -215,6 +215,48 @@ def _sampled_reachability_check(net: Any, cfg: Dict[str, Any]) -> float:
     return loss
 
 
+#: Fleet-wide agent settings from the config's `agents:` block -> agent flag.
+#: Emitted ONLY when the config sets them, so every config written before
+#: 2026-10-19 launches byte-identical commands (test_launcher_parity pins them).
+_AGENT_FLEET_FLAGS = (
+    ('work_mode', '--work-mode'),
+    ('work_ops', '--work-ops'),
+    ('concurrency', '--concurrency'),
+)
+#: Per-attacker settings from a `malicious_edge_nodes` entry -> agent flag.
+_AGENT_ATTACK_FLAGS = (
+    ('claimed_cpu_lie', '--claimed-cpu-lie'),
+    ('liar_busy', '--liar-busy'),
+    ('stealth_rho', '--stealth-rho'),
+    ('stealth_margin', '--stealth-margin'),
+    ('stealth_honesty_threshold', '--stealth-honesty-threshold'),
+    ('stealth_interval_s', '--stealth-interval-s'),
+)
+
+
+def _agent_extra_args(agents_cfg: Dict[str, Any], mal: Optional[Dict[str, Any]],
+                      ctrl_cfg: Dict[str, Any]) -> str:
+    """The agent flags added for the Phase 1 experiments, each only if set.
+
+    The stealthy liar is additionally told where the controller's GET
+    /node/status is and, unless its entry says otherwise, the controller's
+    real honesty threshold: the attacker is assumed to know the detector.
+    """
+    parts = [f'{flag} {agents_cfg[key]}' for key, flag in _AGENT_FLEET_FLAGS
+             if key in agents_cfg]
+    if agents_cfg.get('enforce_concurrency'):
+        parts.append('--enforce-concurrency')
+    if mal:
+        parts += [f'{flag} {mal[key]}' for key, flag in _AGENT_ATTACK_FLAGS if key in mal]
+        if mal.get('attack') == 'stealthy':
+            if 'stealth_honesty_threshold' not in mal:
+                parts.append('--stealth-honesty-threshold '
+                             f'{ctrl_cfg.get("honesty_deviation_threshold", 0.40)}')
+            parts.append('--stealth-observe-url '
+                         f'http://{CX_IP}:{ctrl_cfg.get("api_port", 8081)}/node/status')
+    return ''.join(p + ' ' for p in parts)
+
+
 def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     """Start node_agent.py on every edge server and iot_client.py on every
     IoT host, backgrounded inside each Mininet host's own namespace. Reads
@@ -264,6 +306,7 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
             f'--malicious-start-s {start_s} '
             f'--grayhole-drop-rate {grayhole_rate} '
             f'--onoff-period-s {onoff_period} --onoff-duty {onoff_duty} '
+            f'{_agent_extra_args(agents_cfg, mal, ctrl_cfg)}'
             f'> logs/{node_id}_agent.log 2>&1 &'
         )
         srv.cmd(cmd)

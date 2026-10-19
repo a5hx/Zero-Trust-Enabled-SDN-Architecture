@@ -51,6 +51,42 @@ Endpoints:
                    against. This was documented in
                    docs/PROJECT_GUIDE.md's `start_s` config field before it
                    was actually wired here; config files already carry it.
+
+--malicious liar:     claims a low, fixed cpu_load (--claimed-cpu-lie; give it
+                   0.0) but does NOT burn CPU, so it serves at honest speed.
+                   The sybil above slows itself, and its lie at the shipped
+                   ~1% duty is higher than an honest server's truthful ~0, so
+                   it repels traffic rather than attracting it; this is the
+                   attacker whose lie works. --liar-busy picks its busy-seconds
+                   counter: `consistent` advances it at the claimed duty cycle
+                   (no internal contradiction, like the sybil), `truthful`
+                   reports the real counter while the instantaneous cpu_load
+                   lies -- the "split claim": routing reads the raw cpu_load,
+                   the honesty check reads the busy counter.
+--malicious stealthy: the adaptive liar. Every --stealth-interval-s it reads
+                   the controller's GET /node/status (--stealth-observe-url),
+                   claims the --stealth-rho quantile of the OTHER servers'
+                   claims, and never claims less than its own true duty minus
+                   --stealth-margin x the honesty threshold it is told about
+                   (Kerckhoffs: the attacker knows the detector). Busy-seconds
+                   stay consistent with the claim. It burns no CPU. This is
+                   Burke et al. / Yu et al.'s switch-side misreporting model
+                   moved to the server's own self-report.
+
+Work model (all honest and malicious modes):
+--work-mode burn:  hash for --work-ms of wall-clock time (the default and the
+                   behaviour of every run before 2026-10-19). Wall-clock, so a
+                   slower machine takes the SAME time per task.
+--work-mode hold:  occupy a worker for --work-ms without using CPU (a sleep).
+                   Raises occupancy -- the duty cycle the honesty check and the
+                   load claim are about -- without loading the host, which is
+                   how a 4-core laptop reaches 40-60% fleet occupancy.
+--work-mode ops:   --work-ops hash iterations: a fixed amount of WORK, so a
+                   slower or CPU-capped server really takes longer.
+--enforce-concurrency: at most --concurrency tasks in service at once; the
+                   rest wait. Without it every request gets its own thread and
+                   a server that attracts traffic never queues, so a liar can
+                   never be slowed by the traffic its lie wins.
 """
 
 import argparse
@@ -99,6 +135,22 @@ _attack_armed_at: 'float | None' = None
 # phases -- only the one running right now.
 _onoff_bad_phase_started_at: 'float | None' = None
 
+# --enforce-concurrency only: the worker slots. None means unbounded (one
+# thread per request, the behaviour of every run before 2026-10-19).
+_slots: 'threading.BoundedSemaphore | None' = None
+
+# --malicious liar/stealthy with a consistent busy counter: the fabricated
+# counter is the REAL counter's value at arming plus the integral of the claim
+# since then, so it never jumps backwards (the sybil's restarts from 0, which
+# the controller has to special-case). _lie_busy_base is that integral up to
+# _lie_busy_at; the claim in force since then is added on read.
+_lie_busy_base = 0.0
+_lie_busy_at: 'float | None' = None
+
+# --malicious stealthy only: the claim the observer thread last computed, and
+# the real busy counter it last sampled to measure its own true duty.
+_stealth_last_busy: 'tuple | None' = None
+
 
 def _burn_cpu_for_ms(duration_ms: float) -> None:
     """Spend roughly duration_ms of real CPU time hashing. Not a sleep — the
@@ -108,6 +160,103 @@ def _burn_cpu_for_ms(duration_ms: float) -> None:
     buf = b'zero-trust-sdn-workload'
     while time.monotonic() < end:
         buf = hashlib.sha256(buf).digest()
+
+
+def _burn_ops(n: int) -> None:
+    """A fixed amount of work: n SHA-256 iterations. Unlike _burn_cpu_for_ms,
+    a slower (or cgroup-capped) machine takes proportionally longer."""
+    buf = b'zero-trust-sdn-workload'
+    for _ in range(n):
+        buf = hashlib.sha256(buf).digest()
+
+
+def _do_work(mode: str, work_ms: float, work_ops: int) -> None:
+    if mode == 'hold':
+        time.sleep(work_ms / 1000.0)
+    elif mode == 'ops':
+        _burn_ops(work_ops)
+    else:
+        _burn_cpu_for_ms(work_ms)
+
+
+def _start_lie_busy_counter(real_busy: float, now: float) -> None:
+    """Begin a consistent fabricated busy counter from the real one."""
+    global _lie_busy_base, _lie_busy_at
+    _lie_busy_base = real_busy
+    _lie_busy_at = now
+
+
+def _advance_lie_busy_counter(claim_in_force: float, concurrency: int, now: float) -> None:
+    """Fold the claim that has been in force since the last change into the
+    base, before the claim changes (stealthy only; liar's claim is fixed)."""
+    global _lie_busy_base, _lie_busy_at
+    if _lie_busy_at is not None:
+        _lie_busy_base += (now - _lie_busy_at) * claim_in_force * max(1, concurrency)
+    _lie_busy_at = now
+
+
+def _lie_busy_seconds(claim: float, concurrency: int, now: float) -> float:
+    if _lie_busy_at is None:
+        return _lie_busy_base
+    return _lie_busy_base + (now - _lie_busy_at) * claim * max(1, concurrency)
+
+
+def _quantile(values: list, q: float) -> float:
+    """Linear-interpolated quantile, q in [0, 1]. Stdlib only (the agent runs
+    in a bare Mininet namespace)."""
+    xs = sorted(values)
+    if not xs:
+        raise ValueError('no values')
+    pos = q * (len(xs) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
+
+
+def stealth_claim(peer_claims: list, true_duty: float, rho: float,
+                  margin: float, honesty_threshold: float) -> float:
+    """The adaptive liar's claim: as low as the rho-quantile of the other
+    servers' claims, but never so far under its own true duty cycle that the
+    honesty check (|claimed duty - expected duty| > threshold) could fire.
+    With no peers visible (e.g. once quarantined, when the controller API is
+    out of reach) it falls back to the honesty floor alone."""
+    floor = true_duty - margin * honesty_threshold
+    claim = _quantile(peer_claims, rho) if peer_claims else floor
+    return min(1.0, max(0.0, claim, floor))
+
+
+def _fetch_peer_claims(url: str, node_id: str, timeout: float = 1.0) -> list:
+    """Other servers' raw claims from the controller's GET /node/status."""
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        snap = json.loads(resp.read())
+    return [float(v['claimed_cpu']) for k, v in snap.items()
+            if k != node_id and isinstance(v, dict) and 'claimed_cpu' in v]
+
+
+def _stealth_loop(node_id: str, concurrency: int, stop_event: threading.Event) -> None:
+    """--malicious stealthy: recompute the claim every stealth_interval_s."""
+    global _stealth_last_busy
+    while not stop_event.wait(AgentHandler.stealth_interval_s):
+        now = time.monotonic()
+        with _state_lock:
+            real = _busy_seconds_total
+        prev = _stealth_last_busy
+        _stealth_last_busy = (now, real)
+        if prev is None or now <= prev[0]:
+            continue
+        true_duty = (real - prev[1]) / ((now - prev[0]) * max(1, concurrency))
+        try:
+            peers = _fetch_peer_claims(AgentHandler.stealth_observe_url, node_id)
+        except (OSError, ValueError) as exc:
+            logger.info("%s: stealthy cannot see peers (%s); honesty floor only", node_id, exc)
+            peers = []
+        claim = stealth_claim(peers, true_duty, AgentHandler.stealth_rho,
+                              AgentHandler.stealth_margin,
+                              AgentHandler.stealth_honesty_threshold)
+        with _state_lock:
+            _advance_lie_busy_counter(AgentHandler.stealth_claim_now, concurrency, now)
+            AgentHandler.stealth_claim_now = claim
 
 
 def _sybil_burn_loop(stop_event: threading.Event) -> None:
@@ -164,11 +313,19 @@ def _arm_malicious(
     pre-arm interval genuinely honest (no background CPU load) rather than
     just self-reporting honestly while secretly already burning cycles.
     """
-    global _attack_armed_at
+    global _attack_armed_at, _stealth_last_busy
     _attack_armed_at = time.monotonic()
+    if malicious_kind in ('liar', 'stealthy'):
+        with _state_lock:
+            _start_lie_busy_counter(_busy_seconds_total, _attack_armed_at)
+            _stealth_last_busy = (_attack_armed_at, _busy_seconds_total)
+            AgentHandler.stealth_claim_now = AgentHandler.claimed_cpu_lie
     AgentHandler.armed = True
     logger.warning("%s: malicious mode '%s' is now ARMED", node_id, malicious_kind)
-    if malicious_kind == 'sybil':
+    if malicious_kind == 'stealthy':
+        threading.Thread(target=_stealth_loop, args=(node_id, concurrency, stop_event),
+                         daemon=True).start()
+    elif malicious_kind == 'sybil':
         for _ in range(concurrency):
             threading.Thread(target=_sybil_burn_loop, args=(stop_event,), daemon=True).start()
     elif malicious_kind == 'onoff':
@@ -211,6 +368,18 @@ class AgentHandler(BaseHTTPRequestHandler):
     # --malicious onoff only: True while the current phase is the bad one.
     # Irrelevant for every other --malicious kind.
     onoff_bad = False
+    # Work model; see the module docstring.
+    work_mode = 'burn'
+    work_ops = 20000
+    # --malicious liar only: 'consistent' or 'truthful' busy-seconds counter.
+    liar_busy = 'consistent'
+    # --malicious stealthy only.
+    stealth_rho = 0.25
+    stealth_margin = 0.8
+    stealth_honesty_threshold = 0.40
+    stealth_interval_s = 2.0
+    stealth_observe_url = 'http://10.0.99.254:8081/node/status'
+    stealth_claim_now = 0.0
 
     def log_message(self, fmt: str, *args) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)
@@ -259,6 +428,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             uptime = time.monotonic() - basis
             busy_seconds = uptime * cpu_load * max(1, self.concurrency)
 
+        elif self.malicious in ('liar', 'stealthy') and self.armed:
+            with _state_lock:
+                cpu_load = (self.claimed_cpu_lie if self.malicious == 'liar'
+                            else self.stealth_claim_now)
+                if self.malicious == 'stealthy' or self.liar_busy == 'consistent':
+                    busy_seconds = _lie_busy_seconds(cpu_load, self.concurrency,
+                                                     time.monotonic())
+                # else 'truthful': busy_seconds stays the real counter read above.
+
         else:
             cpu_load = min(1.0, active / max(1, self.concurrency))
 
@@ -301,12 +479,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         global _active_tasks, _busy_seconds_total
+        slots = _slots
+        if slots is not None:
+            slots.acquire()     # queue for a worker; the wait is not service time
         with _state_lock:
             _active_tasks += 1
         start = time.monotonic()
         try:
-            _burn_cpu_for_ms(self.work_ms)
+            _do_work(self.work_mode, self.work_ms, self.work_ops)
         finally:
+            if slots is not None:
+                slots.release()
             elapsed = time.monotonic() - start
             elapsed_ms = elapsed * 1000.0
             with _state_lock:
@@ -335,9 +518,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--work-ms', type=float, default=40.0)
     parser.add_argument(
         '--malicious',
-        choices=['none', 'sybil', 'drop', 'grayhole', 'onoff'],
+        choices=['none', 'sybil', 'drop', 'grayhole', 'onoff', 'liar', 'stealthy'],
         default='none',
     )
+    parser.add_argument('--work-mode', choices=['burn', 'hold', 'ops'], default='burn',
+                        help='burn: hash for --work-ms of wall time (default); '
+                             'hold: occupy a worker for --work-ms without CPU; '
+                             'ops: --work-ops hash iterations (fixed work).')
+    parser.add_argument('--work-ops', type=int, default=20000,
+                        help='--work-mode ops only: SHA-256 iterations per task.')
+    parser.add_argument('--enforce-concurrency', action='store_true',
+                        help='At most --concurrency tasks in service; the rest queue.')
+    parser.add_argument('--liar-busy', choices=['consistent', 'truthful'],
+                        default='consistent',
+                        help='--malicious liar only: fabricate busy_seconds at the '
+                             'claimed duty (consistent) or report the real counter '
+                             '(truthful, the split claim).')
+    parser.add_argument('--stealth-rho', type=float, default=0.25,
+                        help='--malicious stealthy only: quantile of the other '
+                             "servers' claims to claim.")
+    parser.add_argument('--stealth-margin', type=float, default=0.8,
+                        help='--malicious stealthy only: never claim less than true '
+                             'duty minus this fraction of the honesty threshold.')
+    parser.add_argument('--stealth-honesty-threshold', type=float, default=0.40,
+                        help="--malicious stealthy only: the detector's honesty "
+                             'threshold, as the attacker knows it.')
+    parser.add_argument('--stealth-interval-s', type=float, default=2.0)
+    parser.add_argument('--stealth-observe-url',
+                        default='http://10.0.99.254:8081/node/status',
+                        help="--malicious stealthy only: the controller's GET "
+                             '/node/status.')
     parser.add_argument(
         '--claimed-cpu-lie', type=float, default=0.1,
         help='Fixed cpu_load reported by --malicious sybil/onoff (while lying), '
@@ -381,6 +591,17 @@ def main() -> None:
     AgentHandler.grayhole_drop_rate = args.grayhole_drop_rate
     AgentHandler.onoff_period_s = args.onoff_period_s
     AgentHandler.onoff_duty = args.onoff_duty
+    AgentHandler.work_mode = args.work_mode
+    AgentHandler.work_ops = args.work_ops
+    AgentHandler.liar_busy = args.liar_busy
+    AgentHandler.stealth_rho = args.stealth_rho
+    AgentHandler.stealth_margin = args.stealth_margin
+    AgentHandler.stealth_honesty_threshold = args.stealth_honesty_threshold
+    AgentHandler.stealth_interval_s = args.stealth_interval_s
+    AgentHandler.stealth_observe_url = args.stealth_observe_url
+    if args.enforce_concurrency:
+        global _slots
+        _slots = threading.BoundedSemaphore(max(1, args.concurrency))
 
     stop_event = threading.Event()
     if args.malicious != 'none':
