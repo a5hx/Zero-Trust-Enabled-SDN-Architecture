@@ -50,6 +50,7 @@ from controller.attack_classifier import (
     AttackEvidence,
 )
 from controller.event_bus import EventBus, NullBus
+from controller.flood_response import FloodResponder, FloodResponseConfig, Throttle
 from controller.flood_detector import evaluate_flood_tell
 from security.authenticator import AUTH_DENY_BAD_RESPONSE, AUTH_DENY_IP_PIN
 from controller.trust_state import TrustState
@@ -357,7 +358,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
     PRIO_CONNECTION = 300
+    # A throttled client's NEW connections to the VIP (controller/flood_response.py):
+    # above the new-task punt so it catches them, below per-connection rules so
+    # connections already admitted finish normally.
+    PRIO_CLIENT_THROTTLE = 280
     PRIO_NEW_TASK = 250
+    # Cookie space for client-throttle rules, distinct from the per-server VIP
+    # cookies (0x5A...) so flow statistics never attribute them to a server.
+    CLIENT_THROTTLE_COOKIE_BASE = 0x5C00000000000000
+    # Per-client meters live above the per-server ones (1..N).
+    CLIENT_METER_BASE = 1000
     PRIO_MISS = 0
 
     def __init__(self, *args, **kwargs):
@@ -523,6 +533,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # client_ip -> leaky-bucket strike count, mirroring FlowMonitor's
         # self._latency_strikes (which is per-node; this is per-client).
         self._flood_strikes: Dict[str, int] = {}
+        # Flood RESPONSE (controller/flood_response.py): off by default, which
+        # keeps the old detection-only behaviour; 'meter' or 'drop' throttles a
+        # flooding client's new connections in the switches.
+        self.flood_responder = FloodResponder(
+            FloodResponseConfig.from_config(ctrl_cfg), self.flood_expected_rate_hz)
+        self._client_meter_ids: Dict[str, int] = {}
+        self._client_meters_on: Dict[int, set] = {}   # dpid -> meter ids installed
         # Client-side attack classification (plan_adv.md Phase 2). Separate
         # from FlowMonitor's node-side AttackEvidence on purpose: the subjects
         # are different kinds of thing (a device vs. an edge node) and the two
@@ -812,6 +829,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
             flood_persist=self.flood_persist,
         )
         self._flood_strikes[client_ip] = tell.strikes
+        if tell.tripped:
+            throttle = self.flood_responder.on_tripped(client_ip, time.time())
+            if throttle is not None:
+                self._apply_client_throttle(throttle)
         if tell.tripped and prev_strikes < self.flood_persist:
             logger.warning(
                 "%s: flood tell -- rate %.1f req/s is %.1fx expected %.1f req/s (sustained)",
@@ -828,6 +849,71 @@ class TrustBalancerApp(app_manager.OSKenApp):
             self._record_client_signal(
                 client_ip, {SIG_FLOOD: round(tell.ratio, 4) if tell.ratio else 0.0},
             )
+
+    def _client_meter_id(self, client_ip: str) -> int:
+        mid = self._client_meter_ids.get(client_ip)
+        if mid is None:
+            mid = self.CLIENT_METER_BASE + len(self._client_meter_ids) + 1
+            self._client_meter_ids[client_ip] = mid
+        return mid
+
+    def _apply_client_throttle(self, throttle: Throttle) -> None:
+        """Install one throttle rule for this client on every switch.
+
+        Matches only the client's NEW connections to the VIP (anything that
+        would otherwise reach the new-task punt). In meter mode they still go
+        to the controller, through a per-client packets-per-second meter; on a
+        switch without meter support, and in drop mode, they are dropped. The
+        rule carries a hard timeout, so the switch lifts the throttle itself.
+        """
+        client_ip = throttle.client_ip
+        applied = set()
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            ofproto = dp.ofproto
+            match = parser.OFPMatch(
+                eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                ipv4_src=client_ip, ipv4_dst=self.vip_ip, tcp_dst=self.vip_port,
+            )
+            use_meter = throttle.mode == 'meter' and self._meters_ok.get(dp.id, False)
+            if use_meter:
+                mid = self._client_meter_id(client_ip)
+                installed = self._client_meters_on.setdefault(dp.id, set())
+                dp.send_msg(parser.OFPMeterMod(
+                    datapath=dp,
+                    command=ofproto.OFPMC_MODIFY if mid in installed else ofproto.OFPMC_ADD,
+                    flags=ofproto.OFPMF_PKTPS, meter_id=mid,
+                    bands=[parser.OFPMeterBandDrop(rate=throttle.rate_pps, burst_size=0)],
+                ))
+                installed.add(mid)
+                inst = [
+                    parser.OFPInstructionMeter(mid, ofproto.OFPIT_METER),
+                    parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, [
+                        parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]),
+                ]
+                cookie = self.CLIENT_THROTTLE_COOKIE_BASE | mid
+                applied.add('meter')
+            else:
+                inst = []            # no instructions = drop
+                cookie = self.CLIENT_THROTTLE_COOKIE_BASE
+                applied.add('drop')
+            dp.send_msg(parser.OFPFlowMod(
+                datapath=dp, cookie=cookie, table_id=self.TABLE_VIP,
+                priority=self.PRIO_CLIENT_THROTTLE, match=match, instructions=inst,
+                hard_timeout=throttle.duration_s,
+            ))
+        mode_applied = 'mixed' if len(applied) > 1 else (applied.pop() if applied else 'none')
+        logger.warning(
+            "%s: THROTTLED new connections for %ds (offence %d, %s%s)",
+            client_ip, throttle.duration_s, throttle.offence, mode_applied,
+            f' at {throttle.rate_pps} conn/s' if mode_applied in ('meter', 'mixed') else '',
+        )
+        self.bus.publish(
+            'client_throttled', client_ip=client_ip, mode=throttle.mode,
+            mode_applied=mode_applied, rate_pps=throttle.rate_pps,
+            duration_s=throttle.duration_s, offence=throttle.offence,
+            until=round(throttle.until, 3),
+        )
 
     def _record_client_signal(self, client: str, signals: Dict[str, float]) -> None:
         """Record one client-side observation and publish a 'classification'
