@@ -1369,3 +1369,31 @@ class TestVerifiedClaimRouting:
     def test_an_unknown_mode_is_refused(self):
         with pytest.raises(ValueError):
             TrustState(node_ids=['srv1'], cpu_claim='trusted')
+
+
+def test_no_opinion_until_a_full_window_of_completions_exists():
+    """Re-run, 2026-10-20: after fix 1, 50 of the 52 remaining honest honesty
+    firings came in the first 36 s of a run, 35 of them with no completion
+    older than the 3 s window. All 40 clients start together, so the first
+    seconds are one synchronized burst, and a rate measured over a partial
+    window reads it as the steady state. The controller's own missing history
+    is not the node's misbehaviour: abstain until the window is full."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    for nid in ('srv1', 'srv2', 'srv3', 'srv4'):
+        state.set_concurrency(nid, 2)
+    # 2.5 s of a start-up burst: no completion is yet older than the window.
+    busy = {nid: 0.0 for nid in ('srv1', 'srv2', 'srv3', 'srv4')}
+    for _ in range(5):
+        for nid in busy:
+            busy[nid] += 2 * 0.32
+            state.report_claimed_status(nid, 0.0, 30.0, busy_seconds=busy[nid])
+            for _ in range(4):
+                state.record_task_outcome(TrustUpdate(
+                    device_id='iot1', edge_node_id=nid, task_status='success',
+                    cpu_usage=0.0, reported_cpu=0.0, latency_ms=400.0))
+        clock.advance(0.5)
+    assert state.expected_duty_cycle('srv1') is None
+    # Once a completion is at least a window old, it has an opinion again.
+    _drive_fleet(state, clock, {nid: (2, 0.32) for nid in busy}, seconds=5)
+    assert state.expected_duty_cycle('srv1') is not None

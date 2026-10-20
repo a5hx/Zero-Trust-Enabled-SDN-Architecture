@@ -507,6 +507,15 @@ class TrustState:
         now = self._now()
         target = now - self.load_window_s
         t0, c0 = hist[0]
+        if t0 > target:
+            # No completion at or before the window's start, so this is not a
+            # full window -- typically the first seconds of a run, when every
+            # client starts at once and the burst would read as the steady
+            # rate. 50 of the 52 honest false firings left after the span fix
+            # were exactly this (re-run of 2026-10-20). Our missing history
+            # is not the node's misbehaviour: no opinion, so the honesty
+            # check abstains rather than guessing.
+            return None
         for ts, c in hist:
             if ts > target:
                 break

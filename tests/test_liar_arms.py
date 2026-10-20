@@ -135,3 +135,15 @@ def test_the_app_accepts_cpu_claim_verified(tmp_path, monkeypatch):
     monkeypatch.setenv('ZTSDN_CONFIG', str(path))
     from controller.trust_balancer import TrustBalancerApp
     assert TrustBalancerApp().state.cpu_claim == 'verified'
+
+
+THIRD = {'liarfix3_honest': 'liarfix_honest', 'liarfix3_honest_verified': 'liarfix_honest_verified',
+         'liarfix3_c_treat': 'liarfix_c_treat'}
+
+
+@pytest.mark.parametrize('new,old', sorted(THIRD.items()))
+def test_third_batch_differs_only_in_the_recording_path(new, old):
+    a, b = _load(new), _load(old)
+    assert a['controller']['dashboard'].pop('record_path') == f'data/events_{new}.jsonl'
+    b['controller']['dashboard'].pop('record_path')
+    assert a == b
