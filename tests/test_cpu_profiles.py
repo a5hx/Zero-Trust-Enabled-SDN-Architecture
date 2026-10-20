@@ -114,6 +114,10 @@ class TestCgroupFilesystem:
 
 
 class TestLaunch:
+    """The first pilot (2026-10-20) showed an agent cannot join its group from
+    inside a Mininet host ("Directory nonexistent": the host's /sys is not the
+    root's). Agents now launch unchanged and the harness attaches them."""
+
     def _commands(self, cfg):
         from tests.test_live_config_preflight import launch_commands
         return dict(launch_commands(cfg))
@@ -122,32 +126,26 @@ class TestLaunch:
         with open('config/params_trust_full.yaml') as fh:
             return yaml.safe_load(fh)
 
-    def test_a_capped_agent_joins_its_group_before_python_starts(self):
-        cfg = self._full()
-        cfg['simulation']['server_profiles'] = {'srv5': {'class': 'slow', 'cpu_max': '5000 10000'}}
-        cmd = self._commands(cfg)['srv5']
-        assert cmd.startswith("sh -c 'echo $$ > /sys/fs/cgroup/ztsdn/srv5/cgroup.procs && exec "
-                              "python3 -u -m simulation.node_agent --node-id srv5 ")
-        assert cmd.endswith("' > logs/srv5_agent.log 2>&1 &")
-
-    def test_the_wrapped_command_still_parses(self):
-        import shlex
-        from simulation import node_agent
-        cfg = self._full()
-        cfg['simulation']['server_profiles'] = {'srv5': {'class': 'slow', 'cpu_max': '5000 10000'}}
-        inner = shlex.split(self._commands(cfg)['srv5'].split(' > logs/')[0])[2]
-        argv = shlex.split(inner.split('&& exec ', 1)[1])
-        assert argv[:3] == ['python3', '-u', '-m']
-        node_agent.build_parser().parse_args(argv[4:])
-
-    def test_unprofiled_servers_keep_their_exact_command(self):
+    def test_profiles_never_change_a_launch_command(self):
         cfg = self._full()
         before = self._commands(cfg)
         cfg['simulation']['server_profiles'] = {'srv5': {'class': 'slow', 'cpu_max': '5000 10000'}}
-        after = self._commands(cfg)
-        for node in before:
-            if node != 'srv5':
-                assert after[node] == before[node], node
+        assert self._commands(cfg) == before
+
+    def test_attach_moves_each_capped_agent_into_its_group(self, tmp_path):
+        root = _fake_root(tmp_path)
+        cp.setup(PROFILED, root)
+        pids = {'srv4': [111], 'srv5': [222]}
+        moved = cp.attach(PROFILED, root, find_pids=lambda n: pids.get(n, []))
+        assert moved == {'srv4': [111], 'srv5': [222]}
+        assert (root / 'ztsdn' / 'srv5' / 'cgroup.procs').read_text() == '222'
+        assert cp.unjoined(PROFILED, root) == []
+
+    def test_an_agent_that_is_not_running_is_reported(self, tmp_path):
+        root = _fake_root(tmp_path)
+        cp.setup(PROFILED, root)
+        cp.attach(PROFILED, root, find_pids=lambda n: [333] if n == 'srv5' else [])
+        assert cp.unjoined(PROFILED, root) == ['srv4']
 
 
 class TestClassesReachTheController:

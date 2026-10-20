@@ -16,13 +16,16 @@ WSL2 here is cgroup v2 only (docs/FEASIBILITY.md). Mininet hosts share the
 root PID namespace, so the harness, already root, places each agent directly.
 
 Mechanism. Every server with a profile or a scheduled throttle gets its own
-group `/sys/fs/cgroup/ztsdn/<srvN>`. Its agent is launched through
-`sh -c 'echo $$ > .../cgroup.procs && exec python3 ...'`, so the process is
-inside the group before it runs a line of Python, and a failure to join stops
-the launch instead of silently running uncapped. `cpu.max` is "QUOTA PERIOD"
-in microseconds; use a short period (10 ms) so a cap behaves like a slower CPU
-rather than as 100 ms bursts of full speed. Servers without either keep
-their launch command byte-for-byte (base_model/tests/test_launcher_parity.py).
+group `/sys/fs/cgroup/ztsdn/<srvN>`. Agents are launched exactly as always;
+the harness, root in the ROOT mount namespace, then finds each capped agent's
+PID and writes it into the group (moving the whole process, all threads).
+Joining from inside the Mininet host does not work: the first pilot
+(2026-10-20) failed with "cannot create /sys/fs/cgroup/ztsdn/srv5/cgroup.procs:
+Directory nonexistent", because a Mininet host's /sys is not the root's.
+Hosts do share the root PID namespace, which is what makes attaching from
+outside possible. The cost is ~2 s uncapped at start-up. `cpu.max` is
+"QUOTA PERIOD" in microseconds; use a short period (10 ms) so a cap behaves
+like a slower CPU rather than as 100 ms bursts of full speed.
 
 Config (`simulation:` block). These are deliberately OUTSIDE
 `malicious_edge_nodes`: every server here is honest, and the ground truth the
@@ -141,11 +144,29 @@ def group_dir(node: str, root: Path = CGROUP_ROOT) -> Path:
     return root / GROUP / node
 
 
-def wrap_command(core: str, node: str, root: Path = CGROUP_ROOT) -> str:
-    """`core` (no redirection, no &) launched inside the node's cgroup."""
-    if "'" in core:
-        raise ProfileError(f'cannot wrap a command containing a single quote: {core!r}')
-    return f"sh -c 'echo $$ > {group_dir(node, root) / 'cgroup.procs'} && exec {core}'"
+def agent_pids(node: str) -> List[int]:
+    """PIDs of `node`'s agent, found from the root PID namespace."""
+    import os
+    import subprocess
+    out = subprocess.run(['pgrep', '-f', f'simulation.node_agent --node-id {node} '],
+                         capture_output=True, text=True).stdout.split()
+    return [int(p) for p in out if int(p) != os.getpid()]
+
+
+def attach(cfg: Dict[str, Any], root: Path = CGROUP_ROOT,
+           find_pids: Callable[[str], List[int]] = agent_pids) -> Dict[str, List[int]]:
+    """Move each capped server's agent into its group. Returns node -> PIDs
+    moved; a node with none is left for unjoined() to report."""
+    moved: Dict[str, List[int]] = {}
+    for node in capped_nodes(cfg):
+        pids = find_pids(node)
+        for pid in pids:
+            try:
+                _write(group_dir(node, root) / 'cgroup.procs', str(pid))
+            except OSError as exc:
+                logger.error('%s: could not move pid %d into its cgroup: %s', node, pid, exc)
+        moved[node] = pids
+    return moved
 
 
 def schedule(cfg: Dict[str, Any]) -> List[Tuple[float, str, str]]:

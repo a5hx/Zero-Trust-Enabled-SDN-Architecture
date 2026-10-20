@@ -73,18 +73,12 @@ def test_each_class_has_enough_servers_for_its_own_baseline():
 
 
 @pytest.mark.parametrize('arm', ARMS)
-def test_capped_agents_are_wrapped_and_every_command_parses(arm):
+def test_every_agent_command_parses_with_fixed_work(arm):
     from simulation import node_agent
-    cfg = _load(arm)
-    throttled = {t['node'] for t in cfg['simulation'].get('honest_throttle') or []}
-    for host, cmd in launch_commands(cfg):
+    for host, cmd in launch_commands(_load(arm)):
         if not host.startswith('srv'):
             continue
-        wrapped = cmd.startswith("sh -c 'echo $$ > /sys/fs/cgroup/ztsdn/")
-        assert wrapped == (host in {'srv5', 'srv6', 'srv7', 'srv8'} | throttled), host
-        body = cmd.split(' > logs/')[0]
-        if wrapped:
-            body = shlex.split(body)[2].split('&& exec ', 1)[1]
-        argv = shlex.split(body)
+        assert not cmd.startswith('sh -c'), host       # attached from outside, never wrapped
+        argv = shlex.split(cmd.split(' > logs/')[0])
         a = node_agent.build_parser().parse_args(argv[4:])
         assert (a.work_mode, a.work_ops) == ('ops', 45000)

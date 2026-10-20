@@ -281,11 +281,6 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     task_timeout = agents_cfg.get('task_timeout_s', 2.0)
 
     mal_by_node = {m['node']: m for m in cfg['simulation'].get('malicious_edge_nodes', [])}
-    # Phase 3: servers with a CPU profile or a scheduled throttle are launched
-    # inside their own cgroup (simulation/cpu_profiles.py). Everyone else keeps
-    # the exact command they always had.
-    from simulation import cpu_profiles
-    capped = set(cpu_profiles.capped_nodes(cfg))
 
     for i in range(1, n_edge + 1):
         node_id = f'srv{i}'
@@ -314,8 +309,6 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
             f'--onoff-period-s {onoff_period} --onoff-duty {onoff_duty} '
             f'{_agent_extra_args(agents_cfg, mal, ctrl_cfg)}'
         )
-        if node_id in capped:
-            core = cpu_profiles.wrap_command(core.rstrip(), node_id) + ' '
         cmd = core + f'> logs/{node_id}_agent.log 2>&1 &'
         srv.cmd(cmd)
         logger.info(
@@ -562,7 +555,10 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         _launch_trust_agents(net, cfg)
         throttle_stop = threading.Event()
         if cpu_profiles.capped_nodes(cfg):
-            time.sleep(3.0)                # the agents' `sh -c` joins first
+            # Attach from the root namespace (simulation/cpu_profiles.py says
+            # why not from inside the host). Give the agents a moment to exist.
+            time.sleep(2.0)
+            cpu_profiles.attach(cfg)
             missing = cpu_profiles.unjoined(cfg)
             if missing:
                 _stop_trust_agents(net, cfg)
