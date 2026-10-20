@@ -1,0 +1,29 @@
+PREDICTION -- verified-claim routing at the SHIPPED workload
+Registered 2026-10-20, BEFORE any ship_c_* run.
+Question: does edge_score.cpu_claim: verified (the fix that closed the split
+claim at 40% occupancy) hand a consistent load liar traffic at the shipped
+~1% occupancy? Decides whether 'verified' can become the default.
+
+Model: evaluation.liar_sweep with concurrency 4 (agent default), occupancy
+20 x 0.015 / (8 x 4) = 0.0094, consistent liar (claim 0, busy faked), gate
+on, 10 seeds x 300 s:
+  raw       share 4.17 %   excess -8.33   caught 0/10   honest quarantined 0 %
+  verified  share 14.06 %  excess +1.56   caught 0/10   honest quarantined 0 %
+Mechanism: at ~1 % occupancy an honest server's verified duty is ~0.01, so a
+fabricated 0 now undercuts it; under raw routing the honest instantaneous
+claim is also 0, so the lie only ties and the liar's small honesty deficit
+loses every tie.
+
+REGISTERED PREDICTIONS (5 live runs per arm)
+  S1  ship_c_raw: liar route_share < 12.5 % (model 4.2 %).
+  S2  ship_c_verified: liar excess_share > 0 with the interval excluding 0,
+      and below +4 points (model +1.6): a small, real side effect.
+  S3  both arms: liar never quarantined in >= 4/5 runs (the honesty gap at
+      1 % occupancy is far below 0.40).
+  S4  both arms: 0 honest false quarantines in >= 4/5 runs; honest-device mean
+      latency within 5 % of each other.
+DECISION RULE, fixed now: if S2 holds, 'verified' does NOT become the
+default. It trades a +4-point hole at high load for a ~+1.6-point one at low
+load, so the paper reports it as an operator choice by expected load, and the
+two holes are reported together. If S2 fails (no measurable gain), 'verified'
+becomes the default.

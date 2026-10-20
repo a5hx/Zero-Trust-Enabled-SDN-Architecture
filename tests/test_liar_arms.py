@@ -147,3 +147,22 @@ def test_third_batch_differs_only_in_the_recording_path(new, old):
     assert a['controller']['dashboard'].pop('record_path') == f'data/events_{new}.jsonl'
     b['controller']['dashboard'].pop('record_path')
     assert a == b
+
+
+def test_shipped_load_arms_differ_only_in_cpu_claim_and_recording():
+    raw, ver = _load('ship_c_raw'), _load('ship_c_verified')
+    assert ver['edge_score'].pop('cpu_claim') == 'verified'
+    assert raw['controller']['dashboard'].pop('record_path') == 'data/events_ship_c_raw.jsonl'
+    assert ver['controller']['dashboard'].pop('record_path') == 'data/events_ship_c_verified.jsonl'
+    assert raw == ver
+
+
+def test_shipped_load_arms_run_the_shipped_workload_with_one_consistent_liar():
+    full, raw = _load('trust_full'), _load('ship_c_raw')
+    assert raw['agents'] == full['agents']
+    assert raw['simulation']['malicious_edge_nodes'] == [
+        {'node': 'srv3', 'attack': 'liar', 'start_s': 20, 'claimed_cpu_lie': 0.0,
+         'liar_busy': 'consistent'}]
+    for key in ('trust', 'optimizer', 'blockchain'):
+        assert raw[key] == full[key]
+    assert 'cpu_claim' not in raw['edge_score']
