@@ -1,8 +1,8 @@
 # paper-draft — research paper draft
 
-**"Trust Scores versus Anomaly Gates for Load-Misreporting Edge Servers:
-A Live Ablation and Threshold Sweep of Zero-Trust Load Balancing"** (revision 3,
-2026-10-19; see `CHECKLIST.md` for what changed)
+**"What Catches a Lie That Works? Trust Scores, Anomaly Gates and
+Load-Misreporting Servers in Zero-Trust Edge Load Balancing"** (revision 4,
+2026-10-20: the liar experiment; see `CHECKLIST.md` for what changed)
 
 A conference-length (IEEE-style, two-column) research paper drawing together
 the project's findings, measurements and negative results. `paper.pdf` is the

@@ -1,5 +1,5 @@
 % ===========================================================================
-%  Trust Scores versus Anomaly Gates -- research paper draft (revision 3)
+%  What Catches a Lie That Works? -- research paper draft (revision 4)
 %
 %  BUILD (from inside paper-draft/):  make
 %
@@ -35,8 +35,8 @@
 % Visible marker for a number not yet measured. Must not survive to submission.
 \newcommand{\pending}[1]{\textbf{[PENDING: #1]}}
 
-\title{Trust Scores versus Anomaly Gates for Load-Misreporting Edge Servers:\\
-       A Live Ablation and Threshold Sweep of Zero-Trust Load Balancing}
+\title{What Catches a Lie That Works? Trust Scores, Anomaly Gates and\\
+       Load-Misreporting Servers in Zero-Trust Edge Load Balancing}
 
 \author{%
   K R Jeevan Raj, \quad Aravind Kumar M, \quad Arjun Krishnakumar, \quad
@@ -51,42 +51,26 @@
 \maketitle
 
 \begin{abstract}
-Zero Trust requires continuous verification of every entity, but leaves open
-how a network control plane should verify the servers it routes work to and
-act on the verdict in the forwarding path. Trust-aware schedulers answer with a
-\emph{trust score}, a weighted sum of service-derived features compared with an
-isolation threshold. We built a Zero-Trust SDN load balancer in which that score
-\emph{ranks} eligible servers while an independent anomaly gate \emph{excludes}
-them, with every decision installed as OpenFlow~1.3 rules, and evaluated it on
-an emulated edge of 8 servers and 40 devices carrying six concurrent attacks.
-An ablation of five live runs per arm shows that at the shipped threshold
-($\theta = 0.30$) the score never isolated the two attackers that complete
-every task, a load-misreporting server and an on-off attacker (0/5 each),
-while the gate isolated both in every run (5/5) at trust $\approx 0.71$. A live
-threshold sweep qualifies the result rather than overturning it: at
-$\theta = 0.45$ the score alone isolated both (5/5) but $3.4\times$ and
-$20\times$ more slowly than the gate, honest servers under load fell to
-0.417--0.421 in other runs, within a few hundredths of the attackers' floor of
-$\approx 0.40$, and at $\theta = 0.50$ an honest server was quarantined. The
-score therefore has a usable band only a few hundredths wide; the gate has a
-wide margin and is fast. The gate buys containment, not service: delivery,
-throughput and honest availability do not change. A second enforcement
-mechanism, a per-client OpenFlow meter on a flooding device, does improve honest
-service under a heavy flood (mean latency $105 \to 92$~ms, $p95$
-$178 \to 139$~ms) while cutting the flooder's served tasks by 97\%. The
-load-misreporting attacker in these runs turned out to be slow and its lie
-repelled traffic, so a second live experiment (80 runs, every prediction
-registered in advance) built liars whose lie works: they serve at honest speed
-and, at 40\% occupancy, claim less load than honest servers. A liar whose
-claims are internally consistent gains nothing and is still contained. One that
-lies only in the instantaneous load figure the router ranks on, while reporting
-a truthful busy-time counter to the honesty check, wins $+4.0$ points of
-traffic above its fair share and is never caught; ranking on the verified
-figure closes that hole at no measured cost to honest servers. The same
-experiment exposed a latent defect in the honesty check that quarantined honest
-servers under load, and the fix cut them from 3.4 to 0.2 per run. We also
-retract an earlier containment--attribution claim that replication did not
-support.
+Zero Trust requires continuous verification, but leaves open how a network
+control plane should verify the servers it routes work to. We built a
+Zero-Trust SDN load balancer in which a trust score ranks edge servers, an
+independent anomaly gate excludes them, and every verdict is installed as
+OpenFlow~1.3 rules, and evaluated it live on an emulated edge of 8 servers and
+40 devices. In a five-run-per-arm ablation the score never isolated two
+attackers that complete every task (0/5) while the gate isolated both every
+time; a threshold sweep shows the score can, but only within a band a few
+hundredths wide and $3.4$--$20\times$ more slowly. But those attackers were
+slow, and the load-misreporting one drew less than its fair share: the gate
+had caught a slow server, not a lie. We therefore built
+liars that serve at honest speed and ran 80 further runs, each batch against a
+prediction registered in advance. A liar whose claims are internally
+consistent gains nothing and is contained. One that lies only in the
+instantaneous load figure the router ranks on, while reporting a truthful
+busy-time counter to the honesty check, wins $4.0$ points of traffic above its
+fair share and is never caught. Ranking on the verified figure closes the hole
+at no measured honest cost. The experiment also exposed a defect in the
+honesty check, invisible at low load, that quarantined honest servers; fixing
+it cut false quarantines from $3.4$ to $0.2$ per run.
 \end{abstract}
 
 \keywords{Zero Trust, software-defined networking, edge computing, trust-aware
