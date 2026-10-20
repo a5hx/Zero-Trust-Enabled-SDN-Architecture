@@ -1,0 +1,167 @@
+# config/params_liarfix_stealthy.yaml
+# PHASE 1 RE-RUN, arm 'liarfix_stealthy': params_stealthy_treat.yaml re-run on the corrected
+# honesty check (fix 1: the completion rate's span now ends at now, not at the
+# last completion -- controller/trust_state.py _completion_rate_locked).
+# Own arm name and recording path, so the first batch's 25 recordings stay.
+#
+# Why: docs/predictions/liar_2026-10-19_OUTCOME.md -- the first batch's honest
+# false quarantines (3.0-4.4 per run) and the split-claim liar's quarantines
+# were all the span defect. Prediction for this batch, registered first:
+#   docs/predictions/liarfix_2026-10-20.txt
+# Run and score:
+#   sudo ARMS="liarfix_honest liarfix_c_treat liarfix_t_treat liarfix_stealthy liarfix_t_verified liarfix_honest_verified" tools/run_replicates.sh
+#   python3 -m evaluation.replicates data/runs --arms liarfix_honest,liarfix_c_treat,liarfix_t_treat,liarfix_stealthy,liarfix_t_verified,liarfix_honest_verified
+trust:
+  alpha: 0.35
+  beta: 0.25
+  gamma: 0.25
+  delta: 0.15
+  lambda_decay: 0.85
+  initial_score: 0.5
+
+  isolation_threshold: 0.3
+  anomaly_gate: 0.5
+
+  rate_limit_trust: 0.5
+  anomaly_warn: 0.25
+
+edge_score:
+  w1_trust: 0.50
+  w2_cpu: 0.30
+  w3_latency: 0.20
+  selection: p2c
+  d_choices: 2
+  epsilon: 0.05
+
+optimizer:
+  enabled: true
+  algorithm: ucb1
+  window_s: 10.0
+  exploration_c: 1.41
+  reward:
+    latency_penalty: 0.2
+    imbalance_penalty: 0.2
+  arms:
+    - [0.50, 0.30, 0.20]
+    - [0.70, 0.20, 0.10]
+    - [0.34, 0.50, 0.16]
+    - [0.34, 0.16, 0.50]
+    - [0.45, 0.45, 0.10]
+
+simulation:
+  num_edge_nodes: 8
+  num_iot_devices: 40
+  # Vestigial -- kept because both entry points still read the key, but it
+  # drives no behaviour: topology.py uses it only to mark the last N IoT hosts
+  # into a `malicious_ids` list that nothing reads, plus a log line, and
+  # run_demo.py assigns it to a local it never uses. Note it counts IoT
+  # DEVICES, not edge servers, despite sitting next to the edge-node settings.
+  # What actually arms an attacker is malicious_edge_nodes /
+  # malicious_flood_devices / malicious_spoof_devices below and
+  # security.malicious_iot_devices. 4 happens to be right either way here:
+  # 4 malicious edge nodes, and 4 malicious IoT devices (iot37-iot40).
+  num_malicious: 4
+  duration_s: 300
+
+  malicious_edge_nodes:
+    - node: srv3
+      attack: stealthy
+      start_s: 20
+      claimed_cpu_lie: 0.0     # its claim until the first observation
+      stealth_rho: 0.25
+      stealth_margin: 0.8
+  malicious_flood_devices: []
+  malicious_spoof_devices: []
+
+
+security:
+  auth_scheme: present80
+  shared_key_hex: "00112233445566778899"
+
+  # Malicious IoT devices (wrong key -> denied at admission, never generate
+  # VIP traffic). Separate from malicious_edge_nodes above.
+  # No wrong-key devices in the liar experiment: every device is honest, so
+  # 'honest devices' service metrics cover all 40.
+  malicious_iot_devices: []
+
+blockchain:
+  max_updates_per_block: 10
+  block_commit_timeout_s: 5.0
+
+controller:
+  vip: 10.0.99.1
+  vip_port: 9000
+
+  api_host: 0.0.0.0
+  api_port: 8081
+
+  flow_idle_timeout_s: 10
+  flow_hard_timeout_s: 30
+  monitor_interval_s: 1.0
+
+  latency_liar_ratio: 3.0
+  latency_liar_floor_ms: 40.0
+  idle_claim_threshold: 0.25
+  latency_liar_persist: 3
+
+  rate_limit:
+    enabled: true
+    rate_kbps: 2000
+    burst_kb: 200
+
+  dashboard:
+    enabled: true
+    record_path: data/events_liarfix_stealthy.jsonl
+
+  honesty_deviation_threshold: 0.40
+
+  # How often a node quarantined on TRUST alone -- with its anomaly rail
+  # already back below the gate -- is offered a single trial task, so it can
+  # earn trust back. Without this, quarantine is an absorbing state: it cuts
+  # the service traffic that produces the only outcomes R and B are built
+  # from, so a node below the isolation threshold can never climb back over
+  # it. The 8/40/3 live run ended with srv1/srv4/srv7 at anomaly 0.0, 29ms
+  # RTT and zero inflight -- provably healthy -- and isolated for the rest of
+  # the run at trust ~0.18. See contracts/thresholds.py and
+  # docs/LIVE_RUN_8_40_3.md.
+  #
+  # The anomaly gate is NOT relaxed by this: a node the anomaly rail has
+  # flagged is never probed. The exposure is one task per node per interval.
+  probation_interval_s: 5.0
+
+agents:
+  node_port: 8000
+  # Workload intensity, tuned so a 4-core box can actually carry 8/40/3.
+  #
+  # The scale figures the deck commits to are topological -- 8 edge servers,
+  # 40 IoT devices, 3 attackers -- and those are unchanged above. What is
+  # tuned here is how hard each device pushes, which is a property of the
+  # host, not of the architecture.
+  #
+  # The arithmetic that matters: offered task CPU = num_iot / report_interval_s
+  # x task_work_ms. At the demo-scale values (1.0s / 40ms) that is
+  # 40/1.0 x 40ms = 1.60 cores of pure task work, 40% of a 4-core box BEFORE
+  # the 40 client + 8 agent + controller + OVS processes are scheduled at all.
+  # The first live run measured the result: 243.7ms mean task latency against
+  # 40ms of actual work, and a 90% client timeout rate.
+  # At 2.0s / 15ms it is 40/2.0 x 15ms = 0.30 cores (8%), which leaves the
+  # control plane -- the thing under test -- room to be measured rather than
+  # starved.
+  #
+  # To run this as a deliberate saturation experiment instead, put these back
+  # to 1.0 / 40 and expect the collapse documented in docs/LIVE_RUN_8_40_3.md.
+  report_interval_s: 2.0
+  # 2x the old value: under load the honest tail matters more than a tight
+  # bound, and every abandoned task costs the controller a phantom inflight
+  # until the reaper (1.5x this) drops it.
+  task_timeout_s: 4.0
+  # LIAR EXPERIMENT WORKLOAD: fleet occupancy ~0.40 without loading the host.
+  # 20 tasks/s x 0.32 s / (8 servers x 2 workers) = 0.40. `hold` occupies a
+  # worker without CPU, so the box carries it as easily as the shipped 15 ms
+  # burn; it is OCCUPANCY that the load claim and the honesty check are about.
+  # At the shipped ~1% occupancy an honest server truthfully reports ~0 load,
+  # so a lie of 0 cannot beat the truth (docs/LIAR_BOUND.md).
+  task_work_ms: 320
+  work_mode: hold
+  concurrency: 2
+  enforce_concurrency: true

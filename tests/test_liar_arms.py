@@ -97,3 +97,41 @@ def test_the_replicate_runner_treats_them_as_config_arms():
     for arm in ARMS:
         assert not re.fullmatch(r'[a-z]+_t[0-9]{3}', arm)
         assert Path(f'config/params_{arm}.yaml').exists()
+
+
+# The re-run batch (2026-10-20), on the corrected honesty check. Each arm is a
+# first-batch arm with only its recording path changed -- and, for the two
+# '_verified' arms, edge_score.cpu_claim: verified.
+RERUN = {'liarfix_honest': 'liar_honest', 'liarfix_c_treat': 'liar_c_treat',
+         'liarfix_t_treat': 'liar_t_treat', 'liarfix_stealthy': 'stealthy_treat',
+         'liarfix_t_verified': 'liar_t_treat', 'liarfix_honest_verified': 'liar_honest'}
+
+
+@pytest.mark.parametrize('new,old', sorted(RERUN.items()))
+def test_rerun_arms_are_the_first_batch_with_only_the_named_change(new, old):
+    a, b = _load(new), _load(old)
+    assert a['controller']['dashboard'].pop('record_path') == f'data/events_{new}.jsonl'
+    b['controller']['dashboard'].pop('record_path')
+    if new.endswith('_verified'):
+        assert a['edge_score'].pop('cpu_claim') == 'verified'
+    assert a == b
+
+
+@pytest.mark.parametrize('arm', sorted(RERUN))
+def test_rerun_arms_launch(arm):
+    from simulation import node_agent
+    for host, cmd in launch_commands(_load(arm)):
+        module, argv = argv_for(cmd)
+        if module == 'simulation.node_agent':
+            node_agent.build_parser().parse_args(argv)
+
+
+def test_the_app_accepts_cpu_claim_verified(tmp_path, monkeypatch):
+    pytest.importorskip('os_ken')
+    cfg = _load('liarfix_t_verified')
+    cfg['controller']['dashboard'] = {'enabled': False}
+    path = tmp_path / 'p.yaml'
+    path.write_text(yaml.safe_dump(cfg))
+    monkeypatch.setenv('ZTSDN_CONFIG', str(path))
+    from controller.trust_balancer import TrustBalancerApp
+    assert TrustBalancerApp().state.cpu_claim == 'verified'

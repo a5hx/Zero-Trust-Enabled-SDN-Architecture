@@ -141,12 +141,27 @@ class TrustState:
         task_timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
         probation_interval_s: float = DEFAULT_PROBATION_INTERVAL_S,
         anomaly_rail_enforced: bool = True,
+        cpu_claim: str = 'raw',
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
         # can drive observed_load's averaging window from its simulated clock.
         # Left on wall time, the synthetic run would integrate occupancy over
         # real elapsed time while everything around it advanced virtually.
         self._now: Callable[[], float] = time_source or time.monotonic
+        # Which load claim the selector ranks on (edge_score.cpu_claim):
+        #   'raw'      -- the latest instantaneous /status cpu_load (the default,
+        #                 and every run before 2026-10-20);
+        #   'verified' -- claimed_load(): the duty cycle from the busy-seconds
+        #                 counter, which is the quantity the honesty check
+        #                 cross-validates against the controller's own count.
+        # With 'raw' a server can lie in cpu_load while keeping its busy
+        # counter truthful -- the "split claim": it wins routing on the number
+        # nothing checks and passes the check on the number routing ignores
+        # (liar experiment: +4.5 points of traffic, never genuinely detected).
+        # 'verified' closes that by ranking on what is verified.
+        if cpu_claim not in ('raw', 'verified'):
+            raise ValueError(f"edge_score.cpu_claim must be 'raw' or 'verified', not {cpu_claim!r}")
+        self.cpu_claim = cpu_claim
         self._lock = threading.RLock()
         self.node_ids = list(node_ids)
         self.trust_calc = trust_calculator or TrustCalculator()
@@ -465,8 +480,27 @@ class TrustState:
         concurrency = max(1, self._concurrency.get(node_id, 4))
         return max(0.0, min(1.0, (b1 - b0) / (span * concurrency)))
 
+    def _routing_claim_locked(self, node_id: str) -> float:
+        """The load figure the selector ranks this node on (see cpu_claim)."""
+        if self.cpu_claim == 'verified' and node_id in self._claimed_cpu:
+            return self.claimed_load(node_id)
+        return self._claimed_cpu.get(node_id, 0.5)
+
     def _completion_rate_locked(self, node_id: str) -> Optional[Tuple[float, float]]:
-        """(completions per second, span) over load_window_s, or None."""
+        """(completions per second, span) over load_window_s, or None.
+
+        The span ends at NOW, not at the last completion. It used to end at
+        the last completion (hist[-1]), and that divided a burst by its own
+        duration: a server that finished six tasks early in the window and
+        then went quiet for two seconds read at ~3x its real rate, so the
+        expected duty built on it read ~0.9 against a true ~0.3 and the honesty
+        check quarantined honest servers -- 3.0-4.4 per run at 40% occupancy
+        in the 2026-10-20 liar experiment (docs/predictions/
+        liar_2026-10-19_OUTCOME.md). The busy-seconds side never had the
+        problem: it is sampled at every poll, so its last sample IS ~now.
+        Latent at the shipped ~1% occupancy, where even a tripled expected
+        duty stays under the 0.40 threshold.
+        """
         hist = self._completion_hist.get(node_id)
         if not hist or len(hist) < 2:
             return None
@@ -477,8 +511,8 @@ class TrustState:
             if ts > target:
                 break
             t0, c0 = ts, c
-        t1, c1 = hist[-1]
-        span = t1 - t0
+        c1 = hist[-1][1]
+        span = now - t0
         if span < _MIN_BUSY_SPAN_S:
             return None
         return (c1 - c0) / span, span
@@ -1167,7 +1201,7 @@ class TrustState:
                 NodeState(
                     node_id=nid,
                     trust=self.trust_calc.get_score(nid),
-                    cpu_load=self._claimed_cpu.get(nid, 0.5),
+                    cpu_load=self._routing_claim_locked(nid),
                     latency_ms=self._latency_ms.get(nid, 50.0),
                     anomaly=self._anomaly.get(nid, 0.0),
                 )

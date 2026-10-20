@@ -153,7 +153,11 @@ class _Node:
 
 def simulate(occupancy: float, attacker: str, gate_enforced: bool, slots: bool,
              seed: int = 1, sim_s: float = SIM_S, claim: float = 0.0,
-             stealth_rho: float = 0.25, stealth_margin: float = 0.8) -> Cell:
+             stealth_rho: float = 0.25, stealth_margin: float = 0.8,
+             cpu_claim: str = 'raw') -> Cell:
+    """One run. cpu_claim mirrors edge_score.cpu_claim: 'raw' ranks on the
+    instantaneous claim, 'verified' on the busy-counter duty cycle the honesty
+    check validates (TrustState._routing_claim_locked)."""
     rng = random.Random(seed)
     sel_rng = random.Random(seed + 99)
     service_s = occupancy * N * CONCURRENCY / ARRIVAL_HZ
@@ -261,7 +265,9 @@ def simulate(occupancy: float, attacker: str, gate_enforced: bool, slots: bool,
 
         elif kind == 'arr':
             tid += 1
-            states = [NodeState(n.nid, calc.get_score(n.nid), n.claim_raw, STATUS_RTT_MS,
+            states = [NodeState(n.nid, calc.get_score(n.nid),
+                                n.claimed_duty if cpu_claim == 'verified' else n.claim_raw,
+                                STATUS_RTT_MS,
                                 n.anomaly if gate_enforced else 0.0)
                       for n in nodes.values()]
             probes = [n for n in nodes.values()
@@ -341,14 +347,18 @@ OCCUPANCIES = (0.01, 0.1, 0.2, 0.3, 0.4, 0.5)
 
 
 def run(occupancies: Sequence[float] = OCCUPANCIES, seeds: int = 5,
-        sim_s: float = SIM_S) -> List[Cell]:
+        sim_s: float = SIM_S, cpu_claim: str = 'raw',
+        gates: Sequence[bool] = (False, True),
+        slot_modes: Sequence[bool] = (False, True)) -> List[Cell]:
     out = []
     for occ in occupancies:
         for attacker in ATTACKERS:
-            for gate in (False, True):
-                for slots in (False, True):
+            for gate in gates:
+                for slots in slot_modes:
                     for seed in range(1, seeds + 1):
-                        out.append(simulate(occ, attacker, gate, slots, seed, sim_s))
+                        c = simulate(occ, attacker, gate, slots, seed, sim_s,
+                                     cpu_claim=cpu_claim)
+                        out.append(c)
     return out
 
 
@@ -402,9 +412,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--seeds', type=int, default=5)
     p.add_argument('--sim-s', type=float, default=SIM_S)
     p.add_argument('--csv', default=None)
+    p.add_argument('--cpu-claim', choices=['raw', 'verified'], default='raw',
+                   help='what the selector ranks on (edge_score.cpu_claim)')
+    p.add_argument('--gate-only', action='store_true',
+                   help='only the gate-enforced, slots-off cells')
     args = p.parse_args(argv)
     occs = [float(x) for x in args.occupancies.split(',')]
-    rows = summarise(run(occs, args.seeds, args.sim_s))
+    gates, slots = ((True,), (False,)) if args.gate_only else ((False, True), (False, True))
+    rows = summarise(run(occs, args.seeds, args.sim_s, args.cpu_claim, gates, slots))
     print(format_table(rows))
     if args.csv:
         with open(args.csv, 'w', newline='') as f:
