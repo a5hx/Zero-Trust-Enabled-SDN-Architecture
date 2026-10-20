@@ -1,0 +1,291 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  liarfix_honest : 5 run(s)
+      r01.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.7 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.6 s  theta=0.30
+  liarfix_c_treat : 5 run(s)
+      r01.jsonl  308.5 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+  liarfix_t_treat : 5 run(s)
+      r01.jsonl  307.7 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+  liarfix_stealthy : 5 run(s)
+      r01.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.6 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  306.4 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  308.6 s  theta=0.30  anomaly_rail_enforced=True
+  liarfix_t_verified : 5 run(s)
+      r01.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.4 s  theta=0.30
+      r05.jsonl  307.5 s  theta=0.30
+  liarfix_honest_verified : 5 run(s)
+      r01.jsonl  306.4 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.6 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    liarfix_honest 99.88%  [99.78, 99.98]  sd 0.08  n=5
+    liarfix_c_treat 99.41%  [99.28, 99.54]  sd 0.10  n=5
+    liarfix_t_treat 99.83%  [99.67, 100.00*]  sd 0.13  n=5
+    liarfix_stealthy 99.64%  [99.54, 99.75]  sd 0.08  n=5
+    liarfix_t_verified 99.87%  [99.80, 99.94]  sd 0.05  n=5
+    liarfix_honest_verified 99.87%  [99.83, 99.91]  sd 0.03  n=5
+throughput
+    liarfix_honest 16.06 tps  [16.02, 16.09]  sd 0.03  n=5
+    liarfix_c_treat 15.89 tps  [15.86, 15.92]  sd 0.03  n=5
+    liarfix_t_treat 16.04 tps  [16.00, 16.07]  sd 0.03  n=5
+    liarfix_stealthy 15.78 tps  [15.69, 15.87]  sd 0.07  n=5
+    liarfix_t_verified 16.06 tps  [16.04, 16.09]  sd 0.02  n=5
+    liarfix_honest_verified 16.07 tps  [15.99, 16.15]  sd 0.07  n=5
+mean latency (success)
+    liarfix_honest 396.4 ms  [393.6, 399.1]  sd 2.2  n=5
+    liarfix_c_treat 396.2 ms  [394.4, 398.0]  sd 1.4  n=5
+    liarfix_t_treat 397.5 ms  [395.6, 399.4]  sd 1.5  n=5
+    liarfix_stealthy 428.7 ms  [424.1, 433.2]  sd 3.6  n=5
+    liarfix_t_verified 396.2 ms  [394.7, 397.7]  sd 1.2  n=5
+    liarfix_honest_verified 396.3 ms  [392.6, 400.0]  sd 3.0  n=5
+p95 latency (success)
+    liarfix_honest 449.4 ms  [443.4, 455.4]  sd 4.8  n=5
+    liarfix_c_treat 451.0 ms  [445.2, 456.9]  sd 4.7  n=5
+    liarfix_t_treat 451.4 ms  [440.8, 461.9]  sd 8.5  n=5
+    liarfix_stealthy 633.9 ms  [618.0, 649.7]  sd 12.8  n=5
+    liarfix_t_verified 449.5 ms  [443.8, 455.3]  sd 4.6  n=5
+    liarfix_honest_verified 450.7 ms  [438.1, 463.3]  sd 10.2  n=5
+timeouts
+    liarfix_honest 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_c_treat 19.4  [15.4, 23.4]  sd 3.2  n=5
+    liarfix_t_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_stealthy 11.0  [6.6, 15.4]  sd 3.5  n=5
+    liarfix_t_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_honest_verified 0.6  [0.0*, 2.3]  sd 1.3  n=5
+honest-device availability
+    liarfix_honest 99.88%  [99.79, 99.98]  sd 0.08  n=5
+    liarfix_c_treat 99.41%  [99.28, 99.54]  sd 0.11  n=5
+    liarfix_t_treat 99.83%  [99.67, 100.00*]  sd 0.13  n=5
+    liarfix_stealthy 99.64%  [99.53, 99.75]  sd 0.09  n=5
+    liarfix_t_verified 99.87%  [99.80, 99.94]  sd 0.05  n=5
+    liarfix_honest_verified 99.87%  [99.83, 99.91]  sd 0.03  n=5
+starved honest devices (<50%)
+    liarfix_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    liarfix_honest 0.998  [0.997, 1.000]  sd 0.001  n=5
+    liarfix_c_treat 0.998  [0.997, 0.999]  sd 0.001  n=5
+    liarfix_t_treat 0.999  [0.997, 1.000]  sd 0.001  n=5
+    liarfix_stealthy 0.999  [0.998, 1.000]  sd 0.001  n=5
+    liarfix_t_verified 1.000  [0.999, 1.000*]  sd 0.000  n=5
+    liarfix_honest_verified 1.000  [0.999, 1.000]  sd 0.000  n=5
+Jain, full roster
+    liarfix_honest 0.998  [0.997, 1.000]  sd 0.001  n=5
+    liarfix_c_treat 0.996  [0.995, 0.997]  sd 0.001  n=5
+    liarfix_t_treat 0.986  [0.983, 0.988]  sd 0.002  n=5
+    liarfix_stealthy 0.998  [0.997, 0.999]  sd 0.001  n=5
+    liarfix_t_verified 1.000  [0.999, 1.000]  sd 0.000  n=5
+    liarfix_honest_verified 1.000  [0.999, 1.000]  sd 0.000  n=5
+share of routes to attackers
+    liarfix_honest 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 10.73%  [10.42, 11.05]  sd 0.25  n=5
+    liarfix_t_treat 16.29%  [15.99, 16.60]  sd 0.24  n=5
+    liarfix_stealthy 11.32%  [10.97, 11.66]  sd 0.28  n=5
+    liarfix_t_verified 12.50%  [12.04, 12.95]  sd 0.37  n=5
+    liarfix_honest_verified 0.00%  [0.00, 0.00]  sd 0.00  n=5
+honest servers ever quarantined
+    liarfix_honest 1.40  [0.00*, 2.82]  sd 1.14  n=5
+    liarfix_c_treat 1.20  [0.16, 2.24]  sd 0.84  n=5
+    liarfix_t_treat 1.60  [0.49, 2.71]  sd 0.89  n=5
+    liarfix_stealthy 0.40  [0.00*, 1.08]  sd 0.55  n=5
+    liarfix_t_verified 0.80  [0.00*, 1.84]  sd 0.84  n=5
+    liarfix_honest_verified 2.00  [0.00*, 4.15]  sd 1.73  n=5
+lowest T of any honest server
+    liarfix_honest 0.357  [0.351, 0.363]  sd 0.005  n=5
+    liarfix_c_treat 0.356  [0.345, 0.367]  sd 0.009  n=5
+    liarfix_t_treat 0.362  [0.346, 0.379]  sd 0.013  n=5
+    liarfix_stealthy 0.351  [0.350, 0.353]  sd 0.001  n=5
+    liarfix_t_verified 0.364  [0.351, 0.378]  sd 0.011  n=5
+    liarfix_honest_verified 0.358  [0.339, 0.378]  sd 0.016  n=5
+attackers quarantined BEFORE onset
+    liarfix_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_verified 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    liarfix_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    liarfix_honest 99.92%  [99.86, 99.99]  sd 0.05  n=5
+    liarfix_c_treat 99.90%  [99.82, 99.99]  sd 0.07  n=5
+    liarfix_t_treat 99.90%  [99.84, 99.96]  sd 0.05  n=5
+    liarfix_stealthy 99.98%  [99.95, 100.00*]  sd 0.03  n=5
+    liarfix_t_verified 99.96%  [99.91, 100.00*]  sd 0.04  n=5
+    liarfix_honest_verified 99.86%  [99.68, 100.00*]  sd 0.14  n=5
+mean attacker time isolated
+    liarfix_honest not measured
+    liarfix_c_treat 11.05%  [9.92, 12.17]  sd 0.91  n=5
+    liarfix_t_treat 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 6.48%  [4.12, 8.84]  sd 1.90  n=5
+    liarfix_t_verified 0.34%  [0.00*, 0.85]  sd 0.41  n=5
+    liarfix_honest_verified not measured
+attacks classified exactly (of 8)
+    liarfix_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_verified 0.40  [0.00*, 1.08]  sd 0.55  n=5
+    liarfix_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+attacks in the right family (of 8)
+    liarfix_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 1.00  [1.00, 1.00]  sd 0.00  n=5
+    liarfix_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 1.00  [1.00, 1.00]  sd 0.00  n=5
+    liarfix_t_verified 0.60  [0.00*, 1.28]  sd 0.55  n=5
+    liarfix_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest subjects mislabelled
+    liarfix_honest 1.40  [0.00*, 2.82]  sd 1.14  n=5
+    liarfix_c_treat 1.20  [0.16, 2.24]  sd 0.84  n=5
+    liarfix_t_treat 1.60  [0.49, 2.71]  sd 0.89  n=5
+    liarfix_stealthy 0.40  [0.00*, 1.08]  sd 0.55  n=5
+    liarfix_t_verified 0.80  [0.00*, 1.84]  sd 0.84  n=5
+    liarfix_honest_verified 2.00  [0.00*, 4.15]  sd 1.73  n=5
+classification accuracy, all subjects
+    liarfix_honest 97.08%  [94.13, 100.00*]  sd 2.38  n=5
+    liarfix_c_treat 95.42%  [93.25, 97.58]  sd 1.74  n=5
+    liarfix_t_treat 94.58%  [92.27, 96.90]  sd 1.86  n=5
+    liarfix_stealthy 97.08%  [95.67, 98.50]  sd 1.14  n=5
+    liarfix_t_verified 97.08%  [94.77, 99.40]  sd 1.86  n=5
+    liarfix_honest_verified 95.83%  [91.35, 100.00*]  sd 3.61  n=5
+honest devices: mean latency
+    liarfix_honest 396.4 ms  [393.6, 399.1]  sd 2.2  n=5
+    liarfix_c_treat 396.2 ms  [394.4, 398.0]  sd 1.4  n=5
+    liarfix_t_treat 397.5 ms  [395.6, 399.4]  sd 1.5  n=5
+    liarfix_stealthy 428.7 ms  [424.1, 433.2]  sd 3.6  n=5
+    liarfix_t_verified 396.2 ms  [394.7, 397.7]  sd 1.2  n=5
+    liarfix_honest_verified 396.3 ms  [392.6, 400.0]  sd 3.0  n=5
+honest devices: p95 latency
+    liarfix_honest 449.4 ms  [443.4, 455.4]  sd 4.8  n=5
+    liarfix_c_treat 451.0 ms  [445.2, 456.9]  sd 4.7  n=5
+    liarfix_t_treat 451.4 ms  [440.9, 461.9]  sd 8.5  n=5
+    liarfix_stealthy 634.0 ms  [618.3, 649.7]  sd 12.6  n=5
+    liarfix_t_verified 449.5 ms  [443.8, 455.3]  sd 4.6  n=5
+    liarfix_honest_verified 450.7 ms  [438.1, 463.3]  sd 10.2  n=5
+honest devices: task success
+    liarfix_honest 99.88%  [99.78, 99.98]  sd 0.08  n=5
+    liarfix_c_treat 99.41%  [99.28, 99.54]  sd 0.10  n=5
+    liarfix_t_treat 99.83%  [99.67, 100.00*]  sd 0.13  n=5
+    liarfix_stealthy 99.64%  [99.54, 99.75]  sd 0.08  n=5
+    liarfix_t_verified 99.87%  [99.80, 99.94]  sd 0.05  n=5
+    liarfix_honest_verified 99.87%  [99.83, 99.91]  sd 0.03  n=5
+tasks served to flooding device(s)
+    liarfix_honest 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_c_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_t_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_stealthy 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_t_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix_honest_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    liarfix_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    liarfix_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_stealthy 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_t_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+run length
+    liarfix_honest 307.5 s  [307.3, 307.7]  sd 0.1  n=5
+    liarfix_c_treat 307.6 s  [307.0, 308.2]  sd 0.5  n=5
+    liarfix_t_treat 307.5 s  [307.4, 307.6]  sd 0.1  n=5
+    liarfix_stealthy 307.5 s  [306.5, 308.4]  sd 0.8  n=5
+    liarfix_t_verified 307.5 s  [307.4, 307.5]  sd 0.0  n=5
+    liarfix_honest_verified 307.3 s  [306.6, 307.9]  sd 0.5  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv3 (liar)
+    liarfix_c_treat score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.394  [0.376, 0.411]  sd 0.014  n=5
+               route share (post-onset): 10.49%  [10.17, 10.81]  sd 0.26  n=5
+                 minus fair 1/N    : -2.01%  [-2.33, -1.69]  sd +0.26  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 7.4 s, range 6.0-15.7 s; mean 9.1 [4.0, 14.1]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.496  [0.442, 0.551]  sd 0.044  n=5
+    liarfix_t_treat score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.447  [0.417, 0.478]  sd 0.025  n=5
+               route share (post-onset): 16.50%  [15.97, 17.02]  sd 0.42  n=5
+                 minus fair 1/N    : +4.00%  [+3.47, +4.52]  sd +0.42  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+    liarfix_stealthy score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.377  [0.367, 0.386]  sd 0.008  n=5
+               route share (post-onset): 11.34%  [10.97, 11.71]  sd 0.30  n=5
+                 minus fair 1/N    : -1.16%  [-1.53, -0.79]  sd +0.30  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 17.7 s, range 6.4-29.1 s; mean 17.3 [4.4, 30.3]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.446  [0.395, 0.497]  sd 0.041  n=5
+    liarfix_t_verified score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.425  [0.371, 0.479]  sd 0.044  n=5
+               route share (post-onset): 12.51%  [12.22, 12.80]  sd 0.24  n=5
+                 minus fair 1/N    : +0.01%  [-0.28, +0.30]  sd +0.24  n=5
+               quarantined         : 3/5  [23%, 88%]
+                 containment       : 3/5 runs; median 193.5 s, range 2.1-277.1 s; mean 157.6 [-192.5, 507.7]
+                 rail that fired   : gate 3/3
+                 T at quarantine   : 0.499  [0.239, 0.759]  sd 0.105  n=3
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    liarfix_t_treat isolated   0.0%   exact labels 0/8
+    liarfix_t_treat isolated   0.0%   exact labels 0/8
+    liarfix_t_treat isolated   0.0%   exact labels 0/8
+    liarfix_t_treat isolated   0.0%   exact labels 0/8
+    liarfix_t_treat isolated   0.0%   exact labels 0/8
+    liarfix_t_verified isolated   0.0%   exact labels 0/8
+    liarfix_t_verified isolated   0.0%   exact labels 0/8
+    liarfix_t_verified isolated   0.3%   exact labels 1/8
+    liarfix_t_verified isolated   0.3%   exact labels 1/8
+    liarfix_t_verified isolated   1.0%   exact labels 0/8
+    liarfix_stealthy isolated   4.7%   exact labels 0/8
+    liarfix_stealthy isolated   5.1%   exact labels 0/8
+    liarfix_stealthy isolated   6.1%   exact labels 0/8
+    liarfix_stealthy isolated   7.1%   exact labels 0/8
+    liarfix_stealthy isolated   9.4%   exact labels 0/8
+    liarfix_c_treat isolated   9.8%   exact labels 0/8
+    liarfix_c_treat isolated  10.4%   exact labels 0/8
+    liarfix_c_treat isolated  11.4%   exact labels 0/8
+    liarfix_c_treat isolated  11.8%   exact labels 0/8
+    liarfix_c_treat isolated  11.8%   exact labels 0/8
+    Spearman rho(isolation, exact labels) = -0.118, p = 0.620, n = 20
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

@@ -1,0 +1,132 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  ship_c_raw : 5 run(s)
+      r01.jsonl  307.4 s  theta=0.30
+      r02.jsonl  307.4 s  theta=0.30
+      r03.jsonl  307.5 s  theta=0.30
+      r04.jsonl  307.5 s  theta=0.30
+      r05.jsonl  307.3 s  theta=0.30
+  ship_c_verified : 5 run(s)
+      r01.jsonl  307.5 s  theta=0.30
+      r02.jsonl  307.4 s  theta=0.30
+      r03.jsonl  307.5 s  theta=0.30
+      r04.jsonl  307.7 s  theta=0.30
+      r05.jsonl  307.4 s  theta=0.30
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    ship_c_raw 99.98%  [99.94, 100.00*]  sd 0.03  n=5
+    ship_c_verified 99.97%  [99.94, 100.00*]  sd 0.03  n=5
+throughput
+    ship_c_raw 18.41 tps  [18.38, 18.44]  sd 0.02  n=5
+    ship_c_verified 18.43 tps  [18.41, 18.46]  sd 0.02  n=5
+mean latency (success)
+    ship_c_raw 89.2 ms  [87.0, 91.4]  sd 1.8  n=5
+    ship_c_verified 87.7 ms  [86.2, 89.2]  sd 1.2  n=5
+p95 latency (success)
+    ship_c_raw 126.6 ms  [122.3, 130.8]  sd 3.4  n=5
+    ship_c_verified 124.5 ms  [118.2, 130.8]  sd 5.1  n=5
+timeouts
+    ship_c_raw 0.0  [0.0, 0.0]  sd 0.0  n=5
+    ship_c_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+honest-device availability
+    ship_c_raw 99.98%  [99.94, 100.00*]  sd 0.03  n=5
+    ship_c_verified 99.97%  [99.94, 100.00*]  sd 0.03  n=5
+starved honest devices (<50%)
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    ship_c_raw 0.985  [0.977, 0.992]  sd 0.006  n=5
+    ship_c_verified 0.995  [0.993, 0.997]  sd 0.002  n=5
+Jain, full roster
+    ship_c_raw 0.981  [0.974, 0.988]  sd 0.006  n=5
+    ship_c_verified 0.994  [0.991, 0.996]  sd 0.002  n=5
+share of routes to attackers
+    ship_c_raw 10.27%  [9.40, 11.14]  sd 0.70  n=5
+    ship_c_verified 13.18%  [11.28, 15.08]  sd 1.53  n=5
+honest servers ever quarantined
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    ship_c_raw 0.470  [0.404, 0.536]  sd 0.053  n=5
+    ship_c_verified 0.500  [0.500, 0.500]  sd 0.000  n=5
+attackers quarantined BEFORE onset
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    ship_c_raw 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    ship_c_verified 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    ship_c_raw 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00%  [0.00, 0.00]  sd 0.00  n=5
+attacks classified exactly (of 8)
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+attacks in the right family (of 8)
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest subjects mislabelled
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    ship_c_raw 97.92%  [97.92, 97.92]  sd 0.00  n=5
+    ship_c_verified 97.92%  [97.92, 97.92]  sd 0.00  n=5
+honest devices: mean latency
+    ship_c_raw 89.2 ms  [87.0, 91.4]  sd 1.8  n=5
+    ship_c_verified 87.7 ms  [86.2, 89.2]  sd 1.2  n=5
+honest devices: p95 latency
+    ship_c_raw 126.6 ms  [122.3, 130.8]  sd 3.4  n=5
+    ship_c_verified 124.5 ms  [118.1, 130.9]  sd 5.2  n=5
+honest devices: task success
+    ship_c_raw 99.98%  [99.94, 100.00*]  sd 0.03  n=5
+    ship_c_verified 99.97%  [99.94, 100.00*]  sd 0.03  n=5
+tasks served to flooding device(s)
+    ship_c_raw 0.0  [0.0, 0.0]  sd 0.0  n=5
+    ship_c_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    ship_c_raw 0.00  [0.00, 0.00]  sd 0.00  n=5
+    ship_c_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+run length
+    ship_c_raw 307.4 s  [307.3, 307.5]  sd 0.1  n=5
+    ship_c_verified 307.5 s  [307.3, 307.6]  sd 0.1  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv3 (liar)
+    ship_c_raw score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.702  [0.582, 0.822]  sd 0.097  n=5
+               route share (post-onset): 10.14%  [8.92, 11.36]  sd 0.98  n=5
+                 minus fair 1/N    : -2.36%  [-3.58, -1.14]  sd +0.98  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+    ship_c_verified score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.738  [0.721, 0.754]  sd 0.014  n=5
+               route share (post-onset): 13.58%  [11.97, 15.19]  sd 1.30  n=5
+                 minus fair 1/N    : +1.08%  [-0.53, +2.69]  sd +1.30  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    ship_c_raw isolated   0.0%   exact labels 0/8
+    ship_c_raw isolated   0.0%   exact labels 0/8
+    ship_c_raw isolated   0.0%   exact labels 0/8
+    ship_c_raw isolated   0.0%   exact labels 0/8
+    ship_c_raw isolated   0.0%   exact labels 0/8
+    ship_c_verified isolated   0.0%   exact labels 0/8
+    ship_c_verified isolated   0.0%   exact labels 0/8
+    ship_c_verified isolated   0.0%   exact labels 0/8
+    ship_c_verified isolated   0.0%   exact labels 0/8
+    ship_c_verified isolated   0.0%   exact labels 0/8
+    Spearman rho: needs >= 4 runs with varying values
+

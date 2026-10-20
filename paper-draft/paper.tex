@@ -73,7 +73,18 @@ wide margin and is fast. The gate buys containment, not service: delivery,
 throughput and honest availability do not change. A second enforcement
 mechanism, a per-client OpenFlow meter on a flooding device, does improve honest
 service under a heavy flood (mean latency $105 \to 92$~ms, $p95$
-$178 \to 139$~ms) while cutting the flooder's served tasks by 97\%. We also
+$178 \to 139$~ms) while cutting the flooder's served tasks by 97\%. The
+load-misreporting attacker in these runs turned out to be slow and its lie
+repelled traffic, so a second live experiment (80 runs, every prediction
+registered in advance) built liars whose lie works: they serve at honest speed
+and, at 40\% occupancy, claim less load than honest servers. A liar whose
+claims are internally consistent gains nothing and is still contained. One that
+lies only in the instantaneous load figure the router ranks on, while reporting
+a truthful busy-time counter to the honesty check, wins $+4.0$ points of
+traffic above its fair share and is never caught; ranking on the verified
+figure closes that hole at no measured cost to honest servers. The same
+experiment exposed a latent defect in the honesty check that quarantined honest
+servers under load, and the fix cut them from 3.4 to 0.2 per run. We also
 retract an earlier containment--attribution claim that replication did not
 support.
 \end{abstract}
@@ -116,6 +127,17 @@ algorithms are the two variants NIST SP~800-207 describes~\cite{rose2020zta};
 our system is a hybrid of the two, and this paper measures what each part
 buys.
 
+That adversary, however, turned out to be slow, and its lie did not attract
+traffic (\S\ref{sec:analysis:conservative}): the gate had caught a slow
+server, not a lie. So we built liars whose lie works and ran them at a load
+where a lie can pay (\S\ref{sec:res:liar}). Most lies still do not pay: the
+honesty term penalises a claim that disagrees with the controller's own count,
+and power-of-two-choices settles each comparison on score. One does. A server
+can lie in the instantaneous load figure the router ranks on while reporting a
+truthful busy-time counter, which is the figure the honesty check verifies.
+That \emph{split claim} wins traffic and evades both rails, and routing on the
+verified figure closes it.
+
 \subsection{Contributions}
 
 \begin{enumerate}[leftmargin=1.2em,itemsep=2pt,topsep=2pt]
@@ -130,6 +152,14 @@ buys.
   attackers, but only in a band a few hundredths wide above their floor, which
   honest servers under load also reach, and $3.4\times$ to $20\times$ more
   slowly than the gate.
+
+\item \textbf{A liar whose lie works} (\S\ref{sec:res:liar}): 80 further live
+  runs in four batches, each with a prediction registered before it ran. A
+  consistent lie loses traffic; a split claim gains $+4.00$ [3.47, 4.52]
+  points and is never quarantined; routing on the verified claim removes the
+  gain ($+0.01$ [$-0.28$, $+0.30$]) at no measured honest cost. The batches
+  also exposed, and confirmed the fix for, a false-positive defect in the
+  honesty check that is invisible at the shipped load.
 
 \item \textbf{An explanation} (\S\ref{sec:analysis}): the score floor an
   adversary of this class can hold, why the honesty term barely registers the
@@ -149,9 +179,10 @@ buys.
 \item \textbf{A retraction} (\S\ref{sec:disc:retract}) of a
   containment--attribution trade an earlier version of this work claimed.
 
-\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 40 archived live
-  recordings, an aggregator reporting between-run intervals, 1\,166 automated
-  tests, and a source tag on every number.
+\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 120 archived live
+  recordings, an aggregator reporting between-run intervals, an offline model
+  of the liar experiment, 1\,240 automated tests, and a source tag on every
+  number.
 \end{enumerate}
 
 \subsection{Scope}
@@ -282,6 +313,13 @@ matters for how it is caught (\S\ref{sec:analysis:conservative}). And a server \
 under a client's flood} is not lying about its load --- it is telling the truth
 about being overwhelmed --- so the flood detector is keyed on the requesting
 client, never on the edge node the flood lands on.
+
+Section~\ref{sec:res:liar} adds three liars that serve at honest speed: a
+\emph{consistent} liar, whose busy-time counter is faked to agree with its
+claim; a \emph{split-claim} liar, which lies only in its instantaneous load
+figure; and an \emph{adaptive} liar that reads its peers' claims from the
+controller and undercuts them while staying inside the honesty threshold, the
+server-side analogue of the reconnaissance-tuned switch of~\cite{yu2024stealthy}.
 
 \subsection{Out of scope}
 We do not model, and do not defend against: collusion between edge nodes; an
@@ -497,7 +535,7 @@ and its slowness lowers $T$. The gate then took an attacker the score had
 already starved from $1.98\%$ to $0.45\%$; the on-off attacker, which kept
 $9.53\%$ under the score alone, is where the gate's containment mattered
 ($5.04\%$ with it). Whether the gate holds against a liar whose lie works is
-the first open question of \S\ref{sec:limits}.
+the question of \S\ref{sec:res:liar}.
 \src{evidence/replicates/summary.txt}
 
 So the proposition says a threshold low enough to be safe for honest servers
@@ -605,6 +643,30 @@ direct test of \S\ref{sec:analysis}. We also record, at each first quarantine,
 which rail could have caused it: $\Tscore < \theta$ only, $\Agate \ge g$ only,
 or both. An arm that does not enforce the gate is always attributed to the
 score, whatever $\Agate$ reads, because its gate cannot act.
+
+\subsection{The liar experiment}
+\label{sec:method:liar}
+A lie about load can only pay if it undercuts what honest servers truthfully
+claim. At the workload above, honest servers are about $1\%$ occupied and
+report a load of about zero, so no lie can undercut them. The liar experiment
+therefore raises \emph{occupancy}, the quantity the load claim and the
+honesty check are about, to $0.40$ without loading the host: servers hold a
+worker for $320$\,ms per task instead of hashing, with two workers each, at
+the same $20$ tasks/s. Every other attack is removed; one liar arms on srv3 at
+$20$\,s. The arms are an honest-only control and the three liars of
+\S\ref{sec:threat}, with the gate enforced; a ``slots'' variant also caps
+each server at two tasks in service. Each pair of arms differs only in the
+liar, the routing claim and the recording path, pinned by a test.
+
+The experiment ran in four batches, each scored against a written prediction
+committed before it ran: the first on the shipped detector, the second and
+third after fixes the previous batch had motivated (\S\ref{sec:res:liar}),
+and a fourth at the shipped workload. Before any of them, a discrete-event
+model driving the real selector and trust calculator predicted every arm; its
+route shares landed within about a point of the live values. Under
+power-of-$d$-choices with $\varepsilon$-exploration, a liar that wins every
+comparison it is sampled into is capped at $\varepsilon/N + (1-\varepsilon)d/N$
+of the traffic, $24.4\%$ here against a fair $12.5\%$, however large the lie.
 
 \subsection{Simulation levels}
 Two results in \S\ref{sec:res:sim} come from a seeded discrete-event
@@ -855,6 +917,88 @@ was about $0.71$: its decision does not depend on where the threshold sits. That
 is the measured difference between a score-based and a criteria-based trust
 algorithm in this setting: a margin of a few hundredths and a delay of tens to
 hundreds of seconds, against a wide margin and a delay of seconds.
+
+\subsection{A liar whose lie works}
+\label{sec:res:liar}
+Table~\ref{tab:liar} gives each liar's share of routing decisions after onset,
+against a fair $12.5\%$, over the four batches.
+
+\begin{table}[t]
+\caption{Liars that serve at honest speed, at $0.40$ occupancy unless marked
+  (5 runs per row). Share of routing decisions after onset with 95\% interval;
+  fair share $12.5\%$. ``Raw'' ranks on the instantaneous load claim,
+  ``verified'' on the busy-time duty the honesty check validates.}
+\label{tab:liar}
+\centering\footnotesize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}llrcc@{}}
+\toprule
+\textbf{Liar} & \textbf{Routing, fixes} & \textbf{Share} & \textbf{Quar.} & \textbf{Median}\\
+\midrule
+Consistent & raw, shipped & 9.37\% [9.05, 9.68] & 5/5 & 8.2\,s\\
+Consistent & raw, fix 1+3 & 10.29\% [9.99, 10.60] & 5/5 & 6.4\,s\\
+Adaptive & raw, fix 1 & 11.34\% [10.97, 11.71] & 5/5 & 17.7\,s\\
+\textbf{Split claim} & raw, shipped & 17.01\% [16.16, 17.86] & 4/5$^{\dagger}$ & 51.7\,s\\
+\textbf{Split claim} & \textbf{raw, fix 1} & \textbf{16.50\% [15.97, 17.02]} & \textbf{0/5} & ---\\
+Split claim & \textbf{verified}, fix 1 & 12.51\% [12.22, 12.80] & 3/5$^{\ddagger}$ & ---\\
+\midrule
+Consistent$^{\ast}$ & raw, fix 1+3 & 10.14\% [8.92, 11.36] & 0/5 & ---\\
+Consistent$^{\ast}$ & verified, fix 1+3 & 13.58\% [11.97, 15.19] & 0/5 & ---\\
+\bottomrule
+\multicolumn{5}{@{}p{0.96\columnwidth}@{}}{\raggedright\scriptsize
+$^{\ast}$At the shipped $1\%$ occupancy. $^{\dagger}$Every firing was the defect described below; none survives its
+fix. $^{\ddagger}$Brief: the liar was isolated $0.34\%$ of the time.}
+\end{tabular}
+\end{table}
+
+\emph{A consistent lie does not pay.} A liar whose busy-time counter agrees
+with its claim of zero received $9.4$--$10.5\%$ of the traffic, less than its
+fair share, and the gate contained it in every run within a median of
+$6$--$8$\,s. Its counter is what betrays it: claimed busy time per completed
+task falls below the fleet median, the honesty term costs it a little trust
+on every task, and power-of-two-choices decides each comparison on score, so
+it loses comparisons it would otherwise tie. The adaptive liar, which undercuts
+its peers only as far as the honesty threshold allows, fared no better.
+
+\emph{The split claim pays, and nothing catches it.} A liar that reports a
+load of zero but a truthful busy-time counter gave the honesty check nothing
+to find, because the check compares the counter, not the claim, with the
+controller's own completion count, while the router ranked on the claim. It
+received $16.5\%$ of the traffic, $+4.00$ [$+3.47$, $+4.52$] points above its
+fair share, a third more work than an honest server, and was never
+quarantined. It cost honest service nothing measurable (honest-device mean
+latency $397.5$ against $396.4$\,ms in the control), so nothing an operator
+watches would show it. \emph{Ranking on the verified figure closes it}: with
+the router reading the same busy-time duty the honesty check validates, the
+split claim's excess fell to $+0.01$ [$-0.28$, $+0.30$] points, with honest
+latency unchanged ($396.2$ against $396.4$\,ms).
+
+\emph{The experiment found its own detector's defect.} In the first batch
+every arm, the control included, quarantined $3.0$--$4.4$ honest servers per
+run, all through the honesty check. The controller's completion rate divided
+the completions in its window by the time up to the \emph{last} completion,
+not up to now, so a server that finished a burst and then went quiet read as
+roughly three times its real rate. Rebuilt at each of the $119$ firings, the
+expected duty was $0.81$ as computed and $0.30$ with the span ending now; the
+server had been quiet a median of $2.0$\,s. A second, smaller defect let the
+check judge a partial window during the synchronized start of all forty
+clients. With both fixed, honest false quarantines fell from $3.4$ to $1.4$ to
+$0.2$ per run. Both defects are latent at the shipped load, where even a
+tripled expected duty stays under the threshold; no ablation or sweep run
+recorded an honesty firing on an honest server, so the results above do not
+depend on them. Every split-claim quarantine in the first batch was this
+defect, not detection.
+
+\emph{At the shipped load the fix costs nothing measurable.} With honest
+servers about $1\%$ occupied, verified ranking gave a consistent liar more
+traffic than raw ranking did ($13.58$ against $10.14\%$, disjoint intervals)
+but not measurably more than its fair share ($+1.08$ [$-0.53$, $+2.69$]
+points), and no honest server was quarantined. Under raw ranking its claim of
+zero only ties an honest server's truthful zero and loses the tie on its
+honesty deficit; under verified ranking it undercuts an honest duty of about
+$0.01$. By a decision rule registered before that batch ran, verified ranking
+is now the controller's default.
+\src{evidence/liar/}
 
 \subsection{Service, availability and fairness}
 \label{sec:res:service}
@@ -1156,6 +1300,21 @@ once the blackhole is quarantined its timeout-rate tell stops accumulating, and
 that is why it is labelled grayhole --- but the effect does not show up as a
 measurable trade at this scale.
 
+\subsection{Route on what you verify}
+\label{sec:disc:verify}
+The split claim is not a quirk of our weights. It exists whenever a scheduler
+ranks servers on one self-reported figure and verifies a different one: the
+attacker lies in the figure that is used and tells the truth in the figure
+that is checked. In the switch-side attacks of
+Burke~\etal~\cite{burke2023misreporting} and Yu~\etal~\cite{yu2024stealthy} the
+misreported statistic is the only one the balancer sees, so detection must
+model its distribution~\cite{saha2025misreporting}. A server's self-report is
+different: the controller holds an independent account of the same work, its
+own count of completed tasks, and the defence is to route on the quantity that
+account can confirm. We found the gap only because a liar was built to use it;
+a design review of the two code paths would not have flagged it, since each
+was correct on its own.
+
 \subsection{What an ablation buys that a baseline does not}
 \label{sec:disc:ablation}
 A comparison against an external baseline answers ``is our system better than
@@ -1226,12 +1385,16 @@ estimates.
 
 \paragraph*{Adversary}
 The attackers were built by the same team as the detectors, and the
-load-misreporting server we tested slows itself by burning CPU, which is
+load-misreporting server of the ablation slows itself by burning CPU, which is
 exactly what the gate's latency tell detects (\S\ref{sec:analysis:conservative}).
-A misreporting server that does not slow itself was not tested; whether the
-gate catches it, and what harm it does, are open. The attacker model is also
-\textbf{fixed and non-adaptive}, whereas security evaluations are
-expected to include adaptive attackers~\cite{carlini2019evaluating,tramer2020adaptive}. An adversary that
+Liars that serve at honest speed were tested separately (\S\ref{sec:res:liar}),
+at one raised occupancy reached by holding workers rather than by CPU work, so
+servers there are occupied but not computing; a CPU-bound workload at that
+occupancy does not fit the four-core host. Their attacker model is
+\textbf{adaptive only within one rule}: the adaptive liar tracks its peers' claims
+and the honesty threshold, whereas security evaluations are
+expected to include adaptive attackers~\cite{carlini2019evaluating,tramer2020adaptive}
+that search the defence. An adversary that
 observes its own detection and modulates --- keeping the claimed-versus-observed
 gap just under the honesty normaliser, or timing an on-off period against the
 EMA window --- would evade the tells we implement. Our claim is bounded to the
@@ -1246,10 +1409,11 @@ is small.
 % ===========================================================================
 
 \begin{enumerate}[leftmargin=1.2em,itemsep=2pt,topsep=2pt]
-\item \textbf{A load-misreporting server that does not slow itself} was not
-  tested, nor one whose claim undercuts the honest servers' and so actually
-  attracts traffic (\S\ref{sec:analysis:conservative}). It is the most direct
-  test of whether the gate's success depends on the attacker's own slowness.
+\item \textbf{Liars that serve at honest speed were tested at two occupancies}
+  ($0.01$ and $0.40$; \S\ref{sec:res:liar}) with eight servers. Under the
+  verified-claim default a liar's only lever is its busy-time counter, which
+  the honesty check bounds; how much traffic an attacker that tunes that
+  counter against the threshold can win, across occupancies, is not measured.
 \item \textbf{Five runs per arm}, one host, one topology size, one workload
   shape. The false-quarantine rate at each threshold is not measured directly.
 \item \textbf{No adaptive adversary.} A server that watches its own anomaly
@@ -1262,6 +1426,15 @@ is small.
 \item \textbf{PRESENT-80 with a fleet-wide key is an architecture
   demonstration}, not a security claim; per-device keys are implemented but
   were not used in these runs.
+\item \textbf{The drop tell judges on as few as four outcomes.} In a synthetic
+  four-server replay with an injected $8\%$ timeout rate it quarantined an
+  honest server in 5 of 20 seeds under verified ranking and 1 of 20 under raw
+  ranking (not significant, $p \approx 0.18$); no live run showed it.
+\item \textbf{The switches' own counters are not yet a witness.} Offline, over
+  every recording, the connections the switches saw a server answer agree with
+  the clients' reports to a median of $0.9992$ per run, and a server that drops
+  work is visible without any client report. A live check built on that third,
+  independent account is the next step.
 \end{enumerate}
 
 The open question this work leaves is how much evidence a gate needs before an
@@ -1273,11 +1446,15 @@ before a criteria-based rule is the only workable one.
 % ===========================================================================
 Every number carries the artifact it was read from. The offline scorers read
 the same append-only recordings the live dashboard streams, and none needs the
-controller stack installed. Forty run recordings are archived under
+controller stack installed. 120 run recordings are archived under
 \texttt{data/runs/<arm>/}; one aggregator produces every live figure in
 \S\ref{sec:results}. The code that produced the ablation and sweep runs is
-commit \texttt{8998a7c}; the flood runs, \texttt{7a2d795}. At the time of
-writing the test suite reports 1\,166 passing and 11 skipped, with no failures.
+commit \texttt{8998a7c}; the flood runs, \texttt{7a2d795}; the four liar
+batches, \texttt{3b95031}, \texttt{4dfbdc2}, \texttt{ff64b87} and
+\texttt{fa37a3a}, each recorded per run in the runner's manifest. Each batch's
+prediction is a file committed before the batch ran
+(\texttt{docs/predictions/}). At the time of writing the test suite reports
+1\,240 passing and 11 skipped, with no failures.
 Commands, with \texttt{EV} for \texttt{evaluation}:
 
 \begin{table}[H]
@@ -1289,6 +1466,8 @@ Commands, with \texttt{EV} for \texttt{evaluation}:
 Tables \ref{tab:ablation}--\ref{tab:service} & \texttt{EV.replicates data/runs --arms base,\allowbreak scoreonly,\allowbreak treat}\\
 Table~\ref{tab:sweep} & \texttt{EV.replicates data/runs --arms scoreonly,\allowbreak scoreonly\_t040,\allowbreak scoreonly\_t045,\allowbreak scoreonly\_t050,\allowbreak treat}\\
 Table~\ref{tab:flood} & \texttt{EV.replicates data/runs --arms flood\_off,flood\_on}\\
+Table~\ref{tab:liar} & \texttt{EV.replicates data/runs --arms liar\_c\_treat,\allowbreak liarfix\_t\_treat,\allowbreak \ldots} (four batches; \texttt{tools/regenerate.sh})\\
+Liar model & \texttt{EV.liar\_sweep --seeds 5}\\
 \S\ref{sec:res:nfr} & \texttt{EV.nfr\_report data/runs/treat/rNN.jsonl}\\
 \S\ref{sec:res:sim} baselines & \texttt{EV.baseline --runs 30 --csv r.csv}\\
  & \texttt{EV.stats r.csv}\\
@@ -1318,6 +1497,15 @@ and just below the 0.5 every server starts at, and three to twenty times more
 slowly than the gate, which isolated them in every run at trust scores near
 0.71.
 
+The attacker that tested this was slow, and its lie did not attract traffic.
+Liars that serve at honest speed changed the picture. A lie that is internally
+consistent does not pay against this design: the honesty term and
+power-of-two-choices together cost it more than its claim wins. A lie split
+between the figure the router ranks on and the figure the honesty check
+verifies does pay, by a third more traffic than an honest server, and neither
+rail sees it; ranking on the verified figure closes it. Building that liar also
+exposed a defect in the honesty check that only load reveals.
+
 We report equally what enforcement did not buy. The gate improved containment
 and the latency tail but not delivery, throughput or honest availability, and a
 containment-versus-attribution trade we previously claimed did not survive
@@ -1334,7 +1522,8 @@ possible as much as for the architecture.
 % ===========================================================================
 \section*{Data Availability}
 % ===========================================================================
-The forty live recordings, the aggregator output, and the simulation CSVs
+The 120 live recordings, the aggregator output, the liar experiment's
+registered predictions, and the simulation CSVs
 behind every table are archived with the project repository under
 \texttt{data/runs/}, \texttt{data/replicates/} and
 \texttt{paper-draft/evidence/}. Recordings are JSONL event streams of

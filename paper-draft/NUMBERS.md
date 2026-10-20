@@ -48,15 +48,15 @@ T=0.220.
 > carry Ā ≈ 1.0 beside T < θ) — fixed 2026-09-29.
 
 **Table IV (containment).** `contain_s` medians and ranges.
-**Table V (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
-**§VII-E (detection).** `attacks classified exactly` / `right family` /
+**Table 7 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
+**§VII-H (detection).** `attacks classified exactly` / `right family` /
 `honest subjects mislabelled` / `classification accuracy` rows.
 
 Statistical treatment: continuous → mean + two-sided 95% Student-t over runs;
 yes/no → k/n + Wilson interval (5/5 = [57%,100%], 0/5 = [0%,43%]); times only
 over runs where the event happened.
 
-## §VII-H — non-functional requirements
+## §VII-I — non-functional requirements
 
 ```bash
 for r in data/runs/treat/*.jsonl; do python3 -m evaluation.nfr_report "$r"; done
@@ -67,7 +67,7 @@ re-dispatch mean 12.9–23.5 ms (max 32.8, n=19–30); ledger overhead
 0.045–0.052 % over 625–661 blocks. Raft 4.3–4.8 ms is the **standalone**
 3-replica cluster, not the controller.
 
-## §VII-I — simulation (labelled as such in the paper)
+## §VII-J — simulation (labelled as such in the paper)
 
 ```bash
 python3 -m evaluation.baseline --runs 30 --csv paper-draft/evidence/baseline_600runs.csv
@@ -95,7 +95,7 @@ from earlier archived runs, recorded in `SOURCE_OF_TRUTH.md` §4.1.
 One pass over `data/runs/treat/*.jsonl` pairing each node's first `anomaly`
 event with its first `quarantine`: 20 node-run pairs, **3.5–12.5 ms**.
 
-## §VII-D — the threshold sweep (Table V, Fig. 2)
+## §VII-D — the threshold sweep (Table 5, Fig. 2)
 
 ```bash
 python3 -m evaluation.replicates data/runs \
@@ -116,7 +116,7 @@ Honest dips (`per_run.csv`, `honest_min_trust` < 0.45): scoreonly_t040 r02
 
 The prediction registered before the sweep: `data/theta_sweep_prediction_2026-09-29.txt`.
 
-## §VII-F — data-plane response to a flooding client (Table VII)
+## §VII-G — data-plane response to a flooding client (Table 8)
 
 `tools/regenerate.sh` scores `flood_off` r01–r05 and `flood_on` r02–r05 →
 `evidence/flood/summary_primary.txt`. flood_on r01 is excluded because the host
@@ -128,7 +128,7 @@ success` 98.91 vs 98.79 % (overlap), `tasks served to flooding device(s)` 8951 �
 first 316 s: honest mean **93.0** ms, p95 **141.3** ms (scored 2026-10-18, recorded
 in `data/flood_experiment_2026-10-18/summary_trimmed_on_r01.txt`).
 
-## §VII-H — replicated ledger with a leader kill
+## §VII-I — replicated ledger with a leader kill
 
 `evidence/raft/failover_report.json` (written by `tools/raft_failover_check.py`
 during the run) + `data/raft_failover_2026-10-19/events_raft.jsonl`: leader n3
@@ -162,6 +162,41 @@ Fair share = 1/8 = 12.5 %.
 Why: at about 1 % occupancy honest agents report `cpu_load` ≈ 0
 (active/concurrency), so srv3's fixed claim of 0.10 ranks below them, and its
 slowness lowers T (EdgeScore w1 = 0.5 on T).
+
+## §VII-E and Table 6 — the liar experiment (added 2026-10-20)
+
+80 live runs in four batches. Each was scored against a prediction file
+committed before it ran (`evidence/liar/*.txt`), with the outcome written up
+in `evidence/liar/*_OUTCOME.md`. Scores are in `evidence/liar/<batch>/summary.txt`,
+PER ATTACKER block, lines `route share (post-onset)`, `minus fair 1/N`,
+`quarantined` and `containment`.
+
+| Table 6 row | Arm (batch) | Share | Excess | Quar. | Median |
+|---|---|---|---|---|---|
+| Consistent, raw, shipped | `liar_c_treat` (1) | 9.37 [9.05, 9.68] | −3.13 | 5/5 | 8.2 s |
+| Consistent, raw, fix 1+3 | `liarfix3_c_treat` (3) | 10.29 [9.99, 10.60] | −2.21 | 5/5 | 6.4 s |
+| Adaptive, raw, fix 1 | `liarfix_stealthy` (2) | 11.34 [10.97, 11.71] | −1.16 | 5/5 | 17.7 s |
+| Split claim, raw, shipped | `liar_t_treat` (1) | 17.01 [16.16, 17.86] | +4.51 | 4/5 | 51.7 s |
+| **Split claim, raw, fix 1** | `liarfix_t_treat` (2) | **16.50 [15.97, 17.02]** | **+4.00 [3.47, 4.52]** | **0/5** | — |
+| Split claim, verified, fix 1 | `liarfix_t_verified` (2) | 12.51 [12.22, 12.80] | +0.01 [−0.28, +0.30] | 3/5 (isolated 0.34%) | — |
+| Consistent at 1%, raw | `ship_c_raw` (4) | 10.14 [8.92, 11.36] | −2.36 | 0/5 | — |
+| Consistent at 1%, verified | `ship_c_verified` (4) | 13.58 [11.97, 15.19] | +1.08 [−0.53, +2.69] | 0/5 | — |
+
+- **Honest latency:** 397.5 (`liarfix_t_treat`), 396.4 (`liarfix_honest`) and
+  396.2 ms (`liarfix_t_verified`), from the `honest devices: mean latency` lines.
+- **Honest false quarantines per run**, from the `honest servers ever
+  quarantined` lines: 3.4 (`liar_honest`) → 1.4 (`liarfix_honest`) → 0.2
+  (`liarfix3_honest`); verified 2.0 → 0.0.
+- **The defect evidence** (119 firings, expected duty 0.81 vs 0.30, quiet a
+  median of 2.0 s) is rebuilt in `evidence/liar/liar_2026-10-19_OUTCOME.md`.
+  The rebuild script is in that file's history; the inputs are the batch-1
+  recordings.
+- **Model:** `python3 -m evaluation.liar_sweep --seeds 5`. The p2c+ε ceiling
+  24.4% is `share_ceiling()`.
+- **Synthetic drop-tell observation** (5/20 vs 1/20 seeds) is in
+  `evidence/liar/ship_verified_2026-10-20_OUTCOME.md`.
+- **§X switch witness (0.9992):** `evidence/witness/summary.txt`, from
+  `python3 -m evaluation.witness_offline data/runs`.
 
 ## §VIII-B — the retraction
 

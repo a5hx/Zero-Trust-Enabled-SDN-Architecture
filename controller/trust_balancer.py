@@ -477,7 +477,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             selection_strategy=selection_strategy,
             d_choices=d_choices,
             epsilon=selection_epsilon,
-            cpu_claim=str(edge_cfg.get('cpu_claim', 'raw')),
+            cpu_claim=str(edge_cfg.get('cpu_claim', 'verified')),
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
             # The clients' own give-up time, so the dispatch reaper tracks it

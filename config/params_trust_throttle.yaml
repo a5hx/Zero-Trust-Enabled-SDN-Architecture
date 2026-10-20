@@ -50,6 +50,11 @@ edge_score:
   selection: p2c
   d_choices: 2
   epsilon: 0.05
+  # Pinned to the claim this config's recorded runs routed on. The default
+  # became 'verified' on 2026-10-20 (docs/predictions/
+  # ship_verified_2026-10-20_OUTCOME.md); 'raw' keeps these recordings
+  # reproducible.
+  cpu_claim: raw
 
 optimizer:
   enabled: true

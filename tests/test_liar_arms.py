@@ -114,6 +114,8 @@ def test_rerun_arms_are_the_first_batch_with_only_the_named_change(new, old):
     b['controller']['dashboard'].pop('record_path')
     if new.endswith('_verified'):
         assert a['edge_score'].pop('cpu_claim') == 'verified'
+        # The first-batch arm pins the raw claim it was recorded with.
+        assert b['edge_score'].pop('cpu_claim') == 'raw'
     assert a == b
 
 
@@ -152,6 +154,7 @@ def test_third_batch_differs_only_in_the_recording_path(new, old):
 def test_shipped_load_arms_differ_only_in_cpu_claim_and_recording():
     raw, ver = _load('ship_c_raw'), _load('ship_c_verified')
     assert ver['edge_score'].pop('cpu_claim') == 'verified'
+    assert raw['edge_score'].pop('cpu_claim') == 'raw'
     assert raw['controller']['dashboard'].pop('record_path') == 'data/events_ship_c_raw.jsonl'
     assert ver['controller']['dashboard'].pop('record_path') == 'data/events_ship_c_verified.jsonl'
     assert raw == ver
@@ -165,4 +168,22 @@ def test_shipped_load_arms_run_the_shipped_workload_with_one_consistent_liar():
          'liar_busy': 'consistent'}]
     for key in ('trust', 'optimizer', 'blockchain'):
         assert raw[key] == full[key]
-    assert 'cpu_claim' not in raw['edge_score']
+    assert raw['edge_score']['cpu_claim'] == 'raw' == full['edge_score']['cpu_claim']
+
+
+def test_every_config_behind_a_recorded_run_pins_its_claim():
+    """The default became 'verified' on 2026-10-20. A recorded experiment must
+    still replay with the claim it ran on, so its config says so explicitly."""
+    import glob
+    for path in glob.glob('config/params_*.yaml'):
+        name = Path(path).stem[len('params_'):]
+        if name in ('demo', 'attacks_demo', 'trust_demo'):
+            continue
+        with open(path) as fh:
+            cfg = yaml.safe_load(fh)
+        assert cfg['edge_score'].get('cpu_claim') in ('raw', 'verified'), name
+
+
+def test_the_code_default_is_verified():
+    from controller.trust_state import TrustState
+    assert TrustState(node_ids=['srv1']).cpu_claim == 'verified'

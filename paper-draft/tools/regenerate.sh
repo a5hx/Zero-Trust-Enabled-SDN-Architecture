@@ -25,7 +25,7 @@ echo "== live ablation: Tables II-IV and VI =="
 python3 -m evaluation.replicates data/runs --arms base,scoreonly,treat \
         --out-dir "$OUT/replicates"
 
-echo "== live threshold sweep: Table V, Fig. 2 =="
+echo "== live threshold sweep: Table 5, Fig. 2 =="
 python3 -m evaluation.replicates data/runs \
         --arms scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat \
         --out-dir "$OUT/theta_sweep"
@@ -40,7 +40,27 @@ for r in data/runs/flood_on/r0[2-5].jsonl; do ln -s "$ROOT/$r" "$FL/flood_on/"; 
 python3 -m evaluation.replicates "$FL" --arms flood_off,flood_on --out-dir "$OUT/flood"
 mv "$OUT/flood/summary.txt" "$OUT/flood/summary_primary.txt"
 
-echo "== replicated ledger with a leader kill (S VII-F) =="
+echo "== liar experiment, four batches: Table 6 (S VII-E) =="
+mkdir -p "$OUT/liar/batch1" "$OUT/liar/batch2" "$OUT/liar/batch3" "$OUT/liar/shipped_load"
+python3 -m evaluation.replicates data/runs \
+        --arms liar_honest,liar_c_treat,liar_t_treat,liar_t_treat_slots,stealthy_treat \
+        --out-dir "$OUT/liar/batch1"
+python3 -m evaluation.replicates data/runs \
+        --arms liarfix_honest,liarfix_c_treat,liarfix_t_treat,liarfix_stealthy,liarfix_t_verified,liarfix_honest_verified \
+        --out-dir "$OUT/liar/batch2"
+python3 -m evaluation.replicates data/runs \
+        --arms liarfix3_honest,liarfix3_honest_verified,liarfix3_c_treat --out-dir "$OUT/liar/batch3"
+python3 -m evaluation.replicates data/runs --arms ship_c_raw,ship_c_verified \
+        --out-dir "$OUT/liar/shipped_load"
+cp -p docs/predictions/*.txt docs/predictions/*.md "$OUT/liar/" 2>/dev/null || true
+rm -f "$OUT"/liar/*_live_summary.txt
+
+echo "== switch witness, offline (S X) =="
+mkdir -p "$OUT/witness"
+python3 -m evaluation.witness_offline data/runs --out "$OUT/witness" >/dev/null
+rm -f "$OUT/witness/per_server.csv"
+
+echo "== replicated ledger with a leader kill (S VII-I) =="
 RF=data/raft_failover_2026-10-19
 cp -p "$RF/raft_failover_20261019_140900.json" "$OUT/raft/failover_report.json"
 cp -p "$RF/nfr_report.txt" "$OUT/raft/nfr_report.txt"

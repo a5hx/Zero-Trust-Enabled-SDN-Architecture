@@ -141,7 +141,7 @@ class TrustState:
         task_timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
         probation_interval_s: float = DEFAULT_PROBATION_INTERVAL_S,
         anomaly_rail_enforced: bool = True,
-        cpu_claim: str = 'raw',
+        cpu_claim: str = 'verified',
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
         # can drive observed_load's averaging window from its simulated clock.
@@ -149,11 +149,14 @@ class TrustState:
         # real elapsed time while everything around it advanced virtually.
         self._now: Callable[[], float] = time_source or time.monotonic
         # Which load claim the selector ranks on (edge_score.cpu_claim):
-        #   'raw'      -- the latest instantaneous /status cpu_load (the default,
-        #                 and every run before 2026-10-20);
         #   'verified' -- claimed_load(): the duty cycle from the busy-seconds
         #                 counter, which is the quantity the honesty check
         #                 cross-validates against the controller's own count.
+        #                 The default since 2026-10-20, by the decision rule
+        #                 registered in docs/predictions/ship_verified_2026-10-20.txt;
+        #   'raw'      -- the latest instantaneous /status cpu_load, which every
+        #                 recorded run before then routed on (their configs
+        #                 pin it explicitly).
         # With 'raw' a server can lie in cpu_load while keeping its busy
         # counter truthful -- the "split claim": it wins routing on the number
         # nothing checks and passes the check on the number routing ignores
