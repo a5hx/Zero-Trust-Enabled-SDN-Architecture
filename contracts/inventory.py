@@ -113,8 +113,18 @@ class Inventory:
         sim = cfg.get('simulation') or {}
         block = cfg.get('inventory')
         if not block:
-            return cls.generated(int(sim.get('num_edge_nodes') or 0),
-                                 int(sim.get('num_iot_devices') or 0))
+            inv = cls.generated(int(sim.get('num_edge_nodes') or 0),
+                                int(sim.get('num_iot_devices') or 0))
+            # Mininet runs take their hardware classes from the emulated CPU
+            # profiles (simulation/cpu_profiles.py), so latency_baseline: class
+            # works in emulation exactly as it would on mixed hardware.
+            from simulation.cpu_profiles import server_classes
+            classes = server_classes(cfg)
+            if classes:
+                inv = cls(servers=inv.servers, devices=inv.devices, classes=classes,
+                          controller_ip=inv.controller_ip, vip_mac=inv.vip_mac,
+                          source=inv.source)
+            return inv
 
         raw_servers = block.get('servers') or {}
         if not raw_servers:

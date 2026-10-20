@@ -183,7 +183,8 @@ def attribute_rail(rail_enforced: Optional[bool],
     return 'indeterminate'
 
 
-def _timeline(path: str) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[float, str]]]:
+def _timeline(path: str) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[float, str]],
+                                  Dict[str, List[float]], Dict[str, List[Tuple[float, float]]]]:
     """One pass over the recording for the two things score_arm summarises
     away:
 
@@ -192,9 +193,14 @@ def _timeline(path: str) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[fl
       and the rail attribution needs the T and A-bar that event carried.
     * every routing decision as (t_rel, chosen). score_arm keeps whole-run
       totals; an attacker's gain is its share AFTER onset.
+    * node -> every 'recovered' time, to turn quarantines into intervals.
+    * node -> its scheduled honest throttles (start, end), from the topology
+      event (Phase 3, simulation/cpu_profiles.py).
     """
     quarantines: Dict[str, List[Dict[str, Any]]] = {}
     routes: List[Tuple[float, str]] = []
+    recovered: Dict[str, List[float]] = {}
+    throttles: Dict[str, List[Tuple[float, float]]] = {}
     t0: Optional[float] = None
     for ev in stream_events(path):
         ts = ev.get('ts')
@@ -206,6 +212,17 @@ def _timeline(path: str) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[fl
             if ev.get('chosen') and t_rel is not None:
                 routes.append((t_rel, ev['chosen']))
             continue
+        if etype == 'recovered':
+            if ev.get('node') and t_rel is not None:
+                recovered.setdefault(ev['node'], []).append(t_rel)
+            continue
+        if etype == 'topology':
+            for n in (ev.get('graph') or {}).get('nodes', []):
+                for th in n.get('throttle') or []:
+                    start = float(th['start_s'])
+                    throttles.setdefault(n['id'], []).append(
+                        (start, start + float(th['duration_s'])))
+            continue
         if etype != 'quarantine':
             continue
         node = ev.get('node')
@@ -213,7 +230,27 @@ def _timeline(path: str) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[fl
             row = dict(ev)
             row['t_rel'] = t_rel
             quarantines.setdefault(node, []).append(row)
-    return quarantines, routes
+    return quarantines, routes, recovered, throttles
+
+
+def quarantine_intervals(q_times: List[float], r_times: List[float],
+                         end: float) -> List[Tuple[float, float]]:
+    """Pair each quarantine with the first recovery after it (or the end of
+    the run). Repeated quarantine events while already quarantined do not
+    open a new interval."""
+    out: List[Tuple[float, float]] = []
+    rs = sorted(r_times)
+    open_at: Optional[float] = None
+    events = sorted([(t, 'q') for t in q_times] + [(t, 'r') for t in rs])
+    for t, kind in events:
+        if kind == 'q' and open_at is None:
+            open_at = t
+        elif kind == 'r' and open_at is not None:
+            out.append((open_at, t))
+            open_at = None
+    if open_at is not None:
+        out.append((open_at, max(open_at, end)))
+    return out
 
 
 def route_share_after(routes: List[Tuple[float, str]], node: str,
@@ -258,7 +295,7 @@ def score_run(arm: str, path: str, theta: float = DEFAULT_THETA) -> RunResult:
         'spoof_admitted': float(len(res.spoof_admitted)),
     }
 
-    quarantines, routes = _timeline(path)
+    quarantines, routes, recovered, throttles = _timeline(path)
     fair = 1.0 / len(truth.servers) if truth.servers else None
     for evs in quarantines.values():
         if 'anomaly_rail_enforced' in evs[0]:
@@ -301,6 +338,29 @@ def score_run(arm: str, path: str, theta: float = DEFAULT_THETA) -> RunResult:
 
     run.honest_quarantined = sorted(n for n in honest if n in quarantines)
     run.metrics['honest_false_quarantines'] = float(len(run.honest_quarantined))
+    # Phase 3: honest false quarantines as time and as a rate, so runs of
+    # different lengths and fleets compare; and, for a server throttled on
+    # purpose, whether that throttle got it quarantined and how fast it came
+    # back. A quarantine is charged to the throttle if it starts during the
+    # throttle or within THROTTLE_GRACE_S after it ends.
+    end = res.duration_s or 0.0
+    h_count, h_secs = 0, 0.0
+    t_count, t_release = 0, []
+    for n in honest:
+        q_times = [q['t_rel'] for q in quarantines.get(n, []) if q.get('t_rel') is not None]
+        spans = quarantine_intervals(q_times, recovered.get(n, []), end)
+        h_count += len(spans)
+        h_secs += sum(b - a for a, b in spans)
+        for a, b in spans:
+            if any(s0 <= a <= s1 + THROTTLE_GRACE_S for s0, s1 in throttles.get(n, [])):
+                t_count += 1
+                t_release.append(b - a)
+    hours = len(honest) * end / 3600.0
+    run.metrics['honest_quarantine_s'] = h_secs
+    run.metrics['honest_quarantines_per_server_h'] = h_count / hours if hours else None
+    if any(n in throttles for n in honest):
+        run.metrics['throttled_quarantines'] = float(t_count)
+        run.metrics['throttled_release_s'] = statistics.median(t_release) if t_release else None
     run.metrics['pre_onset_quarantines'] = float(
         sum(a.pre_onset_quarantines for a in run.attackers.values()))
     run.metrics.update(_classification_and_containment(path))
@@ -435,6 +495,10 @@ METRIC_ROWS = (
     ('flood_tasks_served', 'tasks served to flooding device(s)', 1.0, '.1f', ''),
     ('client_throttles', 'client throttles applied', 1.0, '.2f', ''),
     ('honest_clients_throttled', 'honest devices ever throttled', 1.0, '.2f', ''),
+    ('honest_quarantine_s', 'honest servers: seconds quarantined', 1.0, '.1f', ' s'),
+    ('honest_quarantines_per_server_h', 'honest quarantines per server-hour', 1.0, '.2f', ''),
+    ('throttled_quarantines', 'quarantines of the throttled honest server', 1.0, '.2f', ''),
+    ('throttled_release_s', '  its time to release (median)', 1.0, '.1f', ' s'),
     ('duration_s', 'run length', 1.0, '.1f', ' s'),
 )
 
@@ -456,7 +520,13 @@ BOUNDS = {
     'honest_success_rate': (0.0, 1.0), 'honest_mean_latency_ms': (0.0, None),
     'honest_p95_latency_ms': (0.0, None), 'flood_tasks_served': (0.0, None),
     'client_throttles': (0.0, None), 'honest_clients_throttled': (0.0, None),
+    'honest_quarantine_s': (0.0, None), 'honest_quarantines_per_server_h': (0.0, None),
+    'throttled_quarantines': (0.0, None), 'throttled_release_s': (0.0, None),
 }
+
+#: A quarantine that starts this long after a throttle ends is still charged
+#: to it: the detectors' EMA and 3-poll persistence lag the cause.
+THROTTLE_GRACE_S = 30.0
 
 
 def _clip(x: float, lo: Optional[float], hi: Optional[float], spec: str) -> str:

@@ -8,6 +8,7 @@ import json
 import logging
 import random
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -280,6 +281,11 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     task_timeout = agents_cfg.get('task_timeout_s', 2.0)
 
     mal_by_node = {m['node']: m for m in cfg['simulation'].get('malicious_edge_nodes', [])}
+    # Phase 3: servers with a CPU profile or a scheduled throttle are launched
+    # inside their own cgroup (simulation/cpu_profiles.py). Everyone else keeps
+    # the exact command they always had.
+    from simulation import cpu_profiles
+    capped = set(cpu_profiles.capped_nodes(cfg))
 
     for i in range(1, n_edge + 1):
         node_id = f'srv{i}'
@@ -300,15 +306,17 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         # experiment and is still honoured.
         onoff_period = float(mal.get('onoff_period_s', 20.0)) if mal else 20.0
         onoff_duty = float(mal.get('onoff_duty', 0.5)) if mal else 0.5
-        cmd = (
+        core = (
             f'python3 -u -m simulation.node_agent --node-id {node_id} '
             f'--port {agent_port} --work-ms {work_ms} --malicious {attack} '
             f'--malicious-start-s {start_s} '
             f'--grayhole-drop-rate {grayhole_rate} '
             f'--onoff-period-s {onoff_period} --onoff-duty {onoff_duty} '
             f'{_agent_extra_args(agents_cfg, mal, ctrl_cfg)}'
-            f'> logs/{node_id}_agent.log 2>&1 &'
         )
+        if node_id in capped:
+            core = cpu_profiles.wrap_command(core.rstrip(), node_id) + ' '
+        cmd = core + f'> logs/{node_id}_agent.log 2>&1 &'
         srv.cmd(cmd)
         logger.info(
             "Started node_agent on %s (malicious=%s, start_s=%.1f)",
@@ -549,7 +557,21 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         # processes that did not exist. Starting the agents first costs
         # nothing: pingAll's own reachability check is unaffected by them
         # running, and the switches are already up either way.
+        from simulation import cpu_profiles
+        cpu_profiles.setup(cfg)            # raises before launch if the host cannot
         _launch_trust_agents(net, cfg)
+        throttle_stop = threading.Event()
+        if cpu_profiles.capped_nodes(cfg):
+            time.sleep(3.0)                # the agents' `sh -c` joins first
+            missing = cpu_profiles.unjoined(cfg)
+            if missing:
+                _stop_trust_agents(net, cfg)
+                net.stop()
+                raise RuntimeError(
+                    f"capped agents did not join their cgroup: {missing} -- "
+                    f"see logs/<srv>_agent.log; aborting rather than recording "
+                    f"an uncapped run as a capped one")
+        cpu_profiles.start_schedule(cfg, throttle_stop)
         loss = _sampled_reachability_check(net, cfg)
 
         duration = cfg['simulation']['duration_s']
@@ -565,7 +587,10 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         else:
             time.sleep(duration)
 
+        throttle_stop.set()
         _stop_trust_agents(net, cfg)
+        time.sleep(1.0)                    # let the agents exit before rmdir
+        cpu_profiles.teardown(cfg)
     else:
         # Start HTTP status servers on each edge server
         for i, srv_name in enumerate(

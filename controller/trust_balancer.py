@@ -1693,6 +1693,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
         ]
         links: List[Dict[str, Any]] = []
 
+        from simulation.cpu_profiles import parse_profiles, parse_throttles
+        hw_profiles = parse_profiles(self.cfg)
+        hw_throttles = parse_throttles(self.cfg)
         for i in range(1, n_edge + 1):
             nodes.append({
                 'id': f's{i}', 'kind': 'edge_switch', 'dpid': i + 1,
@@ -1709,6 +1712,19 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'attack': mal.get(f'srv{i}', 'none'),
                 'attack_start_s': onset.get(f'srv{i}', 0.0),
             })
+            # Phase 3: an honest server's emulated hardware class and any
+            # scheduled throttle (simulation/cpu_profiles.py), so the scorer
+            # can tell a slow honest server's false quarantine from a liar's.
+            # Only when configured, so earlier recordings' topology is unchanged.
+            prof = hw_profiles.get(f'srv{i}')
+            if prof is not None:
+                nodes[-1]['hw_class'] = prof.hw_class
+                if prof.cpu_max:
+                    nodes[-1]['cpu_max'] = prof.cpu_max
+            thr = [{'start_s': t.start_s, 'duration_s': t.duration_s, 'cpu_max': t.cpu_max}
+                   for t in hw_throttles if t.node == f'srv{i}']
+            if thr:
+                nodes[-1]['throttle'] = thr
             links.append({'a': f's{i}', 'b': f'srv{i}', 'kind': 'server_link'})
             links.append({'a': 's0', 'b': f's{i}', 'kind': 'core_link'})
 

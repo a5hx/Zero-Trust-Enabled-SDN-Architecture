@@ -261,3 +261,45 @@ class TestDeviceSplit:
         assert m['flood_tasks_served'] == 2.0
         assert m['client_throttles'] == 2.0
         assert m['honest_clients_throttled'] == 0.0
+
+
+class TestHonestQuarantineTime:
+    """Phase 3: false quarantines as time, as a rate, and charged to a throttle."""
+
+    def test_intervals_pair_each_quarantine_with_its_recovery(self):
+        from evaluation.replicates import quarantine_intervals
+        assert quarantine_intervals([10.0, 12.0, 50.0], [20.0, 55.0], end=100.0) == [
+            (10.0, 20.0), (50.0, 55.0)]                     # 12.0 was already inside
+        assert quarantine_intervals([90.0], [], end=100.0) == [(90.0, 100.0)]
+
+    def _run(self, path, throttled):
+        t0 = 1000.0
+        node = {'kind': 'server', 'id': 'srv1', 'attack': 'none'}
+        if throttled:
+            node['throttle'] = [{'start_s': 20.0, 'duration_s': 10.0, 'cpu_max': '1000 10000'}]
+        evs = [{'type': 'topology', 'ts': t0, 'graph': {'nodes': [
+            node, {'kind': 'server', 'id': 'srv2', 'attack': 'sybil', 'attack_start_s': 5.0}]}}]
+        for t in range(0, 61, 5):
+            evs.append({'type': 'node_status', 'ts': t0 + t, 'nodes': {
+                'srv1': {'trust': 0.8, 'anomaly': 0.0}, 'srv2': {'trust': 0.8, 'anomaly': 0.0}}})
+        evs += [{'type': 'quarantine', 'ts': t0 + 25, 'node': 'srv1', 'trust': 0.6,
+                 'anomaly': 0.85, 'anomaly_gate': 0.5, 'anomaly_rail_enforced': True},
+                {'type': 'recovered', 'ts': t0 + 29, 'node': 'srv1'}]
+        evs.sort(key=lambda e: e['ts'])
+        path.write_text(''.join(json.dumps(e) + '\n' for e in evs))
+
+    def test_a_throttled_honest_servers_quarantine_is_charged_to_the_throttle(self, tmp_path):
+        p = tmp_path / 'r01.jsonl'
+        self._run(p, throttled=True)
+        m = score_run('treat', str(p)).metrics
+        assert m['honest_quarantine_s'] == pytest.approx(4.0)
+        assert m['honest_quarantines_per_server_h'] == pytest.approx(1 / (60 / 3600))
+        assert m['throttled_quarantines'] == 1.0
+        assert m['throttled_release_s'] == pytest.approx(4.0)
+
+    def test_without_a_throttle_there_is_nothing_to_charge(self, tmp_path):
+        p = tmp_path / 'r01.jsonl'
+        self._run(p, throttled=False)
+        m = score_run('treat', str(p)).metrics
+        assert m['honest_quarantine_s'] == pytest.approx(4.0)
+        assert 'throttled_quarantines' not in m
