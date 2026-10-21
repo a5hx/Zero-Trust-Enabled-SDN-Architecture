@@ -67,3 +67,12 @@ def test_every_launch_command_parses(arm):
         module, argv = argv_for(cmd)
         (node_agent.build_parser().parse_args if module == 'simulation.node_agent'
          else iot_client.parse_args)(argv)
+
+
+@pytest.mark.parametrize('arm', ARMS)
+def test_rerun_arms_differ_only_in_the_recording_path(arm):
+    new = 'witfix_' + arm[len('wit_'):]
+    a, b = _load(new), _load(arm)
+    assert a['controller']['dashboard'].pop('record_path') == f'data/events_{new}.jsonl'
+    b['controller']['dashboard'].pop('record_path')
+    assert a == b

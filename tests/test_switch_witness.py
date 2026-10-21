@@ -93,7 +93,10 @@ def test_a_switch_covering_a_dropper_does_not_save_it():
     served, but it is still seen failing through the other seven."""
     v = _fleet(dropper='srv6', cover=(4, 'srv6'))
     assert v['servers'] == ['srv6']
-    assert v['switches'] == []
+    # The covering switch IS lying; judged on recent connections (fix 1) its
+    # lie can surface, and blaming it is correct. Nobody honest is blamed.
+    assert set(v['switches']) <= {4}
+    assert v['clients'] == []
 
 
 def test_resteered_connections_are_never_judged():
@@ -247,3 +250,73 @@ def test_the_live_scorer_separates_detections_from_false_accusations(tmp_path):
     assert r.false_parties == ['server:srv2']
     assert r.blamed_s['server:srv2'] == pytest.approx(5.0)
     assert 'switch:6' in r.exempt
+
+
+def _staggered(w, t0, t1, dropper=None, hide_dpid=None, hide_from=1e9, rng=None,
+               quarantine_after=12.0, port=[50000]):
+    """The live shape, which the plain _fleet() lacks:
+    * one task per client every 2 s, and the five clients behind a switch on
+      DIFFERENT phases (phase = c % 4), so they cross a threshold one by one;
+    * a dropper that the gate quarantines `quarantine_after` s after onset:
+      from then on it gets only a probation trial every 5 s, so the witness is
+      starved of new failures, as it was live.
+    The witness is ticked every 0.5 s; yields (t, verdicts) after each tick."""
+    rng = rng or random.Random(3)
+    t = t0
+    last_probe = -1e9
+    while t < t1:
+        quarantined = dropper and t >= hide_from + quarantine_after
+        for sw in range(8):
+            dpid = sw + 2
+            for c in range(5):
+                j = sw + 8 * c + 1
+                if int((t * 2) % 4) != (c % 4):
+                    continue
+                ip = f'10.0.0.{j}'
+                idx = rng.randrange(1, 9)
+                node = f'srv{idx}'
+                if quarantined and node == dropper:
+                    if t - last_probe < 5.0:
+                        idx = 1 + (idx % 8)           # routed elsewhere
+                        node = f'srv{idx}'
+                    else:
+                        last_probe = t
+                port[0] += 1
+                fails = t >= hide_from and node == dropper
+                rev = 0 if fails or (dpid == hide_dpid and t >= hide_from) else SERVED
+                w.on_flow_stats(dpid, _rules(node, idx, ip, port[0], 548, rev), t)
+                w.on_report(ip, port[0], node, f'iot{j}', 'timeout' if fails else 'success', True, t)
+        t += 0.5
+        w.tick(t)
+        yield t, w.verdicts()
+
+
+def _blamed_after(cfg):
+    w = SwitchWitness(VIP, cfg)
+    for _ in _staggered(w, 0.0, 60.0):
+        pass
+    for t, v in _staggered(w, 60.0, 200.0, dropper='srv6', hide_from=60.0, quarantine_after=4.0):
+        if 'srv6' in v['servers']:
+            return t - 60.0
+    return None
+
+
+def test_fix1_a_dropper_with_a_long_honest_history_is_blamed_quickly():
+    """Live batch 1: blamed a median 54-61 s after onset (once never): 60 s of
+    honest history diluted the few failures the dropper produced before the
+    gate's quarantine starved it. Reproduced here with a 4 s quarantine."""
+    old = _blamed_after(WitnessConfig(recent_party=0, recent_client=0))
+    assert old is None or old > 20.0          # the window rule: slow, as live
+    assert _blamed_after(WitnessConfig()) < 10.0
+
+
+def test_fix2_no_client_is_blamed_while_its_switch_lie_ramps_up():
+    w = SwitchWitness(VIP)
+    for _ in _staggered(w, 0.0, 60.0):
+        pass
+    switch_seen = False
+    for t, v in _staggered(w, 60.0, 120.0, hide_dpid=4, hide_from=60.0):
+        assert v['clients'] == [], (t, v['clients'])
+        assert v['servers'] == [], (t, v['servers'])
+        switch_seen |= 4 in v['switches']
+    assert switch_seen

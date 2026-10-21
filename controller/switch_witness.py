@@ -91,6 +91,20 @@ class WitnessConfig:
     min_judged: int = 10              # per party, within the window
     threshold: float = 0.20           # disagreement rate that marks a party
     switch_majority: float = 0.5      # share of a switch's clients that must disagree
+    # Fix 1 (2026-10-21): judge each party on its MOST RECENT connections, not
+    # on everything in the window. With a 60 s window a dropping server's
+    # pre-attack successes diluted its failures for ~50 s (blamed at a median
+    # 54-61 s after onset, and once never, while the gate quarantined it in
+    # ~10 s and so starved the witness of new failures). The timeout tell
+    # already works on the last 10 outcomes for the same reason.
+    recent_party: int = 20            # servers and switches
+    recent_client: int = 10           # a client sends ~1 task per 2 s
+    # Fix 2 (2026-10-21): blame a client on its own only if the OTHER clients
+    # behind its switch look clean (mean rate < mates_clean x threshold).
+    # While a lying switch's lie ramps up, its clients cross the threshold one
+    # by one; the first one or two used to be blamed for 1-4 s before the
+    # switch-majority rule caught up (3 of 5 hide runs).
+    mates_clean: float = 0.5
 
     @classmethod
     def from_config(cls, ctrl_cfg: Dict[str, Any]) -> 'WitnessConfig':
@@ -200,8 +214,11 @@ class SwitchWitness:
         judged = [j for j in self._judged if j.pattern != UNSEEN]
         disagree = (CLIENT_FAIL_SERVED, CLIENT_OK_UNSERVED)
 
-        def rate(items: List[Judged], patterns: Tuple[str, ...]) -> Optional[float]:
-            if len(items) < cfg.min_judged:
+        def rate(items: List[Judged], patterns: Tuple[str, ...],
+                 recent: int = 0) -> Optional[float]:
+            if recent:
+                items = items[-recent:]          # the deque is in time order
+            if len(items) < min(cfg.min_judged, recent or cfg.min_judged):
                 return None
             return sum(1 for j in items if j.pattern in patterns) / len(items)
 
@@ -212,24 +229,37 @@ class SwitchWitness:
             if j.dpid is not None:
                 by_dpid.setdefault(j.dpid, []).append(j)
 
-        client_rate = {d: rate(js, disagree) for d, js in by_device.items()}
+        client_rate = {d: rate(js, disagree, cfg.recent_client) for d, js in by_device.items()}
         disputing = {d for d, r in client_rate.items() if r is not None and r >= cfg.threshold}
 
         switches: Set[int] = set()
         switch_rate: Dict[int, Optional[float]] = {}
+        devices_on: Dict[int, Set[str]] = {}
         for dpid, js in by_dpid.items():
             devices = {j.device for j in js}
-            switch_rate[dpid] = rate(js, disagree)
+            devices_on[dpid] = devices
+            switch_rate[dpid] = rate(js, disagree, cfg.recent_party)
             if devices and len(devices & disputing) / len(devices) > cfg.switch_majority:
                 switches.add(dpid)
+
+        def home(d: str) -> Optional[int]:
+            dp = [j.dpid for j in by_device[d] if j.dpid is not None]
+            return max(set(dp), key=dp.count) if dp else None
+
+        def mates_clean(d: str) -> bool:
+            k = home(d)
+            rates = [client_rate[m] for m in devices_on.get(k, set())
+                     if m != d and client_rate.get(m) is not None]
+            return not rates or sum(rates) / len(rates) < cfg.mates_clean * cfg.threshold
+
         clients = {d for d in disputing
-                   if not any(j.dpid in switches for j in by_device[d])}
+                   if home(d) not in switches and mates_clean(d)}
 
         clean = [j for j in judged if j.dpid not in switches and j.device not in clients]
         by_node: Dict[str, List[Judged]] = {}
         for j in clean:
             by_node.setdefault(j.node, []).append(j)
-        server_rate = {n: rate(js, (AGREE_FAILED,)) for n, js in by_node.items()}
+        server_rate = {n: rate(js, (AGREE_FAILED,), cfg.recent_party) for n, js in by_node.items()}
         servers = {n for n, r in server_rate.items() if r is not None and r >= cfg.threshold}
 
         def rounded(d):
