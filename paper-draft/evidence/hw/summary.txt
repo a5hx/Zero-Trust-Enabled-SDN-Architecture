@@ -1,0 +1,295 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  hw_fleet   : 5 run(s)
+      r01.jsonl  310.4 s  theta=0.30
+      r02.jsonl  310.4 s  theta=0.30
+      r03.jsonl  314.9 s  theta=0.30
+      r04.jsonl  332.8 s  theta=0.30
+      r05.jsonl  318.7 s  theta=0.30
+  hw_class   : 5 run(s)
+      r01.jsonl  310.6 s  theta=0.30
+      r02.jsonl  309.5 s  theta=0.30
+      r03.jsonl  314.7 s  theta=0.30
+      r04.jsonl  325.1 s  theta=0.30
+      r05.jsonl  333.0 s  theta=0.30
+  hw_throttle25 : 5 run(s)
+      r01.jsonl  310.5 s  theta=0.30
+      r02.jsonl  309.4 s  theta=0.30
+      r03.jsonl  310.8 s  theta=0.30
+      r04.jsonl  332.3 s  theta=0.30
+      r05.jsonl  337.0 s  theta=0.30
+  hw_throttle10 : 5 run(s)
+      r02.jsonl  310.4 s  theta=0.30
+      r03.jsonl  310.4 s  theta=0.30
+      r04.jsonl  310.5 s  theta=0.30
+      r05.jsonl  314.9 s  theta=0.30  anomaly_rail_enforced=True
+      r06.jsonl  314.6 s  theta=0.30
+  hw_sybil_slow : 5 run(s)
+      r01.jsonl  309.6 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  310.4 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  314.7 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  314.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  334.6 s  theta=0.30  anomaly_rail_enforced=True
+  hw_sybil_fast : 5 run(s)
+      r01.jsonl  310.6 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  309.4 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  314.9 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  331.2 s  theta=0.30  anomaly_rail_enforced=True
+      r06.jsonl  327.0 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    hw_fleet   99.97%  [99.91, 100.00*]  sd 0.04  n=5
+    hw_class   99.97%  [99.92, 100.00*]  sd 0.05  n=5
+    hw_throttle25 99.94%  [99.85, 100.00*]  sd 0.07  n=5
+    hw_throttle10 99.93%  [99.88, 99.98]  sd 0.04  n=5
+    hw_sybil_slow 99.89%  [99.81, 99.97]  sd 0.07  n=5
+    hw_sybil_fast 99.91%  [99.81, 100.00*]  sd 0.08  n=5
+throughput
+    hw_fleet   17.82 tps  [17.24, 18.40]  sd 0.47  n=5
+    hw_class   17.79 tps  [17.11, 18.47]  sd 0.55  n=5
+    hw_throttle25 17.69 tps  [16.89, 18.48]  sd 0.64  n=5
+    hw_throttle10 18.01 tps  [17.52, 18.49]  sd 0.39  n=5
+    hw_sybil_slow 17.75 tps  [17.01, 18.49]  sd 0.59  n=5
+    hw_sybil_fast 17.69 tps  [17.08, 18.30]  sd 0.49  n=5
+mean latency (success)
+    hw_fleet   101.2 ms  [80.4, 122.1]  sd 16.8  n=5
+    hw_class   100.0 ms  [74.0, 125.9]  sd 20.9  n=5
+    hw_throttle25 101.4 ms  [77.6, 125.2]  sd 19.2  n=5
+    hw_throttle10 110.8 ms  [82.8, 138.8]  sd 22.6  n=5
+    hw_sybil_slow 110.7 ms  [81.9, 139.6]  sd 23.2  n=5
+    hw_sybil_fast 106.5 ms  [80.4, 132.5]  sd 21.0  n=5
+p95 latency (success)
+    hw_fleet   159.2 ms  [108.3, 210.0]  sd 41.0  n=5
+    hw_class   157.6 ms  [98.9, 216.3]  sd 47.3  n=5
+    hw_throttle25 161.6 ms  [105.9, 217.2]  sd 44.8  n=5
+    hw_throttle10 188.1 ms  [120.3, 255.8]  sd 54.6  n=5
+    hw_sybil_slow 183.1 ms  [117.7, 248.6]  sd 52.7  n=5
+    hw_sybil_fast 171.9 ms  [110.5, 233.3]  sd 49.4  n=5
+timeouts
+    hw_fleet   0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_class   0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_throttle25 0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_throttle10 1.2  [0.0*, 4.5]  sd 2.7  n=5
+    hw_sybil_slow 1.2  [0.2, 2.2]  sd 0.8  n=5
+    hw_sybil_fast 1.4  [0.0*, 3.3]  sd 1.5  n=5
+honest-device availability
+    hw_fleet   99.97%  [99.92, 100.00*]  sd 0.04  n=5
+    hw_class   99.97%  [99.92, 100.00*]  sd 0.05  n=5
+    hw_throttle25 99.94%  [99.85, 100.00*]  sd 0.07  n=5
+    hw_throttle10 99.93%  [99.88, 99.98]  sd 0.04  n=5
+    hw_sybil_slow 99.89%  [99.81, 99.97]  sd 0.07  n=5
+    hw_sybil_fast 99.91%  [99.81, 100.00*]  sd 0.08  n=5
+starved honest devices (<50%)
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    hw_fleet   0.973  [0.957, 0.990]  sd 0.013  n=5
+    hw_class   0.971  [0.952, 0.990]  sd 0.016  n=5
+    hw_throttle25 0.974  [0.968, 0.980]  sd 0.005  n=5
+    hw_throttle10 0.968  [0.957, 0.979]  sd 0.009  n=5
+    hw_sybil_slow 0.974  [0.962, 0.986]  sd 0.010  n=5
+    hw_sybil_fast 0.968  [0.965, 0.971]  sd 0.002  n=5
+Jain, full roster
+    hw_fleet   0.973  [0.957, 0.990]  sd 0.013  n=5
+    hw_class   0.971  [0.952, 0.990]  sd 0.016  n=5
+    hw_throttle25 0.974  [0.968, 0.980]  sd 0.005  n=5
+    hw_throttle10 0.968  [0.957, 0.979]  sd 0.009  n=5
+    hw_sybil_slow 0.868  [0.857, 0.878]  sd 0.009  n=5
+    hw_sybil_fast 0.866  [0.862, 0.870]  sd 0.004  n=5
+share of routes to attackers
+    hw_fleet   0.00%  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00%  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 0.89%  [0.69, 1.10]  sd 0.16  n=5
+    hw_sybil_fast 1.15%  [0.89, 1.41]  sd 0.21  n=5
+honest servers ever quarantined
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    hw_fleet   0.462  [0.400, 0.525]  sd 0.050  n=5
+    hw_class   0.478  [0.456, 0.501]  sd 0.018  n=5
+    hw_throttle25 0.498  [0.495, 0.501]  sd 0.003  n=5
+    hw_throttle10 0.455  [0.375, 0.534]  sd 0.064  n=5
+    hw_sybil_slow 0.440  [0.386, 0.494]  sd 0.043  n=5
+    hw_sybil_fast 0.459  [0.392, 0.525]  sd 0.054  n=5
+attackers quarantined BEFORE onset
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    hw_fleet   100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_class   100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_throttle25 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_throttle10 99.97%  [99.89, 100.00*]  sd 0.06  n=5
+    hw_sybil_slow 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_sybil_fast 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    hw_fleet   not measured
+    hw_class   not measured
+    hw_throttle25 not measured
+    hw_throttle10 not measured
+    hw_sybil_slow 82.15%  [69.68, 94.61]  sd 10.04  n=5
+    hw_sybil_fast 78.21%  [66.89, 89.52]  sd 9.11  n=5
+attacks classified exactly (of 8)
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 1.00  [1.00, 1.00]  sd 0.00  n=5
+    hw_sybil_fast 0.80  [0.24, 1.36]  sd 0.45  n=5
+attacks in the right family (of 8)
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 1.00  [1.00, 1.00]  sd 0.00  n=5
+    hw_sybil_fast 1.00  [1.00, 1.00]  sd 0.00  n=5
+honest subjects mislabelled
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    hw_fleet   100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_class   100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_throttle25 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_throttle10 99.58%  [98.43, 100.00*]  sd 0.93  n=5
+    hw_sybil_slow 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    hw_sybil_fast 99.58%  [98.43, 100.00*]  sd 0.93  n=5
+honest devices: mean latency
+    hw_fleet   101.2 ms  [80.4, 122.1]  sd 16.8  n=5
+    hw_class   100.0 ms  [74.0, 125.9]  sd 20.9  n=5
+    hw_throttle25 101.4 ms  [77.6, 125.2]  sd 19.2  n=5
+    hw_throttle10 110.8 ms  [82.8, 138.8]  sd 22.6  n=5
+    hw_sybil_slow 110.7 ms  [81.9, 139.6]  sd 23.2  n=5
+    hw_sybil_fast 106.5 ms  [80.4, 132.5]  sd 21.0  n=5
+honest devices: p95 latency
+    hw_fleet   159.2 ms  [108.3, 210.0]  sd 41.0  n=5
+    hw_class   157.6 ms  [98.9, 216.3]  sd 47.3  n=5
+    hw_throttle25 161.6 ms  [105.9, 217.2]  sd 44.8  n=5
+    hw_throttle10 188.1 ms  [120.3, 255.8]  sd 54.6  n=5
+    hw_sybil_slow 183.1 ms  [117.7, 248.6]  sd 52.7  n=5
+    hw_sybil_fast 171.9 ms  [110.5, 233.3]  sd 49.4  n=5
+honest devices: task success
+    hw_fleet   99.97%  [99.91, 100.00*]  sd 0.04  n=5
+    hw_class   99.97%  [99.92, 100.00*]  sd 0.05  n=5
+    hw_throttle25 99.94%  [99.85, 100.00*]  sd 0.07  n=5
+    hw_throttle10 99.93%  [99.88, 99.98]  sd 0.04  n=5
+    hw_sybil_slow 99.89%  [99.81, 99.97]  sd 0.07  n=5
+    hw_sybil_fast 99.91%  [99.81, 100.00*]  sd 0.08  n=5
+tasks served to flooding device(s)
+    hw_fleet   0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_class   0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_throttle25 0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_throttle10 0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_sybil_slow 0.0  [0.0, 0.0]  sd 0.0  n=5
+    hw_sybil_fast 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest servers: seconds quarantined
+    hw_fleet   0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    hw_class   0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    hw_throttle25 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    hw_throttle10 0.7 s  [0.0*, 2.7]  sd 1.6  n=5
+    hw_sybil_slow 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    hw_sybil_fast 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+honest quarantines per server-hour
+    hw_fleet   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_class   0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.57  [0.00*, 2.16]  sd 1.28  n=5
+    hw_sybil_slow 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_sybil_fast 0.00  [0.00, 0.00]  sd 0.00  n=5
+quarantines of the throttled honest server
+    hw_fleet   not measured
+    hw_class   not measured
+    hw_throttle25 0.00  [0.00, 0.00]  sd 0.00  n=5
+    hw_throttle10 0.40  [0.00*, 1.51]  sd 0.89  n=5
+    hw_sybil_slow not measured
+    hw_sybil_fast not measured
+  its time to release (median)
+    hw_fleet   not measured
+    hw_class   not measured
+    hw_throttle25 not measured
+    hw_throttle10 1.8 s (n=1, no CI)
+    hw_sybil_slow not measured
+    hw_sybil_fast not measured
+run length
+    hw_fleet   317.5 s  [306.0, 328.9]  sd 9.2  n=5
+    hw_class   318.6 s  [306.0, 331.2]  sd 10.1  n=5
+    hw_throttle25 320.0 s  [303.2, 336.7]  sd 13.5  n=5
+    hw_throttle10 312.2 s  [309.2, 315.1]  sd 2.4  n=5
+    hw_sybil_slow 316.8 s  [304.1, 329.5]  sd 10.2  n=5
+    hw_sybil_fast 318.6 s  [306.3, 330.9]  sd 9.9  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv3 (sybil)
+    hw_sybil_fast score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.619  [0.548, 0.690]  sd 0.057  n=5
+               route share (post-onset): 0.36%  [0.12, 0.59]  sd 0.19  n=5
+                 minus fair 1/N    : -12.14%  [-12.38, -11.91]  sd +0.19  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 8.4 s, range 6.5-14.5 s; mean 9.4 [5.4, 13.3]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.642  [0.563, 0.721]  sd 0.064  n=5
+
+srv5 (sybil)
+    hw_sybil_slow score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.640  [0.544, 0.736]  sd 0.077  n=5
+               route share (post-onset): 0.29%  [0.05, 0.53]  sd 0.19  n=5
+                 minus fair 1/N    : -12.21%  [-12.45, -11.97]  sd +0.19  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 9.0 s, range 7.5-15.6 s; mean 10.0 [5.9, 14.1]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.692  [0.588, 0.796]  sd 0.084  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    hw_sybil_fast isolated  63.7%   exact labels 0/8
+    hw_sybil_slow isolated  68.5%   exact labels 1/8
+    hw_sybil_slow isolated  74.3%   exact labels 1/8
+    hw_sybil_fast isolated  76.8%   exact labels 1/8
+    hw_sybil_fast isolated  79.3%   exact labels 1/8
+    hw_sybil_fast isolated  83.6%   exact labels 1/8
+    hw_sybil_fast isolated  87.7%   exact labels 1/8
+    hw_sybil_slow isolated  88.4%   exact labels 1/8
+    hw_sybil_slow isolated  89.5%   exact labels 1/8
+    hw_sybil_slow isolated  90.0%   exact labels 1/8
+    Spearman rho(isolation, exact labels) = +0.522, p = 0.122, n = 10
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

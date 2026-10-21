@@ -1,0 +1,24 @@
+SWITCH WITNESS, LIVE VERDICTS (observe-only)
+==============================================================================
+wit_control: 5 run(s)
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wit_drop: 5 run(s)
+    server:srv1      blamed 5/5 [57%, 100%]  median 61.2 s
+    server:srv6      blamed 4/5 [38%, 96%]  median 53.9 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wit_switch_hide: 5 run(s)
+    switch:4         blamed 5/5 [57%, 100%]  median 14.1 s
+    honest parties falsely blamed per run: mean 1.00 [0.00, 2.24]  (runs with any: 3/5)
+      r01.jsonl: client:iot11 first at 76.5 s, blamed 4.1 s
+      r01.jsonl: client:iot19 first at 76.5 s, blamed 4.1 s
+      r02.jsonl: client:iot35 first at 79.7 s, blamed 1.0 s
+      r03.jsonl: client:iot19 first at 73.1 s, blamed 1.0 s
+      r03.jsonl: client:iot3 first at 73.1 s, blamed 1.0 s
+wit_badmouth: 5 run(s)
+    client:iot12     blamed 5/5 [57%, 100%]  median 13.1 s
+    client:iot3      blamed 5/5 [57%, 100%]  median 14.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wit_collude: 5 run(s)
+    server:srv6      blamed 5/5 [57%, 100%]  median 59.2 s
+    switch:4         (covering switch, not in scope) blamed 0/5
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)

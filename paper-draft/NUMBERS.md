@@ -48,15 +48,15 @@ T=0.220.
 > carry Ā ≈ 1.0 beside T < θ) — fixed 2026-09-29.
 
 **Table IV (containment).** `contain_s` medians and ranges.
-**Table 7 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
-**§VII-H (detection).** `attacks classified exactly` / `right family` /
+**Table 8 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
+**§VII-J (detection).** `attacks classified exactly` / `right family` /
 `honest subjects mislabelled` / `classification accuracy` rows.
 
 Statistical treatment: continuous → mean + two-sided 95% Student-t over runs;
 yes/no → k/n + Wilson interval (5/5 = [57%,100%], 0/5 = [0%,43%]); times only
 over runs where the event happened.
 
-## §VII-I — non-functional requirements
+## §VII-K — non-functional requirements
 
 ```bash
 for r in data/runs/treat/*.jsonl; do python3 -m evaluation.nfr_report "$r"; done
@@ -67,7 +67,7 @@ re-dispatch mean 12.9–23.5 ms (max 32.8, n=19–30); ledger overhead
 0.045–0.052 % over 625–661 blocks. Raft 4.3–4.8 ms is the **standalone**
 3-replica cluster, not the controller.
 
-## §VII-J — simulation (labelled as such in the paper)
+## §VII-L — simulation (labelled as such in the paper)
 
 ```bash
 python3 -m evaluation.baseline --runs 30 --csv paper-draft/evidence/baseline_600runs.csv
@@ -116,7 +116,7 @@ Honest dips (`per_run.csv`, `honest_min_trust` < 0.45): scoreonly_t040 r02
 
 The prediction registered before the sweep: `data/theta_sweep_prediction_2026-09-29.txt`.
 
-## §VII-G — data-plane response to a flooding client (Table 8)
+## §VII-I — data-plane response to a flooding client (Table 9)
 
 `tools/regenerate.sh` scores `flood_off` r01–r05 and `flood_on` r02–r05 →
 `evidence/flood/summary_primary.txt`. flood_on r01 is excluded because the host
@@ -128,7 +128,7 @@ success` 98.91 vs 98.79 % (overlap), `tasks served to flooding device(s)` 8951 �
 first 316 s: honest mean **93.0** ms, p95 **141.3** ms (scored 2026-10-18, recorded
 in `data/flood_experiment_2026-10-18/summary_trimmed_on_r01.txt`).
 
-## §VII-I — replicated ledger with a leader kill
+## §VII-K — replicated ledger with a leader kill
 
 `evidence/raft/failover_report.json` (written by `tools/raft_failover_check.py`
 during the run) + `data/raft_failover_2026-10-19/events_raft.jsonl`: leader n3
@@ -195,8 +195,56 @@ PER ATTACKER block, lines `route share (post-onset)`, `minus fair 1/N`,
   24.4% is `share_ceiling()`.
 - **Synthetic drop-tell observation** (5/20 vs 1/20 seeds) is in
   `evidence/liar/ship_verified_2026-10-20_OUTCOME.md`.
-- **§X switch witness (0.9992):** `evidence/witness/summary.txt`, from
-  `python3 -m evaluation.witness_offline data/runs`.
+- **§VII-G offline witness (0.9992, 110 recordings):**
+  `evidence/witness/summary.txt`, from `evaluation.witness_offline` over the
+  22 arms listed in `tools/regenerate.sh` (later arms change it).
+
+## §VI-F and §VII-F — honest-slow servers (added 2026-10-21)
+
+30 live runs at `d1076c4`, scored against `evidence/hw/hw_2026-10-20.txt`;
+outcome in `evidence/hw/hw_2026-10-20_OUTCOME.md`.
+
+```bash
+python3 -m evaluation.replicates data/runs \
+    --arms hw_fleet,hw_class,hw_throttle25,hw_throttle10,hw_sybil_slow,hw_sybil_fast \
+    --out-dir paper-draft/evidence/hw
+```
+
+- **0 honest quarantines** in `hw_fleet`, `hw_class`, `hw_throttle25` (5/5 runs
+  each): `honest servers ever quarantined` and `honest quarantine seconds`.
+- **`hw_throttle10`: 1/5 runs, 3.6 s** total (`throttled quarantines`,
+  `honest quarantine seconds`). Path: one `/status` poll over 0.5 s
+  (unreachable, no persistence), then the honesty check inverted (claimed 0.59
+  vs expected 0.00). Latency tell never fired. Task latency ~90 → 210–223 ms.
+  All in the OUTCOME file.
+- **Sybil:** contained 5/5 in `hw_sybil_slow` (median 9.0 s) and
+  `hw_sybil_fast` (8.4 s), PER ATTACKER `containment`.
+
+## §VII-G and Table 7 — the switch witness, live (added 2026-10-21)
+
+Two batches of 25 runs: `wit_*` at `0c8d064` and `witfix_*` at `15728ac`, each
+against its own prediction (`evidence/witness/<batch>/*.txt`, outcome in
+`*_OUTCOME.md`).
+
+```bash
+python3 -m evaluation.witness_report data/runs \
+    --arms wit_control,wit_drop,wit_switch_hide,wit_badmouth,wit_collude
+python3 -m evaluation.witness_report data/runs \
+    --arms witfix_control,witfix_drop,witfix_switch_hide,witfix_badmouth,witfix_collude
+```
+→ `evidence/witness/{batch1,after_fixes}/witness_summary.txt`.
+
+| Table 7 row | First batch | After fixes |
+|---|---|---|
+| Nobody | 0 blamed, 5/5 | 0 blamed, 5/5 |
+| srv6 blackhole, srv1 grayhole | 4/5 (53.9 s), 5/5 (61.2 s) | 5/5 (12.9 s), 5/5 (14.1 s) |
+| Hiding switch dpid 4 | 5/5 (14.1 s); clients in 3/5, 1.0–4.1 s | 5/5 (5.2 s) |
+| iot3, iot12 badmouthing | 5/5 (14.1 s), 5/5 (13.1 s) | 5/5 (12.0 s) each |
+| srv6 + covering switch | srv6 5/5 (59.2 s); switch 0/5 | srv6 5/5 (16.2 s); switch 0/5 |
+| Honest parties blamed | 3 of 25 runs | 0 of 25 runs |
+
+The fix-pinning tests are `tests/test_switch_witness.py` (the `_staggered`
+fleet); each fails with its fix turned off.
 
 ## §VIII-B — the retraction
 
@@ -209,7 +257,7 @@ containment 40.0–69.3 %, exact labels 7/8 in nine runs and 6/8 in one,
 ```bash
 python3 -m pytest tests/ base_model/tests/ -q
 ```
-**1,166 passed, 11 skipped** at `7a2d795` (2026-10-18).
+**1,320 passed, 11 skipped** on `feature/witness` (2026-10-21).
 
 ## Figures
 

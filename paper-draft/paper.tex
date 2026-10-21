@@ -55,22 +55,22 @@ Zero Trust requires continuous verification, but leaves open how a network
 control plane should verify the servers it routes work to. We built a
 Zero-Trust SDN load balancer in which a trust score ranks edge servers, an
 independent anomaly gate excludes them, and every verdict is installed as
-OpenFlow~1.3 rules, and evaluated it live on an emulated edge of 8 servers and
-40 devices. In a five-run-per-arm ablation the score never isolated two
-attackers that complete every task (0/5) while the gate isolated both every
-time; a threshold sweep shows the score can, but only within a band a few
-hundredths wide and $3.4$--$20\times$ more slowly. But those attackers were
-slow, and the load-misreporting one drew less than its fair share: the gate
-had caught a slow server, not a lie. We therefore built
-liars that serve at honest speed and ran 80 further runs, each batch against a
-prediction registered in advance. A liar whose claims are internally
-consistent gains nothing and is contained. One that lies only in the
-instantaneous load figure the router ranks on, while reporting a truthful
-busy-time counter to the honesty check, wins $4.0$ points of traffic above its
-fair share and is never caught. Ranking on the verified figure closes the hole
-at no measured honest cost. The experiment also exposed a defect in the
-honesty check, invisible at low load, that quarantined honest servers; fixing
-it cut false quarantines from $3.4$ to $0.2$ per run.
+OpenFlow~1.3 rules, and evaluated it live on an emulated 8-server, 40-device
+edge. In a five-run-per-arm ablation the score never isolated two attackers
+that complete every task (0/5) while the gate isolated both every time; a
+threshold sweep shows the score can, but only within a band a few hundredths
+wide and $3.4$--$20\times$ more slowly. Those attackers were slow, though: the
+gate had caught a slow server, not a lie. In 80 further runs scored against
+predictions registered in advance, a liar serving at honest speed with
+internally consistent claims gains nothing, while one that lies only in the
+instantaneous load figure the router ranks on, keeping a truthful busy-time
+counter for the honesty check, wins $4.0$ points of traffic above its fair
+share and is never caught; ranking on the verified figure closes the hole at
+no measured honest cost. The runs also exposed an honesty-check defect
+invisible at low load (false quarantines $3.4 \to 0.2$ per run once fixed).
+Emulated mixed hardware and throttling are not mistaken for lying, and the
+switches' own counters, joined with the clients' reports, name the lying
+party --- server, switch or client --- in 25 of 25 runs.
 \end{abstract}
 
 \keywords{Zero Trust, software-defined networking, edge computing, trust-aware
@@ -145,6 +145,14 @@ verified figure closes it.
   also exposed, and confirmed the fix for, a false-positive defect in the
   honesty check that is invisible at the shipped load.
 
+\item \textbf{Honest slowness and a third witness} (\S\ref{sec:res:hw},
+  \S\ref{sec:res:witness}). Emulated mixed hardware and throttling cause no
+  false quarantines at the shipped load (one of 3.6\,s at a 10\% throttle, in
+  1 of 5 runs). The switches' own counters, joined per connection with the
+  clients' reports, name which party lies --- a dropping server, a hiding
+  switch, a badmouthing client, or a dropper covered by one colluding switch
+  --- in 25 of 25 runs, with no honest party ever blamed.
+
 \item \textbf{An explanation} (\S\ref{sec:analysis}): the score floor an
   adversary of this class can hold, why the honesty term barely registers the
   lie, and why the tested attacker is not latency-faithful.
@@ -163,9 +171,9 @@ verified figure closes it.
 \item \textbf{A retraction} (\S\ref{sec:disc:retract}) of a
   containment--attribution trade an earlier version of this work claimed.
 
-\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 120 archived live
+\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 200 archived live
   recordings, an aggregator reporting between-run intervals, an offline model
-  of the liar experiment, 1\,240 automated tests, and a source tag on every
+  of the liar experiment, 1\,320 automated tests, and a source tag on every
   number.
 \end{enumerate}
 
@@ -304,6 +312,9 @@ claim; a \emph{split-claim} liar, which lies only in its instantaneous load
 figure; and an \emph{adaptive} liar that reads its peers' claims from the
 controller and undercuts them while staying inside the honesty threshold, the
 server-side analogue of the reconnaissance-tuned switch of~\cite{yu2024stealthy}.
+Section~\ref{sec:res:witness} adds a switch that misreports its own counters
+--- hiding every response, or covering for one dropping server --- and a
+client that reports successful tasks as timeouts.
 
 \subsection{Out of scope}
 We do not model, and do not defend against: collusion between edge nodes; an
@@ -652,6 +663,27 @@ power-of-$d$-choices with $\varepsilon$-exploration, a liar that wins every
 comparison it is sampled into is capped at $\varepsilon/N + (1-\varepsilon)d/N$
 of the traffic, $24.4\%$ here against a fair $12.5\%$, however large the lie.
 
+\subsection{Honest-slow servers and the third witness}
+\label{sec:method:hw}
+Two further experiments use the shipped workload with every other attack
+removed. In the first, Linux cgroup CPU caps emulate mixed hardware: four
+servers at full speed and four at half a core, and in two arms an honest
+server throttled to 25\% or 10\% of a core for 60\,s. Tasks are a fixed
+amount of work (45\,000 hash iterations, ${\sim}15$\,ms at full speed), so a
+capped server really is slower, including in its answers to the controller's
+polls. Its six arms vary the latency tell's baseline (fleet median or
+per-class median), the throttle, and where the slow load-misreporting server
+sits (among slow or among fast servers). In the second, the controller joins
+every connection's switch counters with the client's report
+(\S\ref{sec:res:witness}) and publishes who it judges to be lying, without
+acting on it. A lying switch is emulated where the controller receives its
+statistics, which is where a compromised switch agent would speak; Open
+vSwitch itself cannot be made to lie without patching it. Five arms: no
+liar, two dropping servers, a hiding switch, two badmouthing clients, and a
+dropper covered by a colluding switch. The witness experiment ran twice,
+before and after fixes its first batch motivated, each against its own
+registered prediction.
+
 \subsection{Simulation levels}
 Two results in \S\ref{sec:res:sim} come from a seeded discrete-event
 simulation driving the \emph{real} selector, trust calculator and both shipped
@@ -984,6 +1016,83 @@ $0.01$. By a decision rule registered before that batch ran, verified ranking
 is now the controller's default.
 \src{evidence/liar/}
 
+\subsection{Honest slowness is not mistaken for lying}
+\label{sec:res:hw}
+A gate that isolates a server for answering slowly risks isolating an honest
+slow one: older hardware, or a box throttling in the heat. At the shipped load
+it does not. With half the fleet at half a core, no honest server was
+quarantined in any run, with the latency baseline taken over the fleet or over
+each hardware class (0 in 5/5 runs each), nor with an honest server throttled
+to 25\% (0/5). The slow load-misreporting server was still contained in every
+run among slow servers (median 9.0\,s) as among fast ones (8.4\,s).
+
+Throttled to 10\%, an honest server's task latency rose from about 90 to over
+210\,ms, and it was quarantined in one run of five, for 3.6\,s in total. The
+latency tell never fired: its three-poll persistence absorbed the isolated
+slow replies, and the selector itself routed less work to the slow server. The
+quarantine came from two other paths: a single \texttt{/status} poll that
+exceeded the 0.5\,s timeout, which the unreachable signal counts without
+persistence, and then the honesty check firing in reverse, because the
+quarantine had stopped the completions from which the controller's expected
+duty is computed (\S\ref{sec:disc:feedback}). \src{evidence/hw/}
+
+\subsection{Who is lying: the switches as a third witness}
+\label{sec:res:witness}
+The controller holds three accounts of every task: the server's self-report,
+the client's report, and, kept by every switch, the packet and byte counters
+of the connection's two VIP rules. Offline, over 110 recordings, the third
+agrees with the second to a median of $0.9992$ per honest server-run: an honest
+task is always six packets and 548 bytes in, six and 598 back. Per connection
+the witness compares whether a full response passed the switch with whether
+the client reported success. Agreement that the task failed points at the
+server; a client reporting failure for a response the switch saw points at the
+client; a client reporting success for a response the switch did not see
+points at the switch. A client only ever uses its own ingress switch, so a
+lying switch looks like all its clients lying: the switch is blamed when most
+of its clients disagree with it, a client alone only when its switch-mates are
+clean, and a server only on connections whose client and switch are unblamed.
+Connections the controller re-steered are never judged.
+
+\begin{table}[t]
+\caption{The switch witness (observe-only), 5 runs per row, before and after
+  the fixes its first batch motivated. Blamed $k/5$, median seconds after the
+  liar's onset.}
+\label{tab:witness}
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Who lies} & \textbf{First batch} & \textbf{After fixes}\\
+\midrule
+Nobody & none blamed & none blamed\\
+Blackhole, grayhole & 4/5, 5/5 (54, 61\,s) & \textbf{5/5, 5/5 (13, 14\,s)}\\
+Hiding switch & 5/5 (14\,s); clients$^{\ast}$ & \textbf{5/5 (5\,s)}\\
+Two badmouthing clients & 5/5, 5/5 (13, 14\,s) & \textbf{5/5, 5/5 (12\,s)}\\
+Blackhole + covering switch & 5/5 (59\,s) & \textbf{5/5 (16\,s)}\\
+\midrule
+Honest parties blamed & in 3 of 25 runs, 1--4\,s & \textbf{never, in 25 runs}\\
+\bottomrule
+\multicolumn{3}{@{}p{0.96\columnwidth}@{}}{\raggedright\scriptsize
+$^{\ast}$While the switch's lie ramped up, one or two of its clients were blamed
+for 1--4\,s in 3 of 5 runs before the switch was.}
+\end{tabular}
+\end{table}
+
+The first batch found two flaws in our design (Table~\ref{tab:witness}).
+Judged over a 60\,s window, a dropping server's honest history diluted its
+failures while the gate's quarantine starved new ones, so the witness took
+about a minute; and a lying switch's clients crossed the threshold one by one,
+before the switch did. Judging each party on its most recent connections, and
+blaming a client alone only when its switch-mates are clean, fixed both; each
+fix is pinned by a test that reproduces the live failure. In the re-run every
+liar was blamed in every run and no honest server, switch or client was
+blamed at any time. The covering switch itself was never blamed: the gate
+isolates the dropper within seconds, leaving too few covered connections to
+judge, and covering a server the gate isolates anyway gains the switch
+nothing. The witness only observes; letting its verdicts act, for example by
+discounting a blamed client's reports, is a separate experiment.
+\src{evidence/witness/}
+
 \subsection{Service, availability and fairness}
 \label{sec:res:service}
 
@@ -1254,7 +1363,12 @@ that decides whether honest nodes are quarantined, and no honest server was
 quarantined in any of the fifteen runs. The general lesson we would carry to
 any system enforcing a verdict in the data path: \emph{the enforcement action
 is itself an input to the detector, and the coupling must be made explicit or
-it will be discovered as a cascade.}
+it will be discovered as a cascade.} The same coupling surfaced twice more:
+under throttling, a quarantine stopped the completions the honesty check
+expected, so the check fired in reverse (\S\ref{sec:res:hw}); and the gate's
+fast quarantine of a dropper starved the switch witness of the failures it
+needed until the witness judged recent connections only
+(\S\ref{sec:res:witness}).
 
 \subsection{A retraction: containment does not cost attribution}
 \label{sec:disc:retract}
@@ -1414,11 +1528,15 @@ is small.
   four-server replay with an injected $8\%$ timeout rate it quarantined an
   honest server in 5 of 20 seeds under verified ranking and 1 of 20 under raw
   ranking (not significant, $p \approx 0.18$); no live run showed it.
-\item \textbf{The switches' own counters are not yet a witness.} Offline, over
-  every recording, the connections the switches saw a server answer agree with
-  the clients' reports to a median of $0.9992$ per run, and a server that drops
-  work is visible without any client report. A live check built on that third,
-  independent account is the next step.
+\item \textbf{The switch witness observes; it does not act.} It named every
+  liar without blaming an honest party in 25 runs, but its verdicts change
+  nothing yet. All clients of one switch lying together is indistinguishable
+  from the switch lying, and a switch covering for a dropper that the gate
+  isolates quickly goes unblamed.
+\item \textbf{The unreachable signal has no persistence}: a single
+  \texttt{/status} poll slower than 0.5\,s counts, which is how a server
+  throttled to 10\% was quarantined for 3.6\,s. Mixed hardware was emulated
+  with CPU caps on one host; physical hardware is untested.
 \end{enumerate}
 
 The open question this work leaves is how much evidence a gate needs before an
@@ -1430,15 +1548,17 @@ before a criteria-based rule is the only workable one.
 % ===========================================================================
 Every number carries the artifact it was read from. The offline scorers read
 the same append-only recordings the live dashboard streams, and none needs the
-controller stack installed. 120 run recordings are archived under
+controller stack installed. 200 run recordings are archived under
 \texttt{data/runs/<arm>/}; one aggregator produces every live figure in
 \S\ref{sec:results}. The code that produced the ablation and sweep runs is
 commit \texttt{8998a7c}; the flood runs, \texttt{7a2d795}; the four liar
 batches, \texttt{3b95031}, \texttt{4dfbdc2}, \texttt{ff64b87} and
-\texttt{fa37a3a}, each recorded per run in the runner's manifest. Each batch's
+\texttt{fa37a3a}; the honest-slow runs, \texttt{d1076c4}; the two witness
+batches, \texttt{0c8d064} and \texttt{15728ac}. Each run's commit is recorded
+in the runner's manifest. Each batch's
 prediction is a file committed before the batch ran
 (\texttt{docs/predictions/}). At the time of writing the test suite reports
-1\,240 passing and 11 skipped, with no failures.
+1\,320 passing and 11 skipped, with no failures.
 Commands, with \texttt{EV} for \texttt{evaluation}:
 
 \begin{table}[H]
@@ -1452,6 +1572,9 @@ Table~\ref{tab:sweep} & \texttt{EV.replicates data/runs --arms scoreonly,\allowb
 Table~\ref{tab:flood} & \texttt{EV.replicates data/runs --arms flood\_off,flood\_on}\\
 Table~\ref{tab:liar} & \texttt{EV.replicates data/runs --arms liar\_c\_treat,\allowbreak liarfix\_t\_treat,\allowbreak \ldots} (four batches; \texttt{tools/regenerate.sh})\\
 Liar model & \texttt{EV.liar\_sweep --seeds 5}\\
+\S\ref{sec:res:hw} & \texttt{EV.replicates data/runs --arms hw\_fleet,\allowbreak hw\_class,\allowbreak \ldots}\\
+Table~\ref{tab:witness} & \texttt{EV.witness\_report data/runs --arms wit\_control,\allowbreak \ldots,\allowbreak witfix\_collude}\\
+Witness, offline & \texttt{EV.witness\_offline data/runs}\\
 \S\ref{sec:res:nfr} & \texttt{EV.nfr\_report data/runs/treat/rNN.jsonl}\\
 \S\ref{sec:res:sim} baselines & \texttt{EV.baseline --runs 30 --csv r.csv}\\
  & \texttt{EV.stats r.csv}\\
@@ -1490,6 +1613,13 @@ verifies does pay, by a third more traffic than an honest server, and neither
 rail sees it; ranking on the verified figure closes it. Building that liar also
 exposed a defect in the honesty check that only load reveals.
 
+Two further checks bound the claims. Honest slowness, emulated as mixed
+hardware and thermal throttling, is not mistaken for lying at this load; the
+one false quarantine came through a signal without persistence, not through
+the latency tell. And the switches' own counters give a third account of every
+task that, joined with the clients' reports, names whether a server, a switch
+or a client is lying, without blaming an honest party in 25 runs.
+
 We report equally what enforcement did not buy. The gate improved containment
 and the latency tail but not delivery, throughput or honest availability, and a
 containment-versus-attribution trade we previously claimed did not survive
@@ -1506,7 +1636,7 @@ possible as much as for the architecture.
 % ===========================================================================
 \section*{Data Availability}
 % ===========================================================================
-The 120 live recordings, the aggregator output, the liar experiment's
+The 200 live recordings, the aggregator output, the experiments'
 registered predictions, and the simulation CSVs
 behind every table are archived with the project repository under
 \texttt{data/runs/}, \texttt{data/replicates/} and
@@ -1528,8 +1658,7 @@ authors; \emph{Supervision} --- R.~N.
 
 \section*{Declaration of Generative AI Use}
 An AI coding assistant (Claude, Anthropic) was used  in this work:
-for implementing parts of the evaluation tooling;
-of \S\ref{sec:res:sweep} came about. All experiments were designed by the
+for implementing parts of the evaluation tooling. All experiments were designed by the
 authors and executed on the authors' hardware, and every reported number was
 produced by the cited tool from an archived recording rather than generated by
 a model. The authors verified the reference list and are responsible for all

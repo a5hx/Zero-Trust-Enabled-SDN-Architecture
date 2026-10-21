@@ -1,0 +1,268 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  witfix_control : 5 run(s)
+      r01.jsonl  313.1 s  theta=0.30
+      r02.jsonl  327.4 s  theta=0.30
+      r03.jsonl  311.9 s  theta=0.30
+      r04.jsonl  325.5 s  theta=0.30
+      r05.jsonl  321.4 s  theta=0.30
+  witfix_drop : 5 run(s)
+      r01.jsonl  313.4 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  326.4 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  311.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  309.4 s  theta=0.30  anomaly_rail_enforced=True
+  witfix_switch_hide : 5 run(s)
+      r01.jsonl  326.2 s  theta=0.30
+      r02.jsonl  330.2 s  theta=0.30
+      r03.jsonl  309.3 s  theta=0.30
+      r04.jsonl  307.9 s  theta=0.30
+      r05.jsonl  325.6 s  theta=0.30
+  witfix_badmouth : 5 run(s)
+      r01.jsonl  325.0 s  theta=0.30
+      r02.jsonl  327.4 s  theta=0.30
+      r03.jsonl  312.4 s  theta=0.30
+      r04.jsonl  308.9 s  theta=0.30
+      r05.jsonl  327.0 s  theta=0.30
+  witfix_collude : 5 run(s)
+      r01.jsonl  327.2 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  328.7 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  312.4 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  320.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  321.7 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    witfix_control 99.97%  [99.94, 100.00]  sd 0.02  n=5
+    witfix_drop 98.57%  [98.35, 98.79]  sd 0.18  n=5
+    witfix_switch_hide 99.95%  [99.87, 100.00*]  sd 0.06  n=5
+    witfix_badmouth 95.50%  [95.44, 95.56]  sd 0.05  n=5
+    witfix_collude 99.55%  [99.47, 99.62]  sd 0.06  n=5
+throughput
+    witfix_control 17.64 tps  [17.21, 18.07]  sd 0.35  n=5
+    witfix_drop 17.30 tps  [16.75, 17.84]  sd 0.44  n=5
+    witfix_switch_hide 17.67 tps  [16.98, 18.36]  sd 0.55  n=5
+    witfix_badmouth 16.88 tps  [16.35, 17.41]  sd 0.43  n=5
+    witfix_collude 17.28 tps  [16.92, 17.65]  sd 0.30  n=5
+mean latency (success)
+    witfix_control 93.6 ms  [89.0, 98.3]  sd 3.7  n=5
+    witfix_drop 93.0 ms  [86.7, 99.4]  sd 5.1  n=5
+    witfix_switch_hide 91.6 ms  [88.2, 95.0]  sd 2.8  n=5
+    witfix_badmouth 90.3 ms  [86.0, 94.6]  sd 3.5  n=5
+    witfix_collude 93.5 ms  [88.1, 98.8]  sd 4.3  n=5
+p95 latency (success)
+    witfix_control 142.7 ms  [123.1, 162.3]  sd 15.8  n=5
+    witfix_drop 140.1 ms  [118.5, 161.8]  sd 17.4  n=5
+    witfix_switch_hide 136.7 ms  [127.3, 146.1]  sd 7.6  n=5
+    witfix_badmouth 133.5 ms  [120.9, 146.2]  sd 10.2  n=5
+    witfix_collude 140.8 ms  [125.8, 155.7]  sd 12.0  n=5
+timeouts
+    witfix_control 0.0  [0.0, 0.0]  sd 0.0  n=5
+    witfix_drop 74.8  [63.3, 86.3]  sd 9.3  n=5
+    witfix_switch_hide 0.0  [0.0, 0.0]  sd 0.0  n=5
+    witfix_badmouth 253.2  [250.4, 256.0]  sd 2.3  n=5
+    witfix_collude 24.2  [20.3, 28.1]  sd 3.1  n=5
+honest-device availability
+    witfix_control 99.97%  [99.94, 100.00]  sd 0.02  n=5
+    witfix_drop 98.56%  [98.33, 98.78]  sd 0.18  n=5
+    witfix_switch_hide 99.95%  [99.87, 100.00*]  sd 0.06  n=5
+    witfix_badmouth 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    witfix_collude 99.54%  [99.47, 99.61]  sd 0.06  n=5
+starved honest devices (<50%)
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    witfix_control 0.990  [0.978, 1.000*]  sd 0.010  n=5
+    witfix_drop 0.997  [0.996, 0.999]  sd 0.001  n=5
+    witfix_switch_hide 0.994  [0.991, 0.997]  sd 0.002  n=5
+    witfix_badmouth 0.994  [0.992, 0.997]  sd 0.002  n=5
+    witfix_collude 0.997  [0.995, 0.999]  sd 0.001  n=5
+Jain, full roster
+    witfix_control 0.990  [0.978, 1.000*]  sd 0.010  n=5
+    witfix_drop 0.823  [0.812, 0.835]  sd 0.009  n=5
+    witfix_switch_hide 0.994  [0.991, 0.997]  sd 0.002  n=5
+    witfix_badmouth 0.994  [0.992, 0.997]  sd 0.002  n=5
+    witfix_collude 0.903  [0.899, 0.906]  sd 0.003  n=5
+share of routes to attackers
+    witfix_control 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 5.13%  [4.27, 6.00]  sd 0.69  n=5
+    witfix_switch_hide 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 1.79%  [1.54, 2.03]  sd 0.20  n=5
+honest servers ever quarantined
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    witfix_control 0.489  [0.464, 0.513]  sd 0.019  n=5
+    witfix_drop 0.496  [0.485, 0.507]  sd 0.009  n=5
+    witfix_switch_hide 0.500  [0.500, 0.500]  sd 0.000  n=5
+    witfix_badmouth 0.357  [0.344, 0.370]  sd 0.010  n=5
+    witfix_collude 0.499  [0.496, 0.502]  sd 0.002  n=5
+attackers quarantined BEFORE onset
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    witfix_control 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    witfix_drop 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    witfix_switch_hide 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    witfix_badmouth 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    witfix_collude 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    witfix_control not measured
+    witfix_drop 46.75%  [41.62, 51.88]  sd 4.13  n=5
+    witfix_switch_hide not measured
+    witfix_badmouth not measured
+    witfix_collude 42.69%  [38.18, 47.21]  sd 3.64  n=5
+attacks classified exactly (of 8)
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 1.40  [0.72, 2.08]  sd 0.55  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.80  [0.24, 1.36]  sd 0.45  n=5
+attacks in the right family (of 8)
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 2.00  [2.00, 2.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 1.00  [1.00, 1.00]  sd 0.00  n=5
+honest subjects mislabelled
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    witfix_control 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    witfix_drop 98.75%  [97.33, 100.00*]  sd 1.14  n=5
+    witfix_switch_hide 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    witfix_badmouth 95.83%  [95.83, 95.83]  sd 0.00  n=5
+    witfix_collude 99.58%  [98.43, 100.00*]  sd 0.93  n=5
+honest devices: mean latency
+    witfix_control 93.6 ms  [89.0, 98.3]  sd 3.7  n=5
+    witfix_drop 93.0 ms  [86.7, 99.4]  sd 5.1  n=5
+    witfix_switch_hide 91.6 ms  [88.2, 95.0]  sd 2.8  n=5
+    witfix_badmouth 90.2 ms  [85.9, 94.5]  sd 3.5  n=5
+    witfix_collude 93.5 ms  [88.1, 98.8]  sd 4.3  n=5
+honest devices: p95 latency
+    witfix_control 142.7 ms  [123.1, 162.3]  sd 15.8  n=5
+    witfix_drop 140.2 ms  [118.4, 162.0]  sd 17.5  n=5
+    witfix_switch_hide 136.7 ms  [127.3, 146.1]  sd 7.6  n=5
+    witfix_badmouth 132.4 ms  [119.5, 145.2]  sd 10.4  n=5
+    witfix_collude 140.8 ms  [125.8, 155.7]  sd 12.0  n=5
+honest devices: task success
+    witfix_control 99.97%  [99.94, 100.00]  sd 0.02  n=5
+    witfix_drop 98.57%  [98.35, 98.79]  sd 0.18  n=5
+    witfix_switch_hide 99.95%  [99.87, 100.00*]  sd 0.06  n=5
+    witfix_badmouth 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    witfix_collude 99.55%  [99.47, 99.62]  sd 0.06  n=5
+tasks served to flooding device(s)
+    witfix_control 0.0  [0.0, 0.0]  sd 0.0  n=5
+    witfix_drop 0.0  [0.0, 0.0]  sd 0.0  n=5
+    witfix_switch_hide 0.0  [0.0, 0.0]  sd 0.0  n=5
+    witfix_badmouth 0.0  [0.0, 0.0]  sd 0.0  n=5
+    witfix_collude 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest servers: seconds quarantined
+    witfix_control 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    witfix_drop 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    witfix_switch_hide 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    witfix_badmouth 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    witfix_collude 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+honest quarantines per server-hour
+    witfix_control 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_drop 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_switch_hide 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_badmouth 0.00  [0.00, 0.00]  sd 0.00  n=5
+    witfix_collude 0.00  [0.00, 0.00]  sd 0.00  n=5
+quarantines of the throttled honest server
+    witfix_control not measured
+    witfix_drop not measured
+    witfix_switch_hide not measured
+    witfix_badmouth not measured
+    witfix_collude not measured
+  its time to release (median)
+    witfix_control not measured
+    witfix_drop not measured
+    witfix_switch_hide not measured
+    witfix_badmouth not measured
+    witfix_collude not measured
+run length
+    witfix_control 319.8 s  [311.1, 328.6]  sd 7.1  n=5
+    witfix_drop 313.7 s  [304.5, 322.9]  sd 7.4  n=5
+    witfix_switch_hide 319.9 s  [306.9, 332.8]  sd 10.5  n=5
+    witfix_badmouth 320.1 s  [309.2, 331.0]  sd 8.8  n=5
+    witfix_collude 322.2 s  [314.2, 330.2]  sd 6.4  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv1 (grayhole)
+    witfix_drop score crossed theta : 1/5  [4%, 62%]
+                 time to cross     : 1/5 runs; median 262.8 s, range 262.8-262.8 s
+               min T after onset   : 0.321  [0.283, 0.359]  sd 0.031  n=5
+               route share (post-onset): 1.99%  [1.15, 2.83]  sd 0.68  n=5
+                 minus fair 1/N    : -10.51%  [-11.35, -9.67]  sd +0.68  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 12.3 s, range 10.8-24.3 s; mean 14.7 [7.7, 21.6]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.356  [0.351, 0.361]  sd 0.004  n=5
+
+srv6 (drop)
+    witfix_drop score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+               route share (post-onset): 0.92%  [0.68, 1.16]  sd 0.19  n=5
+                 minus fair 1/N    : -11.58%  [-11.82, -11.34]  sd +0.19  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.6 s, range 9.4-13.4 s; mean 11.0 [9.0, 13.0]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+    witfix_collude score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+               route share (post-onset): 0.66%  [0.60, 0.72]  sd 0.05  n=5
+                 minus fair 1/N    : -11.84%  [-11.90, -11.78]  sd +0.05  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 12.6 s, range 11.0-14.7 s; mean 13.0 [11.1, 15.0]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    witfix_collude isolated  39.1%   exact labels 0/8
+    witfix_collude isolated  39.8%   exact labels 1/8
+    witfix_drop isolated  40.0%   exact labels 1/8
+    witfix_collude isolated  41.5%   exact labels 1/8
+    witfix_drop isolated  45.7%   exact labels 2/8
+    witfix_collude isolated  45.7%   exact labels 1/8
+    witfix_collude isolated  47.3%   exact labels 1/8
+    witfix_drop isolated  49.0%   exact labels 1/8
+    witfix_drop isolated  49.3%   exact labels 1/8
+    witfix_drop isolated  49.8%   exact labels 2/8
+    Spearman rho(isolation, exact labels) = +0.539, p = 0.108, n = 10
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

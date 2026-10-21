@@ -1,0 +1,42 @@
+PREDICTION -- Phase 2d, two-witness verification (switch witness, observe-only)
+Registered 2026-10-21, BEFORE any wit_* run.
+
+What runs: config/params_wit_*.yaml -- the shipped full config with
+controller.witness.enabled (controller/switch_witness.py), every other attack
+removed, one lying party per arm (or none), gate enforcement on as shipped.
+Five runs per arm. Scored by evaluation.witness_report from the `witness`
+events against the topology ground truth.
+
+Basis (not a model):
+* Offline (docs/WITNESS_OFFLINE.md, 110 recordings): switch-served vs
+  client-reported successes agree to a median 0.9992 per honest server-run;
+  per-connection disagreement on honest parties ~0.1-0.8 %, far below the
+  0.20 threshold, once re-steered connections are excluded (which the live
+  witness does via `chargeable`).
+* Synthetic (tests/test_switch_witness.py): each single liar is blamed and
+  nobody else; collusion through one switch does not save a dropper.
+* Volumes: ~150 judged connections per server and per switch, ~30 per client
+  in a 60 s window, against min_judged 10.
+* The dropping servers are ALSO quarantined by the gate (~10 s after onset),
+  after which they get only probation trials; the witness must blame them
+  from the connections before that.
+
+  W1  wit_control: no party blamed in >= 4/5 runs.
+  W2  wit_drop: srv6 (blackhole) and srv1 (grayhole) each blamed in 5/5 runs,
+      median within 20 s of onset; no honest party blamed in >= 4/5 runs.
+  W3  wit_switch_hide: switch dpid 4 blamed in 5/5, median within 20 s of
+      its onset; no server and no client blamed in >= 4/5 runs (the five
+      clients behind it are explained by the switch).
+  W4  wit_badmouth: iot3 and iot12 each blamed in 5/5, median within 30 s of
+      onset; no switch and no server blamed in >= 4/5 runs.
+  W5  wit_collude: srv6 blamed in 5/5 despite switch dpid 4 covering for it
+      (seen failing through the other switches); dpid 4 not blamed (by
+      design: the cover lie is absorbed, a stated limitation); no client
+      behind dpid 4 blamed in >= 4/5 runs.
+  W6  every arm: honest-device service unaffected by turning the witness on
+      -- it acts on nothing (honest-device mean latency of wit_control within
+      the interval of the earlier treat arm's shipped workload, ~92 ms).
+
+Known limitation written down in advance: all five clients behind one switch
+lying together is indistinguishable from that switch lying; that case is not
+run.
