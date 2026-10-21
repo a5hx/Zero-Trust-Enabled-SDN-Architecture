@@ -28,6 +28,12 @@ Endpoints:
         JSON body -- the client cannot spoof which node its report applies to
         that way, since the /report POST originates from the same host as the
         /task connection it's completing (see simulation/iot_client.py).
+    POST /attest/challenge {node_id} -> {nonce: hex} | 404
+    POST /attest/verify    {node_id, components, measurement, signature: hex}
+                           or {node_id, unmeasurable: why}
+        -> {verdict, detail}, 200 if attested, 403 if refused. Phase 4
+        (security/attestation.py); 404 unless security.attestation.enabled.
+        Called by the attester sidecar on each server, not by the agent.
     POST /register        {node_id, concurrency} -- agent startup registration.
     POST /topology/links  {links: [{a, b, delay_ms, bw_mbps}]} -- the link
         parameters simulation/topology.py actually built. The controller's own
@@ -232,6 +238,10 @@ def _make_handler(app: Any, state: TrustState):
                     self._handle_auth_challenge(body)
                 elif path == '/auth/verify':
                     self._handle_auth_verify(body)
+                elif path == '/attest/challenge':
+                    self._handle_attest_challenge(body)
+                elif path == '/attest/verify':
+                    self._handle_attest_verify(body)
                 elif path == '/offload/request':
                     self._write_json(200, app.handle_offload_advisory())
                 elif path == '/report':
@@ -307,6 +317,23 @@ def _make_handler(app: Any, state: TrustState):
                 self._write_json(403, {'error': str(exc)})
                 return
             self._write_json(200, {'token': token})
+
+        def _handle_attest_challenge(self, body: Dict[str, Any]) -> None:
+            fn = getattr(app, 'handle_attest_challenge', None)
+            nonce = fn(body['node_id']) if fn is not None else None
+            if nonce is None:
+                self._write_json(404, {'error': 'attestation is off or node unknown'})
+                return
+            self._write_json(200, {'nonce': nonce.hex()})
+
+        def _handle_attest_verify(self, body: Dict[str, Any]) -> None:
+            if getattr(app, 'attestation', None) is None:
+                self._write_json(404, {'error': 'attestation is off'})
+                return
+            # Source address from the socket, as for /auth/verify: the quote
+            # must come from the server it speaks for.
+            v = app.handle_attest_verify(body, self.client_address[0])
+            self._write_json(200 if v.ok else 403, {'verdict': v.verdict, 'detail': v.detail})
 
         def _handle_report(self, body: Dict[str, Any]) -> None:
             client_ip = self.client_address[0]

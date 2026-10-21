@@ -325,6 +325,33 @@ def check_ground_truth_is_recorded(cfg: dict) -> None:
         ok(f"staggered onsets at {sorted(set(starts))} s")
 
 
+def check_attestation(cfg: dict) -> None:
+    """Phase 4. A reference that cannot be computed, or a tampered server
+    that is not in the roster, would make the run unscorable."""
+    from security.attestation import AttestationConfig, extend, reference_components
+    try:
+        acfg = AttestationConfig.from_config(cfg.get('security'))
+    except ValueError as exc:
+        bad(f"security.attestation: {exc}")
+        return
+    sim = cfg['simulation']
+    tampered = sim.get('tampered_agents') or []
+    roster = {f'srv{i}' for i in range(1, sim['num_edge_nodes'] + 1)}
+    if not acfg.enabled and not tampered:
+        return
+    print("==> Attestation (Phase 4)")
+    if set(tampered) - roster:
+        bad(f"tampered_agents not in the roster: {sorted(set(tampered) - roster)}")
+    elif tampered:
+        ok(f"tampered images for {tampered}")
+    if acfg.enabled:
+        try:
+            ok(f"reference measurement {extend(reference_components(acfg))[:16]}..., "
+               f"re-attest every {acfg.reattest_s:.0f} s, valid {acfg.validity_s:.0f} s")
+        except (OSError, ImportError) as exc:
+            bad(f"cannot compute the reference measurement: {exc}")
+
+
 # --------------------------------------------------------------------------- #
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
@@ -344,6 +371,7 @@ def main() -> int:
     check_ledger(cfg)
     describe_run(cfg)
     check_ground_truth_is_recorded(cfg)
+    check_attestation(cfg)
     check_resteer_attribution_is_live()
 
     print()
