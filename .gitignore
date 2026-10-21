@@ -22,3 +22,6 @@ explain_adv.md
 # PlantUML renderer for the panel deck's diagrams (25 MB, fetched on demand).
 # ppt/build_uml.sh prints the one-line curl that restores it.
 ppt/tools/
+
+# Personal all-in-one project narrative (not for the repository)
+docs/everything.md
