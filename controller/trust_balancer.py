@@ -454,7 +454,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # evaluation/nfr_report.py) and publishes the 'block' event.
         self._commit_backend = build_commit_backend(
             cfg.get('ledger'), on_commit=self._on_block_committed,
+            # Phase 6: with ledger.verify the replicas re-check every record
+            # against this trust block, and report what they refuse.
+            on_rejected=self._on_ledger_rejected, trust_cfg=cfg.get('trust'),
         )
+        # Phase 6, test-only: refused unless ZTSDN_ALLOW_FORGERY=1.
+        from controller.forgery import TrustForgery
+        self._forgery = TrustForgery.from_config(cfg.get('controller'))
+        if self._forgery is not None:
+            logger.warning("DEBUG: this controller FORGES trust records (%s)",
+                           self._forgery.ground_truth())
 
         self.state = TrustState(
             node_ids=node_ids,
@@ -478,6 +487,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             d_choices=d_choices,
             epsilon=selection_epsilon,
             cpu_claim=str(edge_cfg.get('cpu_claim', 'verified')),
+            forgery=self._forgery,
             max_updates_per_block=blockchain_cfg.get('max_updates_per_block', 10),
             block_commit_timeout_s=blockchain_cfg.get('block_commit_timeout_s', 5.0),
             # The clients' own give-up time, so the dispatch reaper tracks it
@@ -1718,6 +1728,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
             index=(block.index if block is not None else None),
             commit_ms=round(elapsed_ms, 4),
             num_updates=num_updates,
+            # Records the block actually holds: fewer than num_updates when
+            # verifying replicas refused some (Phase 6, blockchain/verifier.py).
+            records=(None if block is None else len(block.trust_updates)),
             accepted=block is not None,
             # The hash preimage, verbatim. NOT rounded -- `timestamp` is inside
             # the digest, so a rounded copy would hash to something else and
@@ -1733,6 +1746,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # ------------------------------------------------------------------ #
     # Called by northbound_api.py -- dashboard                            #
     # ------------------------------------------------------------------ #
+    def _on_ledger_rejected(self, replica: str, rejected: List[Dict[str, Any]]) -> None:
+        """RemoteRaftBackend's hook: one 'ledger_rejected' event per trust record
+        the verifying replicas refused (blockchain/verifier.py). Runs on the
+        ledger-committer thread, after the report that produced the record."""
+        for r in rejected:
+            self.bus.publish(
+                'ledger_rejected', replica=replica, node=r.get('node'),
+                reason=r.get('reason'), update_ts=r.get('timestamp'),
+                recorded_before=r.get('recorded_before'), recorded_after=r.get('recorded_after'),
+                expected_before=r.get('expected_before'), expected_after=r.get('expected_after'),
+            )
+
     def pause_monitor(self) -> bool:
         """Stop the /status polling loop. Called by the harness immediately
         before it kills the agents, so the fleet going away on purpose is not
@@ -1917,6 +1942,13 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 'd_choices': self.state.d_choices,
                 'epsilon': self.state.epsilon,
             },
+            # Phase 6 ground truth, only when configured: this controller
+            # forges trust records (controller/forgery.py).
+            **({'controller_forgery': self._forgery.ground_truth()}
+               if getattr(self, '_forgery', None) is not None else {}),
+            # Phase 6: whether the replicas re-verify trust records.
+            **({'ledger_verify': True}
+               if (self.cfg.get('ledger') or {}).get('verify') else {}),
         }
 
     def record_link_params(self, links: List[Dict[str, Any]]) -> int:

@@ -11,6 +11,7 @@ the term without altering how blocks hash.
 """
 
 import collections
+import dataclasses
 import hashlib
 import http.client
 import json
@@ -22,6 +23,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Protocol, Sequenc
 from blockchain.block import build_block
 from blockchain.ledger import Ledger
 from blockchain.raft import LogEntry, RaftNode, Transport
+from blockchain.verifier import BatchRejected, TrustReplay, config_hash
 from contracts.block_schema import Block
 from contracts.trust_update import TrustUpdate
 
@@ -165,8 +167,17 @@ def batch_key(updates: Sequence[TrustUpdate]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+@dataclasses.dataclass
+class CommitResult:
+    """What a verifying replica decided about one committed batch: the block
+    holding the records that passed (None if none did) and every rejection."""
+    block: Optional[Block]
+    rejected: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
+
+
 def _entry_payload(
     updates: List[TrustUpdate], proposer_id: str, raft_term: int, timestamp: float,
+    config_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """What actually replicates for one commit: *content* only -- never a
     position in the chain.
@@ -194,13 +205,18 @@ def _entry_payload(
     it sits inside the hash preimage (`Block.compute_hash`), so every replica
     must use the identical value or they hash the "same" block differently.
     """
-    return {
+    payload = {
         'timestamp': timestamp,
         'proposer_id': proposer_id,
         'raft_term': raft_term,
         'batch_key': batch_key(updates),
         'trust_updates': [u.to_dict() for u in updates],
     }
+    if config_hash is not None:
+        # Phase 6: the trust formula the controller computed under, so a
+        # verifying replica can refuse to judge it by a different one.
+        payload['config_hash'] = config_hash
+    return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -253,16 +269,26 @@ class RaftBackend:
         proposer_id: Optional[str] = None,
         commit_timeout_s: float = 2.0,
         clock: Callable[[], float] = time.monotonic,
+        verifier: Optional[TrustReplay] = None,
         **raft_node_kwargs: Any,
     ) -> None:
         self._ledger = ledger if ledger is not None else Ledger()
+        # Phase 6 (blockchain/verifier.py): replay the trust arithmetic of every
+        # committed batch and append only the records that check out. None --
+        # every deployment before it -- appends whatever the controller sent.
+        self._verifier = verifier
+        # batch_key -> rejections, for batches appended in part and for batches
+        # rejected whole (no block), so a retried batch gets the same answer
+        # without being judged -- and advancing the replay -- twice.
+        self._partial_rejections: Dict[str, List[Dict[str, Any]]] = {}
+        self._rejected_batches: Dict[str, List[Dict[str, Any]]] = {}
         self._proposer_id = proposer_id or node_id
         self._commit_timeout_s = commit_timeout_s
         self._clock = clock
         self._lock = threading.RLock()
         self._commit_lock = threading.Lock()
         self._waiters: Dict[int, threading.Event] = {}
-        self._results: Dict[int, Optional[Block]] = {}
+        self._results: Dict[int, Optional[CommitResult]] = {}
         # batch_key -> block index, rebuilt from the log on every replica as
         # entries apply, so a retried batch never becomes a second block.
         self._applied_batches: Dict[str, int] = {}
@@ -294,6 +320,14 @@ class RaftBackend:
 
     # -- CommitBackend ------------------------------------------------------ #
     def commit(self, updates: List[TrustUpdate]) -> Optional[Block]:
+        result = self.commit_ex(updates)
+        return result.block if result is not None else None
+
+    def commit_ex(self, updates: List[TrustUpdate],
+                  config_hash: Optional[str] = None) -> Optional[CommitResult]:
+        """commit(), also reporting what a verifying cluster rejected. None
+        means "not committed, retry" (not leader, timed out); a CommitResult
+        with no block means every record was rejected -- do not retry."""
         if not updates:
             return None
 
@@ -302,13 +336,18 @@ class RaftBackend:
                 if not self.node.is_leader:
                     return None
                 # A retry of a batch that already committed (the caller never
-                # saw the reply) gets the existing block back, not a new one.
-                done = self._applied_batches.get(batch_key(updates))
+                # saw the reply) gets the existing answer back, not a new block.
+                key = batch_key(updates)
+                done = self._applied_batches.get(key)
                 if done is not None:
-                    return self._ledger.block_at(done)
+                    return CommitResult(self._ledger.block_at(done),
+                                        self._partial_rejections.get(key, []))
+                if key in self._rejected_batches:
+                    return CommitResult(None, self._rejected_batches[key])
                 payload = _entry_payload(
                     updates=list(updates), proposer_id=self._proposer_id,
                     raft_term=self.node.current_term, timestamp=time.time(),
+                    config_hash=config_hash,
                 )
                 index = self.node.client_append(payload, now=self._clock())
                 if index is None:
@@ -342,7 +381,7 @@ class RaftBackend:
         why that is the part that must be decided locally, per replica, at
         apply time.
         """
-        block: Optional[Block] = None
+        result: Optional[CommitResult] = None
         if entry.payload is not None:
             try:
                 updates = [TrustUpdate(**u) for u in entry.payload['trust_updates']]
@@ -365,30 +404,55 @@ class RaftBackend:
                             "(block %d) -- not appended again",
                             self.node.node_id, entry.index, done,
                         )
-                        block = self._ledger.block_at(done)
+                        result = CommitResult(self._ledger.block_at(done),
+                                              self._partial_rejections.get(key, []))
+                    elif key in self._rejected_batches:
+                        result = CommitResult(None, self._rejected_batches[key])
                     else:
-                        block = build_block(
-                            index=self._ledger.get_chain_length(),
-                            previous_hash=self._ledger.head_hash(),
-                            updates=updates,
-                            proposer_id=entry.payload['proposer_id'],
-                            raft_term=entry.payload['raft_term'],
-                            timestamp=entry.payload['timestamp'],
-                        )
-                        if self._ledger.append(block):
-                            self._applied_batches[key] = block.index
-                        else:
-                            logger.error(
-                                "%s: ledger rejected committed block %d (log index %d)",
-                                self.node.node_id, block.index, entry.index,
-                            )
-                            block = None
+                        result = self._apply_batch(key, updates, entry)
 
         with self._lock:
-            self._results[entry.index] = block
+            self._results[entry.index] = result
             event = self._waiters.pop(entry.index, None)
         if event is not None:
             event.set()
+
+    def _apply_batch(self, key: str, updates: List[TrustUpdate],
+                     entry: LogEntry) -> Optional[CommitResult]:
+        """Verify (if configured) and append one new batch. Lock held."""
+        keep, rejected = updates, []
+        if self._verifier is not None:
+            found = self._verifier.check(updates, entry.payload.get('config_hash'))
+            rejected = [r.to_dict() for r in found]
+            bad = {r.position for r in found}
+            keep = [u for i, u in enumerate(updates) if i not in bad]
+            if found:
+                logger.warning(
+                    "%s: log index %d -- %d of %d trust record(s) failed verification (%s)",
+                    self.node.node_id, entry.index, len(found), len(updates),
+                    sorted({r.reason for r in found}),
+                )
+        if not keep:
+            self._rejected_batches[key] = rejected
+            return CommitResult(None, rejected)
+        block = build_block(
+            index=self._ledger.get_chain_length(),
+            previous_hash=self._ledger.head_hash(),
+            updates=keep,
+            proposer_id=entry.payload['proposer_id'],
+            raft_term=entry.payload['raft_term'],
+            timestamp=entry.payload['timestamp'],
+        )
+        if not self._ledger.append(block):
+            logger.error(
+                "%s: ledger rejected committed block %d (log index %d)",
+                self.node.node_id, block.index, entry.index,
+            )
+            return None
+        self._applied_batches[key] = block.index
+        if rejected:
+            self._partial_rejections[key] = rejected
+        return CommitResult(block, rejected)
 
     def latest_score(self, node_id: str) -> Optional[float]:
         with self._lock:
@@ -421,6 +485,9 @@ class RaftBackend:
                 'leader_id': self.node.leader_id,
                 'commit_index': self.node.commit_index,
                 'chain_length': self._ledger.get_chain_length(),
+                'verifying': self._verifier is not None,
+                'records_checked': self._verifier.checked if self._verifier else 0,
+                'records_rejected': self._verifier.rejected if self._verifier else 0,
             }
 
 
@@ -484,8 +551,16 @@ class RemoteRaftBackend:
         deadline_s: float = 5.0,
         auth_token: Optional[str] = None,
         ledger: Optional[Ledger] = None,
+        config_hash: Optional[str] = None,
+        on_rejected: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
     ) -> None:
         self._replicas = dict(replicas)
+        # Phase 6: sent with every batch when the replicas verify, and told
+        # about every record they refuse.
+        self._config_hash = config_hash
+        self._on_rejected = on_rejected
+        self.rejected_records = 0
+        self.rejected_batches = 0
         self._order = list(replicas)
         self._timeout = request_timeout_s
         self._deadline = deadline_s
@@ -583,7 +658,9 @@ class RemoteRaftBackend:
     def commit(self, updates: List[TrustUpdate]) -> Optional[Block]:
         if not updates:
             return None
-        body = {'updates': [u.to_dict() for u in updates]}
+        body: Dict[str, Any] = {'updates': [u.to_dict() for u in updates]}
+        if self._config_hash is not None:
+            body['config_hash'] = self._config_hash
         deadline = time.monotonic() + self._deadline
         queue = self._candidates()
         followed: set = set()
@@ -596,8 +673,17 @@ class RemoteRaftBackend:
                 if self._leader == rid:
                     self._leader = None
                 continue
+            if status == 422:
+                # Every record failed verification on the cluster: the batch is
+                # in the log and judged, so retrying would only repeat that.
+                self._leader = rid
+                rejected = list(payload.get('rejected') or [])
+                self._report_rejections(rid, rejected)
+                self.rejected_batches += 1
+                raise BatchRejected(rejected)
             if status == 200 and payload.get('ok') and 'block' in payload:
                 self._leader = rid
+                self._report_rejections(rid, list(payload.get('rejected') or []))
                 try:
                     block = Block.from_dict(payload['block'])
                 except (KeyError, TypeError, ValueError) as exc:
@@ -618,6 +704,17 @@ class RemoteRaftBackend:
                 continue
             self.last_error = f'{rid}: HTTP {status}'
         return None
+
+    def _report_rejections(self, rid: str, rejected: List[Dict[str, Any]]) -> None:
+        if not rejected:
+            return
+        self.rejected_records += len(rejected)
+        logger.warning("RemoteRaftBackend: %s rejected %d trust record(s)", rid, len(rejected))
+        if self._on_rejected is not None:
+            try:
+                self._on_rejected(rid, rejected)
+            except Exception:  # a reporting hook must never break the commit path
+                logger.exception("RemoteRaftBackend: on_rejected hook raised")
 
     def latest_score(self, node_id: str) -> Optional[float]:
         with self._lock:
@@ -646,6 +743,9 @@ class RemoteRaftBackend:
             'mirror_chain_length': length,
             'mirror_resyncs': self.resyncs,
             'last_error': self.last_error,
+            'verifying': self._config_hash is not None,
+            'rejected_records': self.rejected_records,
+            'rejected_batches': self.rejected_batches,
         }
 
 
@@ -674,6 +774,9 @@ class AsyncCommitter:
     report that triggered a flush.
     """
 
+    #: commit() returning None is normal here, not a refusal (TrustState).
+    is_async = True
+
     def __init__(
         self,
         inner: CommitBackend,
@@ -697,6 +800,10 @@ class AsyncCommitter:
         self.committed = 0
         self.retries = 0
         self.dropped = 0
+        #: Batches the verifying replicas refused outright (BatchRejected).
+        #: Dropped from the queue, never retried: the verdict would not change,
+        #: and until this existed one such batch blocked every later one.
+        self.rejected = 0
         self._thread = threading.Thread(target=self._run, daemon=True, name='ledger-committer')
         if start:
             self._thread.start()
@@ -736,6 +843,15 @@ class AsyncCommitter:
                 self._busy = True
             try:
                 block = self._inner.commit(batch)
+            except BatchRejected as exc:
+                with self._cond:
+                    self._busy = False
+                    self._queue.popleft()
+                    self.rejected += 1
+                    backoff = self._backoff_initial
+                    self._cond.notify_all()
+                logger.error("AsyncCommitter: batch of %d dropped -- %s", len(batch), exc)
+                continue
             except Exception:  # never let one bad batch kill the worker
                 logger.exception("AsyncCommitter: commit raised; will retry")
                 block = None
@@ -804,6 +920,7 @@ class AsyncCommitter:
                 'committed': self.committed,
                 'retries': self.retries,
                 'dropped': self.dropped,
+                'rejected': self.rejected,
             }
         inner_status = _status_of(self._inner)
         if inner_status:
@@ -827,6 +944,8 @@ def _status_of(backend: Any) -> Dict[str, Any]:
 def build_commit_backend(
     ledger_cfg: Optional[Dict[str, Any]],
     on_commit: Optional[Callable[[Optional[Block], float, int], None]] = None,
+    on_rejected: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
+    trust_cfg: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """The controller's ledger backend, chosen by the config's `ledger:` block.
 
@@ -837,10 +956,18 @@ def build_commit_backend(
 
     Both are wrapped in `TimingCommitBackend`, so 'block' events and the
     blockchain-overhead NFR keep working either way.
+
+    ``verify: true`` (raft_remote only) tells the replicas to re-verify every
+    trust record (blockchain/verifier.py): the controller then sends the hash
+    of its `trust:` block with every batch, and `on_rejected` hears about every
+    record the replicas refuse.
     """
     cfg = ledger_cfg or {}
     kind = cfg.get('backend', 'local')
     if kind == 'local':
+        if cfg.get('verify'):
+            raise ValueError('ledger.verify needs backend: raft_remote -- verification is '
+                             'done by replicas the controller does not run')
         return TimingCommitBackend(LocalLedgerBackend(), on_commit=on_commit)
     if kind == 'raft_remote':
         token_env = cfg.get('auth_token_env')
@@ -853,6 +980,8 @@ def build_commit_backend(
             request_timeout_s=float(cfg.get('request_timeout_s', 3.0)),
             deadline_s=float(cfg.get('commit_deadline_s', 5.0)),
             auth_token=token,
+            config_hash=config_hash(trust_cfg) if cfg.get('verify') else None,
+            on_rejected=on_rejected,
         )
         remote.sync()
         return AsyncCommitter(

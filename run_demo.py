@@ -519,7 +519,7 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
     if ledger_cfg.get('backend') == 'raft_remote' and ledger_cfg.get('launch_local'):
         from blockchain.raft_replica import launch_local_cluster, wait_for_leader
         logger.info("Starting %d local RAFT replicas...", len(ledger_cfg['launch_local']['raft_peers']))
-        raft_procs = launch_local_cluster(ledger_cfg)
+        raft_procs = launch_local_cluster(ledger_cfg, config_path=config_path)
         leader = wait_for_leader(ledger_cfg)
         if leader is None:
             for p in raft_procs.values():

@@ -42,6 +42,7 @@ from controller.edge_selector import (
     DEFAULT_D_CHOICES, DEFAULT_EPSILON, DEFAULT_SELECTION_STRATEGY,
     EdgeWeights, NodeState, select_edge_node, trust_band,
 )
+from controller.forgery import Forger, TrustForgery
 from security.authenticator import Authenticator, NullAuthenticator
 from trust_engine.ai_optimizer import (
     RewardWindow, StaticWeightOptimizer, WeightOptimizer, compute_reward,
@@ -142,6 +143,7 @@ class TrustState:
         probation_interval_s: float = DEFAULT_PROBATION_INTERVAL_S,
         anomaly_rail_enforced: bool = True,
         cpu_claim: str = 'verified',
+        forgery: Optional['TrustForgery'] = None,
     ) -> None:
         # Monotonic seconds, injectable so dashboard/generate_demo_recording.py
         # can drive observed_load's averaging window from its simulated clock.
@@ -169,6 +171,13 @@ class TrustState:
         # None -- every config before it -- admits every node, so routing is
         # unchanged; set_admission() installs the attestation verifier's check.
         self._admission: Optional[Callable[[str], bool]] = None
+        # Phase 6, test-only: a deliberately dishonest controller
+        # (controller/forgery.py), so the replicas' re-verification can be
+        # measured. None unless configured AND ZTSDN_ALLOW_FORGERY=1.
+        self._forger = Forger(forgery, self._now) if forgery is not None else None
+        # Trust records a synchronous ledger backend refused. They used to be
+        # cleared from the pending list without a trace.
+        self.ledger_dropped = 0
         self._lock = threading.RLock()
         self.node_ids = list(node_ids)
         self.trust_calc = trust_calculator or TrustCalculator()
@@ -891,7 +900,14 @@ class TrustState:
         """
         with self._lock:
             upd.anomaly_flag = self._anomaly.get(upd.edge_node_id, 0.0) >= self.anomaly_gate
+            if self._forger is not None:
+                self._forger.before(upd)
             score = self.trust_calc.update(upd)
+            if self._forger is not None:
+                forged = self._forger.after(upd, score)
+                if forged is not None:
+                    score = upd.trust_score_after = forged
+                    self.trust_calc.override_score(upd.edge_node_id, forged)
             self._pending_updates.append(upd)
             now_c = self._now()
             self._recent_statuses.setdefault(
@@ -1037,7 +1053,13 @@ class TrustState:
 
     def _flush_pending_locked(self) -> None:
         if self._pending_updates:
-            self.commit_backend.commit(self._pending_updates)
+            block = self.commit_backend.commit(self._pending_updates)
+            # An asynchronous backend returns None by design (the block does
+            # not exist yet); a synchronous one returns None only on refusal.
+            if block is None and not getattr(self.commit_backend, 'is_async', False):
+                self.ledger_dropped += len(self._pending_updates)
+                logger.error("Ledger refused a batch of %d trust records (%d dropped so far)",
+                             len(self._pending_updates), self.ledger_dropped)
             self._pending_updates.clear()
         self._oldest_pending_at = None
 
