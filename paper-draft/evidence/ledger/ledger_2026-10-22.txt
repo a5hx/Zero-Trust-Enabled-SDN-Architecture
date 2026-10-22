@@ -1,0 +1,75 @@
+PREDICTION -- Phase 6: the replicas re-verify the controller's trust records
+Registered 2026-10-22, BEFORE any lv_* run.
+
+What is being tested. Until now the replicated ledger made trust records
+tamper-evident after they were written, but stored whatever the controller
+sent. With ledger.verify, every replica replays the trust formula from the
+evidence in each committed record (blockchain/verifier.py) and appends only
+the records whose before/after scores match its own replay; the rest come
+back as rejections (`ledger_rejected` events), and a batch rejected whole is
+dropped from the controller's queue instead of retried forever. A test-only
+switch (controller/forgery.py, refused unless ZTSDN_ALLOW_FORGERY=1) makes the
+controller forge one server's records from 60 s:
+  score     inflate srv3's trust by 0.3, in the record and in the score it routes on
+  evidence  rewrite srv3's outcomes as fast successes before the formula runs
+
+Arms (config/params_lv_*.yaml; pinned by tests/test_ledger_arms.py). All are
+params_witfix_control.yaml (witness on, observe-only) plus the 3-replica RAFT
+ledger of params_trust_raft.yaml:
+  lv_noverify        replicas do not verify; honest controller   (cost baseline)
+  lv_honest          replicas verify; honest controller
+  lv_forge_score     replicas verify; controller inflates honest srv3 from 60 s
+  lv_forge_evidence  replicas verify; srv3 DROPS from 60 s and the controller
+                     rewrites its outcomes as successes
+
+Basis.
+  * Tests (tests/test_ledger_verify.py): records from the real TrustState path
+    verify exactly, also after a JSON round trip; score forgery is rejected
+    record for record and nothing else; a single inflated score costs at most
+    two records (its own, and the next one's `before`), not a cascade;
+    evidence forgery passes; a wholly rejected batch no longer blocks the
+    queue (the test fails with that handling removed).
+  * Rehearsal with three real replica processes (launch_local_cluster with
+    --verify-config, the real RemoteRaftBackend and AsyncCommitter, no
+    Mininet): 779 records, the 69 forged srv3 records rejected, 0 others;
+    710 kept + 69 rejected = 779; chain valid; queue drained; all replicas
+    agree.
+  * witfix_control (same base, local ledger): ~5,640 records per run in ~564
+    blocks of 10; at most 9 records unaccounted at the end (the last partial
+    batch). witfix_drop: a dropper is quarantined ~10.6 s after onset and the
+    switch witness blames it 12.9-14.1 s after onset.
+  * In evidence mode the controller's own drop tell reads the forged
+    statuses, so the controller should be blind to the dropper; the switch
+    witness reads the raw client reports and the switch counters, so it
+    should not be.
+
+  L1  lv_honest: 0 false rejections in 5/5 runs; <= 10 records unaccounted per
+      run; the controller's mirror chain valid.
+  L2  lv_forge_score: >= 99% of srv3's records after onset rejected (pooled
+      over 5 runs; the second around the onset excluded); 0 false
+      rejections in >= 4/5 runs; <= 10 records unaccounted per run (the
+      queue drains despite rejections).
+  L3  lv_forge_score: srv3's route share after onset is higher than before it,
+      in every run -- routing acts on the forged score; re-verification
+      detects the forgery after the fact, it does not prevent it.
+  L4  lv_forge_evidence: replicas reject 0 records in 5/5 runs (the stated
+      limit); the controller quarantines srv3 in <= 1/5 runs; the switch
+      witness blames srv3 in 5/5, median <= 20 s after onset.
+  L5  Cost: median commit time per block with verification within 2 ms of
+      lv_noverify's; honest-device mean latency intervals of lv_honest and
+      lv_noverify overlap.
+  L6  A rejection reaches the controller within 1 s of the record being
+      written (median, lv_forge_score).
+
+Not predicted, reported as measured: how much honest-device service the
+blinded controller loses in lv_forge_evidence.
+
+What this does NOT show: Byzantine fault tolerance. The replicas are honest
+and crash-only; a forging controller here is caught by honest replicas that
+share its trust configuration. Forged evidence is out of reach by design.
+
+Run (about 1 h 45 min; the gate is needed only by the two forgery arms):
+  sudo ZTSDN_ALLOW_FORGERY=1 ARMS="lv_noverify lv_honest lv_forge_score lv_forge_evidence" tools/run_replicates.sh
+Score (no sudo):
+  python3 -m evaluation.ledger_report data/runs --arms lv_noverify,lv_honest,lv_forge_score,lv_forge_evidence
+  python3 -m evaluation.replicates data/runs --arms lv_noverify,lv_honest,lv_forge_score,lv_forge_evidence --out-dir data/ledger_experiment_<date>

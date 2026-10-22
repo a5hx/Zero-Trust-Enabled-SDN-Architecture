@@ -52,8 +52,8 @@
 
 \begin{abstract}
 Zero Trust demands continuous verification but does not say how a network
-control plane should verify the servers it routes work to. We built a Zero-
-Trust SDN load balancer in which a trust score ranks edge servers, an
+control plane should verify the servers it routes work to. We built a
+Zero-Trust SDN load balancer in which a trust score ranks edge servers, an
 independent anomaly gate excludes them, and every verdict is installed as
 OpenFlow~1.3 rules, and evaluated it live on an emulated 8-server, 40-device
 edge. In a five-run-per-arm ablation the score never isolated two attackers
@@ -65,12 +65,12 @@ registered first, a liar serving at honest speed with internally consistent
 claims gains nothing, while one that lies only in the instantaneous load
 figure the router ranks on, with a truthful busy-time counter, wins $4.0$
 points of traffic above its fair share and is never caught; ranking on the
-verified figure closes the hole at no measured honest cost, and the runs
-exposed an honesty-check defect invisible at low load. Emulated mixed hardware
-is not mistaken for lying; the switches' counters, joined with clients'
-reports, name the lying party in 25 of 25 runs; and admitting a server only on
-a signed measurement of its code keeps a tampered server from serving, while a
-run-time compromise passes and behaviour must catch it.
+verified figure closes the hole at no measured honest cost. Emulated mixed
+hardware is not mistaken for lying; switch counters joined with client reports
+name the lying party in 25 of 25 runs; attestation stops a tampered server
+before it serves; and ledger replicas that replay the trust arithmetic reject
+every forged score, yet a controller forging evidence passes them, blinds its
+own detectors, and only the switches expose it.
 \end{abstract}
 
 \keywords{Zero Trust, software-defined networking, edge computing, trust-aware
@@ -160,6 +160,13 @@ verified figure closes it.
   the gate caught it. A server compromised at run time passed every quote and
   only behaviour caught it.
 
+\item \textbf{Replicas that check the controller} (\S\ref{sec:res:ledger}).
+  Ledger replicas that replay the trust arithmetic reject every forged score
+  that reaches them (5\,478 records, none falsely), though routing still acts
+  on it. A controller that forges the evidence instead passes them and blinds
+  its own detectors (honest task success 82.6\%); only the switch witness
+  exposed it.
+
 \item \textbf{An explanation} (\S\ref{sec:analysis}): the score floor an
   adversary of this class can hold, why the honesty term barely registers the
   lie, and why the tested attacker is not latency-faithful.
@@ -178,9 +185,9 @@ verified figure closes it.
 \item \textbf{A retraction} (\S\ref{sec:disc:retract}) of a
   containment--attribution trade an earlier version of this work claimed.
 
-\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 225 archived live
+\item \textbf{A reproducible artifact} (\S\ref{sec:repro}): 245 archived live
   recordings, an aggregator reporting between-run intervals, an offline model
-  of the liar experiment, 1\,375 automated tests, and a source tag on every
+  of the liar experiment, 1\,404 automated tests, and a source tag on every
   number.
 \end{enumerate}
 
@@ -189,7 +196,8 @@ This is a prototype-scale study on an emulated network~\cite{lantz2010mininet}.
 We claim ``demonstrated in emulation'', never ``proven in production''. The
 adversary model is behavioural and non-adaptive (\S\ref{sec:threat}); the
 ledger is crash-fault tolerant, not Byzantine; the controller is inside the
-trusted computing base; and the attackers were built by the same team as the
+trusted computing base, though \S\ref{sec:res:ledger} measures how far the
+ledger replicas can check it; and the attackers were built by the same team as the
 detectors. Each is revisited in \S\ref{sec:validity}.
 
 % ===========================================================================
@@ -339,7 +347,9 @@ decorative version of an attack the system already defeats.
 The SDN controller is fully trusted. This is the standard SDN trust model and
 it is in tension with the doctrine we implement, so we state the cost: the
 controller is a single point of compromise and of failure, and Raft replication
-of ledger state is a step toward redundancy, not a solution. The ledger
+of ledger state is a step toward redundancy, not a solution. Section~\ref{sec:res:ledger}
+measures how far replicas can check the controller without trusting it: they
+can recompute every score, but not the evidence it was computed from. The ledger
 provides tamper-evidence (retroactive falsification of trust records is
 detectable and localisable to the block where it happened) and availability
 under replica crashes, within a cluster inside the TCB. It is not a
@@ -472,7 +482,9 @@ a block into a hash-chained ledger with a Merkle root per block, committed to a
 single in-process ledger or, optionally, to a three-replica Raft cluster
 (\S\ref{sec:res:nfr}); the dashboard
 re-derives the chain in the browser rather than displaying the controller's own
-validity flag, because a panel rendering that flag could never contradict it.
+validity flag, because a panel rendering that flag could never contradict it. Optionally, every replica also replays the trust
+formula from the evidence in each record and appends only the records whose
+scores it reproduces (\S\ref{sec:res:ledger}).
 
 Servers can also be made to earn admission (off by default). An attester
 process beside each server's agent measures, from outside the agent process,
@@ -685,9 +697,9 @@ power-of-$d$-choices with $\varepsilon$-exploration, a liar that wins every
 comparison it is sampled into is capped at $\varepsilon/N + (1-\varepsilon)d/N$
 of the traffic, $24.4\%$ here against a fair $12.5\%$, however large the lie.
 
-\subsection{Honest-slow servers, the third witness, and attestation}
+\subsection{Four further experiments}
 \label{sec:method:hw}
-Three further experiments use the shipped workload with every other attack
+Four further experiments use the shipped workload with every other attack
 removed. In the first, Linux cgroup CPU caps emulate mixed hardware: four
 servers at full speed and four at half a core, and in two arms an honest
 server throttled to 25\% or 10\% of a core for 60\,s. Tasks are a fixed
@@ -709,7 +721,14 @@ dropping server came to drop: no attacker; a \emph{tampered image}, the
 released agent with one line appended, launched from its own directory; or
 the \emph{genuine image} told to drop at run time. The tampered and run-time
 servers behave identically and differ only in what is on disk. Five arms,
-five runs each, against one registered prediction.
+five runs each, against one registered prediction. The fourth commits the
+ledger to a three-replica Raft cluster and makes the controller dishonest: a
+test-only switch, which refuses to start without an environment variable,
+forges one server's trust records from 60\,s, either by inflating its score
+or by rewriting its outcomes as fast successes before the formula runs. Four
+arms, five runs each: replicas that do not verify, replicas that verify an
+honest controller, and verifying replicas against each forgery; in the second
+forgery the server really drops every task.
 
 \subsection{Simulation levels}
 Two results in \S\ref{sec:res:sim} come from a seeded discrete-event
@@ -1165,6 +1184,61 @@ has one side effect: in one run of fifteen the first server admitted, alone
 for 56\,ms, took 28 of the first 40 connections and its trust fell to 0.354,
 just above the threshold. \src{evidence/attest/}
 
+\subsection{Replicas that check the controller's arithmetic}
+\label{sec:res:ledger}
+The controller is trusted, but its ledger need not take its word. Every trust
+record carries the evidence its score was computed from and the weights are
+fixed, so a replica holding the same trust configuration can replay the
+formula and check each record's score before and after; records that fail are
+kept out of the block and reported back. The replay advances on every
+record's evidence, so one forged score costs at most two records, and the
+replicas agree because they apply the same log in the same order. A batch the
+replicas refuse whole is now dropped from the controller's queue; before, it
+would have been retried forever and blocked every later batch.
+
+\begin{table}[t]
+\caption{Ledger replicas against an honest and a forging controller (5 runs
+  each). Forged: srv3's records from 60\,s. Share: srv3's share of routing
+  after 60\,s (about 13\% before). Mean [95\% CI] or pooled count.}
+\label{tab:ledger}
+\centering\scriptsize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Controller} & \textbf{Forged} & \textbf{Others} & \textbf{Share} & \textbf{Honest} & \textbf{Commit}\\
+ & \textbf{rejected} & \textbf{rejected} & & \textbf{success, \%} & \textbf{ms}\\
+\midrule
+Honest, not verified & --- & 0 & --- & 99.97 [99.94, 100] & 9.5\\
+Honest & --- & 0 & --- & 99.96 [99.95, 99.98] & 9.7\\
+Forges scores & 5\,478/5\,482$^{\ast}$ & 0 & 23.9\% & 99.98 [99.95, 100] & 9.5\\
+Forges evidence & 0/3\,787 & 0 & 23.6\% & \textbf{82.58} [82.06, 83.09] & 9.7\\
+\bottomrule
+\multicolumn{6}{@{}p{0.96\columnwidth}@{}}{\raggedright\scriptsize
+$^{\ast}$The four not rejected were written in the last second of two runs and
+never committed. Commit: median per block.}
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ledger} makes the controller raise one honest server's trust by
+0.3 from 60\,s. Every forged record that reached the replicas was rejected,
+and none of the other 22\,869 was. Verification added 0.2\,ms to a 9.5\,ms
+commit, and a rejection reached the controller in a median 0.22\,s. It did
+not stop the controller: routing kept using the inflated score, and the
+favoured server's share of traffic rose from 13\% to 24\%, the
+power-of-two-choices ceiling for one server. The ledger proves the lie; it
+does not prevent it.
+
+A controller that forges evidence instead, rewriting a dropping server's
+failures as fast successes, writes records whose arithmetic is honest, and the
+replicas rejected none of them. The same forgery blinded the controller's own
+detectors, which read the same outcomes: the dropping server was never
+quarantined, kept a trust score near 0.84, drew 24\% of all traffic, and
+honest-device task success fell to 82.6\%. Only the switch witness, which
+reads the clients' reports and the switches' counters directly, saw it: it
+blamed that server in every run, a median 11.1\,s after it began dropping,
+and blamed no honest party in any of the 20 runs. Because the witness only
+observes, the loss continued. \src{evidence/ledger/}
+
 \subsection{Service, availability and fairness}
 \label{sec:res:service}
 
@@ -1491,6 +1565,13 @@ account can confirm. We found the gap only because a liar was built to use it;
 a design review of the two code paths would not have flagged it, since each
 was correct on its own.
 
+The ledger experiment (\S\ref{sec:res:ledger}) carries the same lesson up to
+the controller. Replicas can verify what a record lets them recompute, the
+arithmetic, and nothing else; evidence can only be checked against an
+independent account of the same events. Forged evidence also showed what is
+at stake: the controller's own detectors read the evidence it forged, so the
+only check left standing was the one that did not depend on it.
+
 \subsection{What an ablation buys that a baseline does not}
 \label{sec:disc:ablation}
 A comparison against an external baseline answers ``is our system better than
@@ -1596,7 +1677,9 @@ is small.
   level and stays just under the gate is the most valuable next attacker.
 \item \textbf{The controller is a trusted single point}, in tension with the
   doctrine the system implements, and the replicated ledger tolerates crashes,
-  not malicious replicas.
+  not malicious replicas. Replicas that re-verify the trust arithmetic catch a
+  forged score after the fact, but not forged evidence, and they do not stop
+  the controller routing on what it forged.
 \item \textbf{Hand-set weights.} The online bandit explores a fixed set of
   weight presets; whether learned weights beat hand-tuned ones is unanswered.
 \item \textbf{PRESENT-80 with a fleet-wide key is an architecture
@@ -1633,18 +1716,18 @@ before a criteria-based rule is the only workable one.
 % ===========================================================================
 Every number carries the artifact it was read from. The offline scorers read
 the same append-only recordings the live dashboard streams, and none needs the
-controller stack installed. 225 run recordings are archived under
+controller stack installed. 245 run recordings are archived under
 \texttt{data/runs/<arm>/}; one aggregator produces every live figure in
 \S\ref{sec:results}. The code that produced the ablation and sweep runs is
 commit \texttt{8998a7c}; the flood runs, \texttt{7a2d795}; the four liar
 batches, \texttt{3b95031}, \texttt{4dfbdc2}, \texttt{ff64b87} and
 \texttt{fa37a3a}; the honest-slow runs, \texttt{d1076c4}; the two witness
 batches, \texttt{0c8d064} and \texttt{15728ac}; the attestation runs,
-\texttt{840c58f}. Each run's commit is recorded
+\texttt{840c58f}; the ledger runs, \texttt{257b5ed}. Each run's commit is recorded
 in the runner's manifest. Each batch's
 prediction is a file committed before the batch ran
 (\texttt{docs/predictions/}). At the time of writing the test suite reports
-1\,375 passing and 11 skipped, with no failures.
+1\,404 passing and 11 skipped, with no failures.
 Commands, with \texttt{EV} for \texttt{evaluation}:
 
 \begin{table}[H]
@@ -1662,11 +1745,12 @@ Liar model & \texttt{EV.liar\_sweep --seeds 5}\\
 Table~\ref{tab:witness} & \texttt{EV.witness\_report data/runs --arms wit\_control,\allowbreak \ldots,\allowbreak witfix\_collude}\\
 Witness, offline & \texttt{EV.witness\_offline data/runs --arms \ldots} (110 recordings; \texttt{tools/regenerate.sh})\\
 Table~\ref{tab:attest} & \texttt{EV.attestation\_report data/runs --arms att\_off\_clean,\allowbreak \ldots,\allowbreak att\_on\_runtime}\\
+Table~\ref{tab:ledger} & \texttt{EV.ledger\_report data/runs --arms lv\_noverify,\allowbreak \ldots,\allowbreak lv\_forge\_evidence}\\
 \S\ref{sec:res:nfr} & \texttt{EV.nfr\_report data/runs/treat/rNN.jsonl}\\
 \S\ref{sec:res:sim} baselines & \texttt{EV.baseline --runs 30 --csv r.csv}\\
  & \texttt{EV.stats r.csv}\\
 \S\ref{sec:res:sim} scale & \texttt{EV.scalability\_sweep --ns 4,8,16,32,64}\\
-The live runs themselves & \texttt{sudo ARMS="\ldots" tools/run\_replicates.sh}\\
+The live runs themselves & \texttt{sudo ARMS="\ldots" tools/run\_replicates.sh} (forgery arms also need \texttt{ZTSDN\_ALLOW\_FORGERY=1})\\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1700,7 +1784,7 @@ verifies does pay, by a third more traffic than an honest server, and neither
 rail sees it; ranking on the verified figure closes it. Building that liar also
 exposed a defect in the honesty check that only load reveals.
 
-Three further checks bound the claims. Honest slowness, emulated as mixed
+Four further checks bound the claims. Honest slowness, emulated as mixed
 hardware and thermal throttling, is not mistaken for lying at this load; the
 one false quarantine came through a signal without persistence, not through
 the latency tell. The switches' own counters give a third account of every
@@ -1708,7 +1792,10 @@ task that, joined with the clients' reports, names whether a server, a switch
 or a client is lying, without blaming an honest party in 25 runs. And
 attestation and behaviour cover each other's blind spot: a tampered server is
 refused before it serves anything, while a compromise of genuine code at run
-time passes attestation and is caught only by behaviour.
+time passes attestation and is caught only by behaviour. Finally, ledger
+replicas that replay the trust arithmetic reject every forged score that
+reaches them, but not forged evidence, which blinded the controller's own
+detectors and was exposed only by the switches.
 
 We report equally what enforcement did not buy. The gate improved containment
 and the latency tail but not delivery, throughput or honest availability, and a
@@ -1726,7 +1813,7 @@ possible as much as for the architecture.
 % ===========================================================================
 \section*{Data Availability}
 % ===========================================================================
-The 225 live recordings, the aggregator output, the experiments'
+The 245 live recordings, the aggregator output, the experiments'
 registered predictions, and the simulation CSVs
 behind every table are archived with the project repository under
 \texttt{data/runs/}, \texttt{data/replicates/} and
