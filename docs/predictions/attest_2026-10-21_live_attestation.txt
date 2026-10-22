@@ -46,3 +46,4 @@ att_on_runtime: 5 run(s), attestation ON
         quarantined after onset      : 5/5 [57%, 100%]; median 9.9 s, range 8.9-10.5 s
         connections before contained : 20 [15, 24]  n=5
         passed attestation           : 5/5 [57%, 100%]
+        quotes after onset           : 42, of which 0 arrived while it was quarantined (quarantined 48.6% of that time)

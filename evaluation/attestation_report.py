@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from evaluation.replicates import t_interval, wilson
+from evaluation.replicates import quarantine_intervals, t_interval, wilson
 from evaluation.witness_report import discover
 
 
@@ -50,6 +50,9 @@ class AttestRun:
     route_times: List[Tuple[float, str]] = field(default_factory=list)
     denied: List[float] = field(default_factory=list)
     first_quarantine: Dict[str, List[float]] = field(default_factory=dict)
+    recovered: Dict[str, List[float]] = field(default_factory=dict)
+    quote_times: Dict[str, List[float]] = field(default_factory=dict)
+    end: float = 0.0
 
     @property
     def genuine(self) -> List[str]:
@@ -76,6 +79,21 @@ class AttestRun:
         qs = [q for q in self.first_quarantine.get(node, []) if on is not None and q >= on]
         return min(qs) - on if qs else None
 
+    def quotes_vs_quarantine(self, node: str) -> Optional[Tuple[int, int, float]]:
+        """(quotes after onset, how many arrived while `node` was quarantined,
+        fraction of the post-onset time it was quarantined). Quarantine drops
+        the server's traffic to the controller, the attester's included."""
+        on = self.onset.get(node)
+        if on is None or not self.attesting:
+            return None
+        iv = quarantine_intervals(self.first_quarantine.get(node, []),
+                                  self.recovered.get(node, []), self.end)
+        quotes = [t for t in self.quote_times.get(node, []) if t >= on]
+        inside = sum(1 for t in quotes if any(a < t < b for a, b in iv))
+        span = max(self.end - on, 1e-9)
+        q_time = sum(max(0.0, b - max(a, on)) for a, b in iv)
+        return len(quotes), inside, q_time / span
+
     def exposure(self, node: str) -> Optional[int]:
         """Connections routed to `node` after its onset and before it was first
         quarantined (or the end of the run)."""
@@ -100,6 +118,7 @@ def score(path: str, arm: str = '') -> AttestRun:
             if t0 is None and ts is not None:
                 t0 = float(ts)
             t = (float(ts) - t0) if ts is not None and t0 is not None else 0.0
+            r.end = max(r.end, t)
             kind = ev.get('type')
             if kind == 'topology':
                 for n in (ev.get('graph') or {}).get('nodes', []):
@@ -113,6 +132,8 @@ def score(path: str, arm: str = '') -> AttestRun:
             elif kind == 'attestation':
                 r.attesting = True
                 node, verdict = ev.get('node'), ev.get('verdict')
+                if verdict != 'expired':
+                    r.quote_times.setdefault(node, []).append(t)
                 if verdict == 'attested':
                     r.quotes += 1
                     r.first_admitted.setdefault(node, t)
@@ -132,6 +153,8 @@ def score(path: str, arm: str = '') -> AttestRun:
                 r.denied.append(t)
             elif kind == 'quarantine' and ev.get('node'):
                 r.first_quarantine.setdefault(ev['node'], []).append(t)
+            elif kind == 'recovered' and ev.get('node'):
+                r.recovered.setdefault(ev['node'], []).append(t)
     return r
 
 
@@ -190,6 +213,12 @@ def report(results: Dict[str, List[AttestRun]]) -> str:
             if att:
                 passed = [r for r in att if node in r.first_admitted]
                 out.append(f'        passed attestation           : {_prop(len(passed), len(att))}')
+                qq = [r.quotes_vs_quarantine(node) for r in att]
+                qq = [x for x in qq if x is not None]
+                if qq and any(x[2] > 0 for x in qq):   # only once it has been quarantined
+                    out.append(f'        quotes after onset           : {sum(x[0] for x in qq)}, of which '
+                               f'{sum(x[1] for x in qq)} arrived while it was quarantined '
+                               f'(quarantined {100 * sum(x[2] for x in qq) / len(qq):.1f}% of that time)')
     return '\n'.join(out)
 
 

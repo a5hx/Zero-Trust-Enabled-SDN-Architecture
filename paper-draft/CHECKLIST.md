@@ -24,11 +24,12 @@ apply. `[x]` done, `[ ]` open. Target: **conference**.
 
 ### Still open after revision 3
 
-- [ ] Per-class recall / balanced accuracy in §VII-J (accuracy is dominated by the 40 honest subjects)
+- [ ] Per-class recall / balanced accuracy in §VII-K (accuracy is dominated by the 40 honest subjects)
 - [x] A load-misreporting server that does not slow itself — done, §VII-E (80 runs, four batches)
-- [ ] Page count is **15** (revision 5, 2026-10-21: honest-slow servers §VI-F + §VII-F, the live switch witness §VII-G + Table 7; earlier sections renumbered); trim to the chosen venue's limit (order below)
+- [ ] Page count is **16** (revision 6, 2026-10-22: attestation §VII-H + Table 8, architecture paragraph, threat model, limitation; service/flood/detection/NFR/simulation renumbered to §VII-I…M, Tables 9–10. Revision 5: honest-slow §VII-F, witness §VII-G); trim to the chosen venue's limit (order below)
 - [x] Honest-slow servers (Phase 3, 30 runs) and the live switch witness (Phase 2, 50 runs) — done, §VII-F, §VII-G
-- [ ] Abstract is 245 words after revision 5; venue limits below 250 need it cut
+- [x] Attestation beside behaviour (Phase 4, 25 runs) — done, §VII-H, Table 8
+- [ ] Abstract is 250 words after revision 6 (at a 250 limit); venue limits below 250 need it cut
 - [x] Abstract trimmed to 246 words (revision 4); the retraction moved out of it, still in §VIII-B
 - [x] Retitled around the liar experiment: "What Catches a Lie That Works? Trust Scores, Anomaly Gates and Load-Misreporting Servers in Zero-Trust Edge Load Balancing"
 - [ ] Choose the venue; swap in `IEEEtran.cls`; anonymise if double-blind

@@ -1,0 +1,16 @@
+arm,run,node,attack,onset_s,score_cross_s,min_trust,contain_s,rail,t_at_q,a_at_q,pre_onset_quarantines,route_share,excess_share
+att_off_tampered,r01.jsonl,srv6,drop,30.0,,0.355,8.808725595474243,gate,0.355,0.85,0,0.008446277745040268,-0.11655372225495973
+att_off_tampered,r02.jsonl,srv6,drop,30.0,,0.355,12.497855424880981,gate,0.355,0.85,0,0.00546875,-0.11953125
+att_off_tampered,r03.jsonl,srv6,drop,30.0,,0.355,32.27863121032715,gate,0.355,0.85,0,0.004299394176275161,-0.12070060582372484
+att_off_tampered,r04.jsonl,srv6,drop,30.0,,0.355,9.83734941482544,gate,0.355,0.85,0,0.006474396703943496,-0.1185256032960565
+att_off_tampered,r05.jsonl,srv6,drop,30.0,,0.355,10.86700439453125,gate,0.355,0.85,0,0.005865102639296188,-0.11913489736070382
+att_on_tampered,r01.jsonl,srv6,drop,30.0,,0.5,,,,,0,0.0,-0.125
+att_on_tampered,r02.jsonl,srv6,drop,30.0,,0.5,,,,,0,0.0,-0.125
+att_on_tampered,r03.jsonl,srv6,drop,30.0,,0.5,,,,,0,0.0,-0.125
+att_on_tampered,r04.jsonl,srv6,drop,30.0,,0.5,,,,,0,0.0,-0.125
+att_on_tampered,r05.jsonl,srv6,drop,30.0,,0.5,,,,,0,0.0,-0.125
+att_on_runtime,r01.jsonl,srv6,drop,30.0,,0.355,10.504982948303223,gate,0.355,0.85,0,0.00565412361084032,-0.11934587638915968
+att_on_runtime,r02.jsonl,srv6,drop,30.0,,0.355,9.931618690490723,gate,0.355,0.85,0,0.007836990595611285,-0.11716300940438872
+att_on_runtime,r03.jsonl,srv6,drop,30.0,,0.355,8.872704029083252,gate,0.355,0.85,0,0.0076605774896876845,-0.11733942251031232
+att_on_runtime,r04.jsonl,srv6,drop,30.0,,0.355,9.891052961349487,gate,0.355,0.85,0,0.007240704500978474,-0.11775929549902153
+att_on_runtime,r05.jsonl,srv6,drop,30.0,,0.355,9.372039318084717,gate,0.355,0.85,0,0.0070202808112324495,-0.11797971918876755

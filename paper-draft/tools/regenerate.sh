@@ -30,7 +30,7 @@ python3 -m evaluation.replicates data/runs \
         --arms scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat \
         --out-dir "$OUT/theta_sweep"
 
-echo "== live flood experiment: Table 9 (S VII-I) =="
+echo "== live flood experiment: Table 10 (S VII-J) =="
 # flood_on r01 is excluded: the host suspended mid-run (recorded span 24331 s,
 # gaps of 891 s and 23092 s after t=316 s). Score the other nine through links.
 FL="$(mktemp -d)"; trap 'rm -rf "$FL"' EXIT
@@ -83,7 +83,15 @@ for b in "batch1 wit witness" "after_fixes witfix witfix"; do
         docs/predictions/$3_2026-10-21_live_verdicts.txt "$OUT/witness/$1/"
 done
 
-echo "== replicated ledger with a leader kill (S VII-K) =="
+echo "== attestation beside behaviour: Table 8 (S VII-H) =="
+ATT=att_off_clean,att_on_clean,att_off_tampered,att_on_tampered,att_on_runtime
+mkdir -p "$OUT/attest"
+python3 -m evaluation.replicates data/runs --arms "$ATT" --out-dir "$OUT/attest"
+python3 -m evaluation.attestation_report data/runs --arms "$ATT" \
+        --out "$OUT/attest/attestation_summary.txt" >/dev/null
+cp -p docs/predictions/attest_2026-10-21.txt docs/predictions/attest_2026-10-21_OUTCOME.md "$OUT/attest/"
+
+echo "== replicated ledger with a leader kill (S VII-L) =="
 RF=data/raft_failover_2026-10-19
 cp -p "$RF/raft_failover_20261019_140900.json" "$OUT/raft/failover_report.json"
 cp -p "$RF/nfr_report.txt" "$OUT/raft/nfr_report.txt"

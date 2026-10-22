@@ -61,7 +61,8 @@ devices the same as an unattested tampered server.
 **1. Quarantine also cuts the attestation channel.** In `att_on_runtime`, srv6 completed
 9–10 attestation rounds instead of 11.
 - Of its 42 post-onset quotes, **0** fell inside one of its quarantine intervals, although it
-  was quarantined for 48.6% of that time. If timing were independent, that would happen
+  was quarantined for 48.6% of that time. Reproduced by `evaluation.attestation_report`, line
+  `quotes after onset` (added 2026-10-22, after this outcome was first written). If timing were independent, that would happen
   with probability about 0.514^42 ≈ 10⁻¹².
 - Each round that fell due while it was isolated arrived 0.2–2 s after the release instead
   (for example: release 71.7 s, quote 73.3 s; release 128.1 s, quote 128.4 s).

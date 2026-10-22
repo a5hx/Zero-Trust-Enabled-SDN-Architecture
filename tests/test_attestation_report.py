@@ -57,3 +57,21 @@ def test_attestation_off_run_reports_no_admission(tmp_path):
     r = ar.score(_write(tmp_path, ev), 'off')
     assert not r.attesting and r.fleet_admitted_s is None
     assert 'attestation off' in ar.report({'off': [r]})
+
+
+def test_counts_quotes_that_arrive_during_a_quarantine(tmp_path):
+    """Quarantine drops the server's traffic to the controller, the attester's
+    included -- the scorer must be able to show that from a recording."""
+    nodes = [_server(1, attack='drop', attack_start_s=30.0)]
+    ev = [(0.0, {'type': 'topology', 'graph': {'nodes': nodes}}),
+          (5.0, _att('srv1', 'attested')),              # before onset: not counted
+          (35.0, _att('srv1', 'attested')),
+          (40.0, {'type': 'quarantine', 'node': 'srv1'}),
+          (45.0, _att('srv1', 'attested')),             # inside the quarantine
+          (50.0, {'type': 'recovered', 'node': 'srv1'}),
+          (51.0, _att('srv1', 'attested')),
+          (90.0, {'type': 'route', 'chosen': 'srv1'})]  # run ends at 90 s
+    r = ar.score(_write(tmp_path, ev), 'x')
+    n, inside, frac = r.quotes_vs_quarantine('srv1')
+    assert (n, inside) == (3, 1) and abs(frac - 10.0 / 60.0) < 1e-9
+    assert 'of which 1 arrived while it was quarantined' in ar.report({'x': [r]})
