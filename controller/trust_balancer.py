@@ -16,7 +16,7 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -614,15 +614,23 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # Observe-only: it publishes `witness` verdicts and quarantines nobody.
         # Off unless controller.witness.enabled, so earlier configs are unchanged.
         from controller.switch_witness import (SwitchWitness, WitnessConfig, parse_act,
-                                               parse_switch_lies)
+                                               parse_hold, parse_switch_lies)
         wcfg = (self.cfg['controller'].get('witness') or {})
         self.witness: Any = (SwitchWitness(self.vip_ip, WitnessConfig.from_config(self.cfg['controller']))
                              if wcfg.get('enabled') else None)
         # Letting the verdicts act (controller.witness.act; parse_act says how).
         self._witness_act_servers, self._witness_act_clients = parse_act(wcfg)
         self._witness_verdict: Optional[Dict[str, Any]] = None
+        # The hold (controller.witness.act.hold, switch_witness.WitnessHold):
+        # trial connections routed to a held server, and each held server's
+        # run of consecutive trials the witness saw served.
+        self._witness_hold = parse_hold(wcfg)
+        self._witness_trials: Dict[Tuple[str, str], Tuple[str, float]] = {}
+        self._hold_streak: Dict[str, int] = {}
+        if self._witness_hold is not None:
+            self.state.witness_trial_interval_s = self._witness_hold.trial_interval_s
         if self._witness_act_servers:
-            self.flow_monitor.witness_verdicts = lambda: self._witness_verdict
+            self.flow_monitor.witness_verdicts = self._witness_gate_verdict
         # Phase 2c: an emulated misreporting switch, keyed by dpid.
         self._switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
         self._started_mono = time.monotonic()
@@ -781,9 +789,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
         n = 0
         while True:
             hub.sleep(self.monitor_interval_s)
-            self.witness.tick(time.monotonic())
+            judged = self.witness.tick(time.monotonic())
+            if self._witness_hold is not None:
+                self._advance_witness_holds(judged)
             v = self.witness.verdicts()
             self._witness_verdict = v
+            if self._witness_hold is not None:
+                for node in v['servers']:
+                    if self.state.hold_for_witness(node):
+                        self._hold_streak[node] = 0
+                        logger.warning("%s: HELD by the switch witness until it serves "
+                                       "%d trial(s) in a row", node, self._witness_hold.passes)
+                        self.bus.publish('witness_hold', node=node, action='held')
             blamed = (tuple(v['servers']), tuple(v['switches']), tuple(v['clients']))
             n += 1
             if blamed != last or n % 5 == 0:
@@ -834,6 +851,52 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 logger.warning("%s: attestation expired -- no fresh quote", node)
                 self.bus.publish('attestation', node=node, verdict='expired', detail='',
                                  measurement='', mismatched=[], verify_ms=0.0)
+
+    def _witness_gate_verdict(self) -> Optional[Dict[str, Any]]:
+        """What the anomaly gate acts on: the witness's verdict, plus every
+        server it holds (whose own verdict may have lapsed)."""
+        v = self._witness_verdict
+        held = self.state.witness_held() if self._witness_hold is not None else []
+        if v is None and not held:
+            return None
+        v = dict(v or {})
+        rate = dict(v.get('server_rate') or {})
+        for node in held:
+            rate.setdefault(node, 1.0)
+        v['servers'] = sorted(set(v.get('servers') or []) | set(held))
+        v['server_rate'] = rate
+        return v
+
+    def _advance_witness_holds(self, judged: List[Any]) -> None:
+        """Score held servers' trial connections as the witness judges them,
+        and release a server after `passes` served trials in a row."""
+        from controller.switch_witness import AGREE_FAILED, AGREE_SERVED
+        now = time.monotonic()
+        held = set(self.state.witness_held())
+        for j in judged:
+            trial = self._witness_trials.pop((j.client_ip, j.client_port), None)
+            if trial is None or trial[0] not in held or trial[0] != j.node:
+                continue
+            node = j.node
+            if j.pattern == AGREE_SERVED:
+                self._hold_streak[node] = self._hold_streak.get(node, 0) + 1
+            elif j.pattern == AGREE_FAILED:
+                self._hold_streak[node] = 0
+            self.bus.publish('witness_trial', node=node, pattern=j.pattern,
+                             streak=self._hold_streak.get(node, 0))
+        for node in sorted(held):
+            if self._hold_streak.get(node, 0) >= self._witness_hold.passes:
+                self.state.release_from_witness(node)
+                dropped = self.witness.forget_server(node)
+                self._hold_streak.pop(node, None)
+                logger.warning("%s: RELEASED by the switch witness after %d served trials",
+                               node, self._witness_hold.passes)
+                self.bus.publish('witness_hold', node=node, action='released',
+                                 forgotten=dropped)
+        # Trials the witness never judged (re-steered, unseen) are not kept forever.
+        for key, (_node, t) in list(self._witness_trials.items()):
+            if now - t > 3 * self.witness.cfg.give_up_s:
+                del self._witness_trials[key]
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -934,12 +997,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # dashboard can show not just who won but the EdgeScore of everyone who
         # lost, which is the whole point of the trust-aware routing claim.
         last = self.state.last_routing_decision() or {}
+        if last.get('witness_trial'):
+            # A held server's trial: the witness will judge this connection.
+            self._witness_trials[(client_ip, str(client_port))] = (chosen, time.monotonic())
         self.bus.publish(
             'route',
             client_ip=client_ip, client_port=client_port, chosen=chosen,
             edge_score=last.get('score'), ranked=last.get('ranked'),
             decision_ms=round(decision_ms, 2), dpid=dp.id,
             probation=probation,
+            **({'witness_trial': True} if last.get('witness_trial') else {}),
         )
 
     def _check_flood(self, client_ip: str) -> None:

@@ -82,6 +82,7 @@ class Judged:
     device: str
     client_ip: str
     pattern: str
+    client_port: str = ''      # with client_ip, names the connection judged
 
 
 @dataclass(frozen=True)
@@ -125,12 +126,44 @@ def parse_act(witness_cfg: Optional[Dict[str, Any]]) -> Tuple[bool, bool]:
     """
     wcfg = witness_cfg or {}
     act = dict(wcfg.get('act') or {})
-    unknown = set(act) - {'servers', 'clients'}
+    unknown = set(act) - {'servers', 'clients', 'hold'}
     if unknown:
         raise ValueError(f'controller.witness.act: unknown keys {sorted(unknown)}')
     if act and not wcfg.get('enabled'):
         raise ValueError('controller.witness.act needs controller.witness.enabled')
     return bool(act.get('servers')), bool(act.get('clients'))
+
+
+@dataclass(frozen=True)
+class WitnessHold:
+    """controller.witness.act.hold: keep a blamed server quarantined after the
+    witness's verdict lapses, and release it only on fresh witness evidence --
+    `passes` trial connections in a row that the switches saw served and the
+    client reported a success for, one trial every `trial_interval_s`.
+
+    Without it a blamed server is released when its failures age out of the
+    witness's window, and is re-blamed only after it has failed ~10 more
+    connections: the release-and-re-blame cycle that was the remaining loss
+    when the witness first acted (docs/predictions/witact_2026-10-23_OUTCOME.md).
+    """
+    trial_interval_s: float = 10.0
+    passes: int = 3
+
+
+def parse_hold(witness_cfg: Optional[Dict[str, Any]]) -> Optional[WitnessHold]:
+    hold = ((witness_cfg or {}).get('act') or {}).get('hold')
+    if not hold:
+        return None
+    if not parse_act(witness_cfg)[0]:
+        raise ValueError('controller.witness.act.hold needs act.servers')
+    spec = {} if hold is True else dict(hold)
+    unknown = set(spec) - {'trial_interval_s', 'passes'}
+    if unknown:
+        raise ValueError(f'controller.witness.act.hold: unknown keys {sorted(unknown)}')
+    h = WitnessHold(float(spec.get('trial_interval_s', 10.0)), int(spec.get('passes', 3)))
+    if h.trial_interval_s <= 0 or h.passes < 1:
+        raise ValueError('controller.witness.act.hold: trial_interval_s > 0 and passes >= 1')
+    return h
 
 
 class SwitchWitness:
@@ -161,6 +194,16 @@ class SwitchWitness:
     def verdicts(self) -> Dict[str, Any]:
         with self._lock:
             return self._verdicts()
+
+    def forget_server(self, node: str) -> int:
+        """Drop every judged connection of `node` from the window: it has just
+        been cleared on fresh evidence, and must not be re-blamed on the
+        failures that got it held. Returns how many were dropped."""
+        with self._lock:
+            keep = deque(j for j in self._judged if j.node != node)
+            dropped = len(self._judged) - len(keep)
+            self._judged = keep
+            return dropped
 
     # -- input --------------------------------------------------------------- #
     def _on_flow_stats(self, dpid: int, rules: Iterable[Dict[str, Any]], t: float) -> None:
@@ -220,7 +263,7 @@ class SwitchWitness:
                 pattern = (AGREE_SERVED if ok and served else
                            AGREE_FAILED if not ok and not served else
                            CLIENT_FAIL_SERVED if served else CLIENT_OK_UNSERVED)
-            j = Judged(t, node, dpid, device, key[0], pattern)
+            j = Judged(t, node, dpid, device, key[0], pattern, key[1])
             self._judged.append(j)
             out.append(j)
             del self._conns[key]

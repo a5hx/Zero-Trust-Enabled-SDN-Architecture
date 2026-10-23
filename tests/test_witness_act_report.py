@@ -48,3 +48,21 @@ def test_an_honest_server_hit_by_the_witness_signal_is_a_false_action(tmp_path):
     ev = [(0, {'type': 'topology', 'graph': {'nodes': [{'id': 'srv1', 'kind': 'server'}]}}),
           (5, {'type': 'anomaly', 'node': 'srv1', 'signals': {'witness_blame': 0.3}})]
     assert war.score(_write(tmp_path, ev)).false_witness_actions == ['srv1']
+
+
+def test_scores_holds_releases_and_trials(tmp_path):
+    nodes = [{'id': 'srv1', 'kind': 'server'},
+             {'id': 'srv3', 'kind': 'server', 'attack': 'drop', 'attack_start_s': 60}]
+    ev = [(0, {'type': 'topology', 'graph': {'nodes': nodes}}),
+          (70, {'type': 'witness_hold', 'node': 'srv3', 'action': 'held'}),
+          (80, {'type': 'witness_trial', 'node': 'srv3', 'pattern': 'agree_failed', 'streak': 0}),
+          (90, {'type': 'witness_trial', 'node': 'srv3', 'pattern': 'agree_served', 'streak': 1}),
+          (95, {'type': 'witness_hold', 'node': 'srv1', 'action': 'held'}),
+          (99, {'type': 'witness_hold', 'node': 'srv1', 'action': 'released', 'forgotten': 4})]
+    r = war.score(_write(tmp_path, ev), 'wh_x_hold')
+    assert r.holds == {'srv3': [70.0], 'srv1': [95.0]} and r.releases == {'srv1': [99.0]}
+    assert r.trials == {'srv3': ['agree_failed', 'agree_served']}
+    assert r.false_holds == ['srv1']
+    text = war.report({'wh_x_hold': [r]})
+    assert 'trials judged                : 2 (1 served)' in text
+    assert 'honest servers held              : 1.0' in text
