@@ -1,0 +1,307 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  wh_control_hold : 5 run(s)
+      r01.jsonl  307.9 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.7 s  theta=0.30
+      r03.jsonl  307.8 s  theta=0.30
+      r04.jsonl  307.8 s  theta=0.30
+      r05.jsonl  307.8 s  theta=0.30
+  wh_forge_act : 5 run(s)
+      r01.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.7 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+  wh_forge_hold : 5 run(s)
+      r01.jsonl  307.7 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.9 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+  wh_drop_act : 5 run(s)
+      r01.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.9 s  theta=0.30  anomaly_rail_enforced=True
+  wh_drop_hold : 5 run(s)
+      r01.jsonl  307.9 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  308.0 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    wh_control_hold 99.95%  [99.90, 100.00*]  sd 0.04  n=5
+    wh_forge_act 97.75%  [97.59, 97.91]  sd 0.13  n=5
+    wh_forge_hold 99.40%  [99.33, 99.48]  sd 0.06  n=5
+    wh_drop_act 99.16%  [98.95, 99.37]  sd 0.17  n=5
+    wh_drop_hold 99.53%  [99.44, 99.61]  sd 0.07  n=5
+throughput
+    wh_control_hold 18.39 tps  [18.35, 18.43]  sd 0.03  n=5
+    wh_forge_act 17.26 tps  [17.17, 17.35]  sd 0.07  n=5
+    wh_forge_hold 17.91 tps  [17.85, 17.96]  sd 0.05  n=5
+    wh_drop_act 17.90 tps  [17.84, 17.96]  sd 0.05  n=5
+    wh_drop_hold 17.74 tps  [17.66, 17.81]  sd 0.06  n=5
+mean latency (success)
+    wh_control_hold 88.3 ms  [87.4, 89.2]  sd 0.7  n=5
+    wh_forge_act 89.8 ms  [86.9, 92.7]  sd 2.3  n=5
+    wh_forge_hold 89.0 ms  [87.1, 90.9]  sd 1.5  n=5
+    wh_drop_act 88.6 ms  [86.4, 90.8]  sd 1.8  n=5
+    wh_drop_hold 89.8 ms  [87.2, 92.4]  sd 2.1  n=5
+p95 latency (success)
+    wh_control_hold 125.8 ms  [122.5, 129.0]  sd 2.6  n=5
+    wh_forge_act 127.5 ms  [120.2, 134.8]  sd 5.9  n=5
+    wh_forge_hold 126.0 ms  [122.8, 129.3]  sd 2.6  n=5
+    wh_drop_act 125.2 ms  [120.5, 130.0]  sd 3.8  n=5
+    wh_drop_hold 128.3 ms  [121.7, 135.0]  sd 5.4  n=5
+timeouts
+    wh_control_hold 0.6  [0.0*, 2.3]  sd 1.3  n=5
+    wh_forge_act 120.4  [111.2, 129.6]  sd 7.4  n=5
+    wh_forge_hold 31.8  [27.7, 35.9]  sd 3.3  n=5
+    wh_drop_act 45.4  [34.6, 56.2]  sd 8.7  n=5
+    wh_drop_hold 24.6  [19.6, 29.6]  sd 4.0  n=5
+honest-device availability
+    wh_control_hold 99.95%  [99.90, 100.00*]  sd 0.04  n=5
+    wh_forge_act 97.73%  [97.58, 97.89]  sd 0.13  n=5
+    wh_forge_hold 99.40%  [99.32, 99.47]  sd 0.06  n=5
+    wh_drop_act 99.15%  [98.94, 99.36]  sd 0.17  n=5
+    wh_drop_hold 99.52%  [99.44, 99.60]  sd 0.06  n=5
+starved honest devices (<50%)
+    wh_control_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    wh_control_hold 0.995  [0.991, 0.999]  sd 0.003  n=5
+    wh_forge_act 0.995  [0.992, 0.997]  sd 0.002  n=5
+    wh_forge_hold 0.997  [0.994, 0.999]  sd 0.002  n=5
+    wh_drop_act 0.997  [0.996, 0.999]  sd 0.001  n=5
+    wh_drop_hold 0.993  [0.985, 1.000]  sd 0.006  n=5
+Jain, full roster
+    wh_control_hold 0.995  [0.991, 0.999]  sd 0.003  n=5
+    wh_forge_act 0.944  [0.926, 0.961]  sd 0.014  n=5
+    wh_forge_hold 0.934  [0.926, 0.941]  sd 0.006  n=5
+    wh_drop_act 0.808  [0.799, 0.818]  sd 0.008  n=5
+    wh_drop_hold 0.811  [0.802, 0.819]  sd 0.007  n=5
+share of routes to attackers
+    wh_control_hold 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 4.84%  [3.52, 6.15]  sd 1.06  n=5
+    wh_forge_hold 3.91%  [3.30, 4.52]  sd 0.49  n=5
+    wh_drop_act 4.07%  [3.39, 4.76]  sd 0.55  n=5
+    wh_drop_hold 4.49%  [3.97, 5.02]  sd 0.42  n=5
+honest servers ever quarantined
+    wh_control_hold 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    wh_control_hold 0.456  [0.334, 0.578]  sd 0.098  n=5
+    wh_forge_act 0.499  [0.496, 0.502]  sd 0.003  n=5
+    wh_forge_hold 0.484  [0.441, 0.528]  sd 0.035  n=5
+    wh_drop_act 0.497  [0.489, 0.505]  sd 0.006  n=5
+    wh_drop_hold 0.452  [0.396, 0.507]  sd 0.044  n=5
+attackers quarantined BEFORE onset
+    wh_control_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    wh_control_hold 99.91%  [99.67, 100.00*]  sd 0.19  n=5
+    wh_forge_act 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    wh_forge_hold 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    wh_drop_act 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    wh_drop_hold 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    wh_control_hold not measured
+    wh_forge_act 66.88%  [66.25, 67.50]  sd 0.50  n=5
+    wh_forge_hold 76.74%  [76.51, 76.97]  sd 0.19  n=5
+    wh_drop_act 59.82%  [55.57, 64.07]  sd 3.43  n=5
+    wh_drop_hold 85.21%  [84.87, 85.55]  sd 0.28  n=5
+attacks classified exactly (of 8)
+    wh_control_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 1.40  [0.72, 2.08]  sd 0.55  n=5
+    wh_drop_hold 1.40  [0.72, 2.08]  sd 0.55  n=5
+attacks in the right family (of 8)
+    wh_control_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 1.00  [1.00, 1.00]  sd 0.00  n=5
+    wh_forge_hold 1.00  [1.00, 1.00]  sd 0.00  n=5
+    wh_drop_act 2.00  [2.00, 2.00]  sd 0.00  n=5
+    wh_drop_hold 2.00  [2.00, 2.00]  sd 0.00  n=5
+honest subjects mislabelled
+    wh_control_hold 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    wh_control_hold 99.58%  [98.43, 100.00*]  sd 0.93  n=5
+    wh_forge_act 97.92%  [97.92, 97.92]  sd 0.00  n=5
+    wh_forge_hold 97.92%  [97.92, 97.92]  sd 0.00  n=5
+    wh_drop_act 98.75%  [97.33, 100.00*]  sd 1.14  n=5
+    wh_drop_hold 98.75%  [97.33, 100.00*]  sd 1.14  n=5
+honest devices: mean latency
+    wh_control_hold 88.3 ms  [87.4, 89.2]  sd 0.7  n=5
+    wh_forge_act 89.8 ms  [86.9, 92.7]  sd 2.3  n=5
+    wh_forge_hold 89.0 ms  [87.1, 90.9]  sd 1.5  n=5
+    wh_drop_act 88.6 ms  [86.4, 90.8]  sd 1.8  n=5
+    wh_drop_hold 89.8 ms  [87.2, 92.4]  sd 2.1  n=5
+honest devices: p95 latency
+    wh_control_hold 125.8 ms  [122.5, 129.0]  sd 2.6  n=5
+    wh_forge_act 127.5 ms  [120.2, 134.8]  sd 5.9  n=5
+    wh_forge_hold 126.0 ms  [122.8, 129.3]  sd 2.6  n=5
+    wh_drop_act 125.2 ms  [120.5, 130.0]  sd 3.8  n=5
+    wh_drop_hold 128.3 ms  [121.7, 135.0]  sd 5.4  n=5
+honest devices: task success
+    wh_control_hold 99.95%  [99.90, 100.00*]  sd 0.04  n=5
+    wh_forge_act 97.75%  [97.59, 97.91]  sd 0.13  n=5
+    wh_forge_hold 99.40%  [99.33, 99.48]  sd 0.06  n=5
+    wh_drop_act 99.16%  [98.95, 99.37]  sd 0.17  n=5
+    wh_drop_hold 99.53%  [99.44, 99.61]  sd 0.07  n=5
+tasks served to flooding device(s)
+    wh_control_hold 0.0  [0.0, 0.0]  sd 0.0  n=5
+    wh_forge_act 0.0  [0.0, 0.0]  sd 0.0  n=5
+    wh_forge_hold 0.0  [0.0, 0.0]  sd 0.0  n=5
+    wh_drop_act 0.0  [0.0, 0.0]  sd 0.0  n=5
+    wh_drop_hold 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    wh_control_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    wh_control_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest servers: seconds quarantined
+    wh_control_hold 2.1 s  [0.0*, 8.0]  sd 4.7  n=5
+    wh_forge_act 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    wh_forge_hold 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    wh_drop_act 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    wh_drop_hold 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+honest quarantines per server-hour
+    wh_control_hold 0.29  [0.00*, 1.10]  sd 0.65  n=5
+    wh_forge_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_forge_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_act 0.00  [0.00, 0.00]  sd 0.00  n=5
+    wh_drop_hold 0.00  [0.00, 0.00]  sd 0.00  n=5
+quarantines of the throttled honest server
+    wh_control_hold not measured
+    wh_forge_act not measured
+    wh_forge_hold not measured
+    wh_drop_act not measured
+    wh_drop_hold not measured
+  its time to release (median)
+    wh_control_hold not measured
+    wh_forge_act not measured
+    wh_forge_hold not measured
+    wh_drop_act not measured
+    wh_drop_hold not measured
+run length
+    wh_control_hold 307.8 s  [307.7, 307.9]  sd 0.1  n=5
+    wh_forge_act 307.8 s  [307.7, 307.8]  sd 0.0  n=5
+    wh_forge_hold 307.8 s  [307.7, 307.9]  sd 0.0  n=5
+    wh_drop_act 307.8 s  [307.7, 307.9]  sd 0.1  n=5
+    wh_drop_hold 307.9 s  [307.8, 308.0]  sd 0.1  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv1 (grayhole)
+    wh_drop_act score crossed theta : 3/5  [23%, 88%]
+                 time to cross     : 3/5 runs; median 111.9 s, range 51.3-237.3 s; mean 133.5 [-102.1, 369.1]
+               min T after onset   : 0.250  [0.139, 0.362]  sd 0.090  n=5
+               route share (post-onset): 1.16%  [0.87, 1.46]  sd 0.24  n=5
+                 minus fair 1/N    : -11.34%  [-11.63, -11.04]  sd +0.24  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 13.4 s, range 9.3-51.3 s; mean 21.5 [0.1, 43.0]
+                 rail that fired   : both 1/5, gate 4/5
+                 T at quarantine   : 0.316  [0.207, 0.424]  sd 0.087  n=5
+    wh_drop_hold score crossed theta : 3/5  [23%, 88%]
+                 time to cross     : 3/5 runs; median 86.0 s, range 37.3-149.0 s; mean 90.8 [-48.4, 229.9]
+               min T after onset   : 0.239  [0.108, 0.370]  sd 0.106  n=5
+               route share (post-onset): 0.96%  [0.91, 1.02]  sd 0.04  n=5
+                 minus fair 1/N    : -11.54%  [-11.59, -11.48]  sd +0.04  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 11.3 s, range 9.3-12.3 s; mean 11.0 [9.3, 12.6]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.356  [0.351, 0.361]  sd 0.004  n=5
+
+srv3 (drop)
+    wh_forge_act score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.806  [0.759, 0.853]  sd 0.038  n=5
+               route share (post-onset): 3.02%  [2.79, 3.25]  sd 0.18  n=5
+                 minus fair 1/N    : -9.48%  [-9.71, -9.25]  sd +0.18  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 12.0 s, range 11.0-15.2 s; mean 12.4 [10.4, 14.4]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.840  [0.840, 0.840]  sd 0.000  n=5
+    wh_forge_hold score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.839  [0.836, 0.842]  sd 0.002  n=5
+               route share (post-onset): 1.45%  [1.29, 1.61]  sd 0.13  n=5
+                 minus fair 1/N    : -11.05%  [-11.21, -10.89]  sd +0.13  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 12.0 s, range 11.0-12.1 s; mean 11.6 [10.9, 12.3]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.840  [0.840, 0.840]  sd 0.000  n=5
+
+srv6 (drop)
+    wh_drop_act score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+               route share (post-onset): 0.60%  [0.45, 0.75]  sd 0.12  n=5
+                 minus fair 1/N    : -11.90%  [-12.05, -11.75]  sd +0.12  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.9 s, range 9.9-26.2 s; mean 13.7 [5.0, 22.4]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+    wh_drop_hold score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 95.7 s, range 37.6-256.8 s; mean 114.1 [3.5, 224.8]
+               min T after onset   : 0.212  [0.201, 0.223]  sd 0.009  n=5
+               route share (post-onset): 0.89%  [0.71, 1.07]  sd 0.15  n=5
+                 minus fair 1/N    : -11.61%  [-11.79, -11.43]  sd +0.15  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 9.5 s, range 8.8-13.7 s; mean 10.1 [7.6, 12.7]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    wh_drop_act isolated  55.8%   exact labels 2/8
+    wh_drop_act isolated  58.0%   exact labels 1/8
+    wh_drop_act isolated  59.0%   exact labels 1/8
+    wh_drop_act isolated  61.5%   exact labels 1/8
+    wh_drop_act isolated  64.8%   exact labels 2/8
+    wh_forge_act isolated  66.1%   exact labels 0/8
+    wh_forge_act isolated  66.8%   exact labels 0/8
+    wh_forge_act isolated  66.8%   exact labels 0/8
+    wh_forge_act isolated  67.2%   exact labels 0/8
+    wh_forge_act isolated  67.5%   exact labels 0/8
+    wh_forge_hold isolated  76.6%   exact labels 0/8
+    wh_forge_hold isolated  76.6%   exact labels 0/8
+    wh_forge_hold isolated  76.6%   exact labels 0/8
+    wh_forge_hold isolated  76.9%   exact labels 0/8
+    wh_forge_hold isolated  76.9%   exact labels 0/8
+    wh_drop_hold isolated  84.8%   exact labels 1/8
+    wh_drop_hold isolated  85.1%   exact labels 2/8
+    wh_drop_hold isolated  85.2%   exact labels 1/8
+    wh_drop_hold isolated  85.4%   exact labels 2/8
+    wh_drop_hold isolated  85.5%   exact labels 1/8
+    Spearman rho(isolation, exact labels) = +0.000, p = 1.000, n = 20
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

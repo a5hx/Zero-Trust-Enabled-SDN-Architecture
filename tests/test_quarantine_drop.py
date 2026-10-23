@@ -178,9 +178,14 @@ def test_probation_trial_flows_out_rank_the_quarantine_drops(app):
         c.args[0] for c in dp.send_msg.call_args_list
         if c.args[0].command == ofproto_v1_3.OFPFC_ADD
     ]
-    assert len(adds) == 2, 'forward + reverse rewrite'
+    rewrite = [m for m in adds if m.priority == app.PRIO_PROBATION]
+    passage = [m for m in adds if m.priority == app.PRIO_TRIAL_PASSAGE]
+    assert len(rewrite) == 2, 'forward + reverse rewrite'
+    # And the passage through every switch's drop rules (2026-10-24: without
+    # it the trial died beyond the ingress switch -- tests/test_trial_passage.py).
+    assert len(passage) == 4, 'TCP both ways + ARP both ways'
+    assert len(adds) == 6
     for m in adds:
-        assert m.priority == app.PRIO_PROBATION
         assert m.priority > app.PRIO_QUARANTINE_DROP
         assert m.instructions != [], 'a trial must forward, not drop'
         # The carve-out has to close on its own, or one trial would leave a

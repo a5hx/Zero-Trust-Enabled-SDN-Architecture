@@ -57,6 +57,7 @@ class ActRun:
     holds: Dict[str, List[float]] = field(default_factory=dict)
     releases: Dict[str, List[float]] = field(default_factory=dict)
     trials: Dict[str, List[str]] = field(default_factory=dict)
+    trial_routes: Dict[str, int] = field(default_factory=dict)
 
     @property
     def false_holds(self) -> List[str]:
@@ -137,6 +138,8 @@ def score(path: str, arm: str = '') -> ActRun:
                 r.witness_anomaly.setdefault(ev['node'], []).append(t)
             elif kind == 'route' and ev.get('chosen'):
                 r.routes.append((t, ev['chosen']))
+                if ev.get('witness_trial'):
+                    r.trial_routes[ev['chosen']] = r.trial_routes.get(ev['chosen'], 0) + 1
             elif kind == 'report' and ev.get('attribution') == 'witness_discounted':
                 r.acting = True
                 d = ev.get('device')
@@ -193,7 +196,8 @@ def report(results: Dict[str, List[ActRun]]) -> str:
                 out.append(f'        released per run             : {_ci([len(r.releases.get(node, [])) for r in runs], "{:.1f}")}')
                 tr = [p for r in runs for p in r.trials.get(node, [])]
                 served = sum(1 for p in tr if p == 'agree_served')
-                out.append(f'        trials judged                : {len(tr)} ({served} served)')
+                routed = sum(r.trial_routes.get(node, 0) for r in runs)
+                out.append(f'        trials routed / judged       : {routed} / {len(tr)} ({served} served)')
         for dev in sorted({d for r in runs for d in r.badmouthers}):
             k = [r.discounted.get(dev, 0) for r in runs]
             firsts = [r.first_discount[dev] - r.badmouthers[dev] for r in runs if dev in r.first_discount]

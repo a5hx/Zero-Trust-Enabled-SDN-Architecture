@@ -1,0 +1,46 @@
+PREDICTION -- the witness hold re-run, on the fixed trial path
+Registered 2026-10-24, BEFORE any wh2_* run.
+
+Context: docs/predictions/withold_2026-10-23_OUTCOME.md. H2, H3, H4, H6 held;
+H1 failed by 0.006 points (a trust-rail false quarantine from two real
+failures, not the witness); H5 failed because 327 of 369 witness trials were
+black-holed. Cause: the quarantine's drop rules are installed on every switch
+(priority 400) but a trial's rules (460) only on the client's ingress switch,
+so beyond it the rewritten trial and its reply died. Only clients behind the
+held server's own switch could complete a trial -- and the same was true of
+trust-rail probation trials in every recorded run.
+
+Fix (controller/trust_balancer.py, _install_trial_passage): a trial now also
+installs, on EVERY switch and for the trial's lifetime, a passage at priority
+455 (between the drops and the rewrite pair): its TCP packets both ways and
+ARP between that server and that client. tests/test_trial_passage.py checks the
+FlowMods with the real OpenFlow 1.3 parser. It applies to trust-rail probation
+too, so the act arms change as well -- hence all five arms are re-run.
+
+Arms: wh2_* = wh_* with only the recording path changed (pinned by
+tests/test_witness_hold_arms.py).
+
+  K1  The fix works: in wh2_forge_hold and wh2_drop_hold, >= 80% of witness
+      trials routed are judged by the witness (batch 1: 29 of 369, 8%).
+  K2  wh2_forge_hold: srv3 held 5/5, released 0/5 (every trial now really
+      reaches a dropper and fails); quarantined >= 95% of post-onset time;
+      honest task success >= 98.5% and interval disjoint above wh2_forge_act's.
+      (Slightly below batch 1's 99.40% is expected: a failed trial is now a
+      reported timeout, not a connection that never opened.)
+  K3  wh2_drop_hold: srv1 (50% grayhole) released at least once in >= 3/5
+      runs -- H5 retested. srv6 (blackhole) held 5/5 and never released.
+  K4  wh2_control_hold: no honest server held, and no honest party blamed by
+      the witness, in 5/5 runs; honest task success >= 99.9% in >= 4/5 runs
+      (the trust rail's λ = 0.85 sensitivity can still cost one run, as in
+      batch 1).
+  K5  Across all 25 runs, no honest server quarantined by the witness signal.
+
+Not predicted, reported as measured: how working probation changes the act
+arms (wh2_drop_act, wh2_forge_act) against batch 1; srv1's hold/release
+cycles.
+
+Run (about 2 h 10 min):
+  sudo ZTSDN_ALLOW_FORGERY=1 ARMS="wh2_control_hold wh2_forge_act wh2_forge_hold wh2_drop_act wh2_drop_hold" tools/run_replicates.sh
+Score (no sudo):
+  python3 -m evaluation.witness_act_report data/runs --arms wh2_control_hold,wh2_forge_act,wh2_forge_hold,wh2_drop_act,wh2_drop_hold
+  python3 -m evaluation.replicates data/runs --arms wh2_control_hold,wh2_forge_act,wh2_forge_hold,wh2_drop_act,wh2_drop_hold --out-dir data/withold2_experiment_<date>

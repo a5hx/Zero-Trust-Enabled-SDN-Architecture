@@ -64,5 +64,5 @@ def test_scores_holds_releases_and_trials(tmp_path):
     assert r.trials == {'srv3': ['agree_failed', 'agree_served']}
     assert r.false_holds == ['srv1']
     text = war.report({'wh_x_hold': [r]})
-    assert 'trials judged                : 2 (1 served)' in text
+    assert 'trials routed / judged       : 0 / 2 (1 served)' in text
     assert 'honest servers held              : 1.0' in text

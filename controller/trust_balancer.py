@@ -354,6 +354,17 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # These flows carry a short hard_timeout (see _install_vip_pair) so the hole
     # closes on its own within about one task.
     PRIO_PROBATION = 460
+    # ...and the trial must get past the drop rules on EVERY switch it
+    # crosses, not only the client's ingress switch where the 460 rewrite
+    # pair lives: the drop rules are installed fleet-wide, so a rewritten
+    # trial packet died at the core and at the server's own switch, and the
+    # reply died at the server's switch. Found 2026-10-24: 327 of 369 witness
+    # trials were black-holed, and only clients behind the quarantined
+    # server's own switch could ever complete a trial -- trust-rail probation
+    # included (docs/predictions/withold_2026-10-23_OUTCOME.md). Between the
+    # drop rules and the rewrite pair, so on the ingress switch the rewrite
+    # still wins.
+    PRIO_TRIAL_PASSAGE = 455
     PRIO_HEALTH_CHECK = 450
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
@@ -366,6 +377,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # Cookie space for client-throttle rules, distinct from the per-server VIP
     # cookies (0x5A...) so flow statistics never attribute them to a server.
     CLIENT_THROTTLE_COOKIE_BASE = 0x5C00000000000000
+    # Trial-passage rules (PRIO_TRIAL_PASSAGE): their own cookie space, so flow
+    # statistics and the switch witness never read them as a server's VIP rules.
+    TRIAL_PASSAGE_COOKIE_BASE = 0x5D00000000000000
     # Per-client meters live above the per-server ones (1..N).
     CLIENT_METER_BASE = 1000
     PRIO_MISS = 0
@@ -1284,6 +1298,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
             cookie=cookie, idle_timeout=idle_timeout,
             hard_timeout=hard_timeout,
         )
+        if probation:
+            self._install_trial_passage(client_ip, client_port, node_id, hard_timeout)
 
         # Rendered as text here rather than in the browser: this is the exact
         # rewrite the advisor wants to see ("rules"), and building the string
@@ -1318,6 +1334,32 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 },
             ],
         )
+
+    def _install_trial_passage(self, client_ip: str, client_port: int, node_id: str,
+                               hard_timeout: int) -> None:
+        """Let one trial connection through the quarantine's drop rules on
+        every switch, for as long as the trial's own rules live: its TCP
+        packets both ways (already rewritten to the server's real address
+        beyond the ingress switch), and ARP between the server and that client,
+        which the server may need before it can answer. See PRIO_TRIAL_PASSAGE."""
+        s_ip = self.inventory.server_ip(node_id)
+        cookie = self.TRIAL_PASSAGE_COOKIE_BASE | srv_index(node_id)
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            for match in (
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                                ipv4_src=client_ip, tcp_src=client_port,
+                                ipv4_dst=s_ip, tcp_dst=self.node_port),
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                                ipv4_src=s_ip, tcp_src=self.node_port,
+                                ipv4_dst=client_ip, tcp_dst=client_port),
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP,
+                                arp_spa=s_ip, arp_tpa=client_ip),
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP,
+                                arp_spa=client_ip, arp_tpa=s_ip),
+            ):
+                self._install_goto_l2(dp, self.TABLE_VIP, self.PRIO_TRIAL_PASSAGE, match, [],
+                                      cookie=cookie, hard_timeout=hard_timeout)
 
     def _resend_packet(self, dp, msg, in_port) -> None:
         """Resubmit the just-punted packet through the pipeline from table 0,

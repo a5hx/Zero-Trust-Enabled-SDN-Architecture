@@ -1,0 +1,18 @@
+SWITCH WITNESS, LIVE VERDICTS (observe-only)
+==============================================================================
+wh_control_hold: 5 run(s)
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wh_forge_act: 5 run(s)
+    server:srv3      blamed 5/5 [57%, 100%]  median 11.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wh_forge_hold: 5 run(s)
+    server:srv3      blamed 5/5 [57%, 100%]  median 11.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wh_drop_act: 5 run(s)
+    server:srv1      blamed 5/5 [57%, 100%]  median 14.1 s
+    server:srv6      blamed 5/5 [57%, 100%]  median 12.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wh_drop_hold: 5 run(s)
+    server:srv1      blamed 5/5 [57%, 100%]  median 12.1 s
+    server:srv6      blamed 5/5 [57%, 100%]  median 11.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
