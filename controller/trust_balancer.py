@@ -613,10 +613,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # Phase 2b: the switches as a third witness (controller/switch_witness.py).
         # Observe-only: it publishes `witness` verdicts and quarantines nobody.
         # Off unless controller.witness.enabled, so earlier configs are unchanged.
-        from controller.switch_witness import SwitchWitness, WitnessConfig, parse_switch_lies
+        from controller.switch_witness import (SwitchWitness, WitnessConfig, parse_act,
+                                               parse_switch_lies)
         wcfg = (self.cfg['controller'].get('witness') or {})
         self.witness: Any = (SwitchWitness(self.vip_ip, WitnessConfig.from_config(self.cfg['controller']))
                              if wcfg.get('enabled') else None)
+        # Letting the verdicts act (controller.witness.act; parse_act says how).
+        self._witness_act_servers, self._witness_act_clients = parse_act(wcfg)
+        self._witness_verdict: Optional[Dict[str, Any]] = None
+        if self._witness_act_servers:
+            self.flow_monitor.witness_verdicts = lambda: self._witness_verdict
         # Phase 2c: an emulated misreporting switch, keyed by dpid.
         self._switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
         self._started_mono = time.monotonic()
@@ -777,6 +783,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
             hub.sleep(self.monitor_interval_s)
             self.witness.tick(time.monotonic())
             v = self.witness.verdicts()
+            self._witness_verdict = v
             blamed = (tuple(v['servers']), tuple(v['switches']), tuple(v['clients']))
             n += 1
             if blamed != last or n % 5 == 0:
@@ -1611,6 +1618,21 @@ class TrustBalancerApp(app_manager.OSKenApp):
             )
             return None
         node_id = completed.node_id
+
+        if (getattr(self, '_witness_act_clients', False) and completed.chargeable
+                and device_id in ((self._witness_verdict or {}).get('clients') or ())):
+            # The switch witness blames this client: its reports disagree with
+            # what the switches saw, and its switch-mates' do not. Publish the
+            # outcome, so availability still counts what the client claims, but
+            # charge it to no server. The witness has already seen the report
+            # above, so it keeps judging the client on fresh evidence.
+            self.bus.publish(
+                'report', device=device_id, node=node_id, status=status,
+                latency_ms=round(latency_ms, 2),
+                trust=round(self.state.trust_calc.get_score(node_id), 4),
+                charged=False, attribution='witness_discounted',
+            )
+            return None
 
         if not completed.chargeable:
             # This flow was re-steered onto node_id by _redispatch_after_quarantine,
