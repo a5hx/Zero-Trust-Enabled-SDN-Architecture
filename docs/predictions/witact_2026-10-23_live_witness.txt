@@ -1,0 +1,18 @@
+SWITCH WITNESS, LIVE VERDICTS (observe-only)
+==============================================================================
+wa_control: 5 run(s)
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wa_badmouth_observe: 5 run(s)
+    client:iot12     blamed 5/5 [57%, 100%]  median 10.1 s
+    client:iot3      blamed 5/5 [57%, 100%]  median 9.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wa_badmouth_act: 5 run(s)
+    client:iot12     blamed 5/5 [57%, 100%]  median 10.1 s
+    client:iot3      blamed 5/5 [57%, 100%]  median 10.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wa_forge_observe: 5 run(s)
+    server:srv3      blamed 5/5 [57%, 100%]  median 10.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+wa_forge_act: 5 run(s)
+    server:srv3      blamed 5/5 [57%, 100%]  median 10.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
