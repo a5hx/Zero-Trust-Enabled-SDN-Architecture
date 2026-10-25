@@ -181,7 +181,7 @@ supersedes them.
 | Liar experiment (consistent, split-claim, adaptive liars); verified routing | Done; in the paper |
 | Heterogeneous hardware and throttling (cgroup v2) | Done; in the paper |
 | Switch witness: offline, live, acting | Done; acting not yet in the paper |
-| Witness hold (a blamed server stays held until it serves trials) | Re-run in progress (`wh3_*`, see `docs/predictions/withold3_2026-10-25.txt`) |
+| Witness hold (a blamed server stays held until it serves trials) | Done (25 runs, `docs/predictions/withold3_2026-10-25_OUTCOME.md`): honest success under forged evidence 97.7% → 99.1%; not yet in the paper |
 | Server attestation (software quote) | Done; in the paper. No TPM (swtpm feasibility passed) |
 | Raft ledger, wired in (opt-in), live leader kill | Done |
 | Replica re-verification of the controller | Done; in the paper |
