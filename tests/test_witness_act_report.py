@@ -66,3 +66,26 @@ def test_scores_holds_releases_and_trials(tmp_path):
     text = war.report({'wh_x_hold': [r]})
     assert 'trials routed / judged       : 0 / 2 (1 served)' in text
     assert 'honest servers held              : 1.0' in text
+
+
+def test_scores_trial_tails_charged_to_another_server(tmp_path):
+    nodes = [{'id': 'srv1', 'kind': 'server'},
+             {'id': 'srv3', 'kind': 'server', 'attack': 'drop', 'attack_start_s': 60}]
+    trial = {'type': 'route', 'client_ip': '10.0.0.20', 'client_port': 59628,
+             'chosen': 'srv3', 'probation': True, 'witness_trial': True}
+    ev = [(0, {'type': 'topology', 'graph': {'nodes': nodes}}),
+          (70, {'type': 'witness_hold', 'node': 'srv3', 'action': 'held'}),
+          (80, trial),
+          (84.07, {**trial, 'chosen': 'srv1', 'probation': False, 'witness_trial': False}),
+          (84.09, {'type': 'report', 'device': 'iot20', 'node': 'srv1', 'status': 'timeout'}),
+          (90, {**trial, 'client_port': 40000}),
+          (94.07, {'type': 'route_ignored', 'client_ip': '10.0.0.20', 'client_port': 40000,
+                   'reason': 'not_syn'}),
+          (94.09, {'type': 'report', 'device': 'iot20', 'node': 'srv3', 'status': 'timeout'}),
+          (100, {'type': 'route', 'client_ip': '10.0.0.20', 'client_port': 59628, 'chosen': 'srv1'})]
+    r = war.score(_write(tmp_path, ev), 'wh_x_hold')
+    assert r.tails_rerouted == {'srv3': 1} and r.tails_charged == {'srv3': 1}
+    assert r.routes_ignored == 1
+    text = war.report({'wh_x_hold': [r]})
+    assert 'trial tails re-routed / charged elsewhere: 1 / 1' in text
+    assert 'non-SYN PacketIns not routed     : 1' in text

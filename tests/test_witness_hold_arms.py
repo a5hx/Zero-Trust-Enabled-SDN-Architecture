@@ -47,9 +47,10 @@ def test_holding_arms_parse():
         assert parse_hold(_load(arm)['controller']['witness']) == (WitnessHold(10.0, 3) if holds else None)
 
 
+@pytest.mark.parametrize('rerun', ['wh2_', 'wh3_'])
 @pytest.mark.parametrize('arm', list(ARMS))
-def test_rerun_arms_change_only_the_recording(arm):
-    a, b = _load(arm), _load(arm.replace('wh_', 'wh2_'))
-    assert b['controller']['dashboard'].pop('record_path') == f"data/events_{arm.replace('wh_', 'wh2_')}.jsonl"
+def test_rerun_arms_change_only_the_recording(arm, rerun):
+    a, b = _load(arm), _load(arm.replace('wh_', rerun))
+    assert b['controller']['dashboard'].pop('record_path') == f"data/events_{arm.replace('wh_', rerun)}.jsonl"
     a['controller']['dashboard'].pop('record_path')
     assert a == b

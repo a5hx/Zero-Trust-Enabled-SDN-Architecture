@@ -982,6 +982,24 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         self._check_flood(client_ip)
 
+        if not tcp_pkt.has_flags(tcp.TCP_SYN) or tcp_pkt.has_flags(tcp.TCP_ACK):
+            # Only a SYN opens a connection. Anything else is the tail of one
+            # whose rules have expired -- above all a trial's, whose
+            # hard_timeout equals the client's task timeout, so the client's
+            # FIN on giving up arrives just after its rules have gone. Routing
+            # it re-registered the dead connection on a fresh server, and the
+            # timeout report that followed 20 ms later was charged to that
+            # (honest) server instead of the trial's. Found 2026-10-25: 41 of
+            # 94 witness trials in the wh2 hold arms
+            # (docs/predictions/withold2_2026-10-24_OUTCOME.md). Drop it: the
+            # dispatch it belongs to keeps its report.
+            logger.info("Not routing non-SYN %s:%d (flags 0x%03x) -- tail of an "
+                        "expired connection", client_ip, client_port, tcp_pkt.bits)
+            self.bus.publish('route_ignored', client_ip=client_ip,
+                             client_port=client_port, tcp_flags=tcp_pkt.bits,
+                             dpid=dp.id, reason='not_syn')
+            return
+
         chosen, probation = self.state.choose_edge_node_ex()
         if chosen is None:
             logger.warning(
