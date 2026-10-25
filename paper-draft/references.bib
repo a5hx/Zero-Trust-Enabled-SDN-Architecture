@@ -11,6 +11,18 @@
 %   Not independently re-verified this session -- widely reproduced classics,
 %   metadata carried from the project's earlier reference list: the remainder.
 %   See CHECKLIST.md before submission.
+%
+% REVISION 3 ADDITIONS (2026-10-14..19), each checked by web search against a
+% publisher or author page: douceur2002sybil (LNCS 2429, pp. 251-260, DOI),
+% xiao2019edgesec (Proc. IEEE 107, first page 1608, DOI), roman2018mec (FGCS 78,
+% 680-698, DOI), scotthayward2016sdnsec (COMST 18(1) 623-654, DOI),
+% kreutz2013secure (HotSDN 2013), buck2021zt (Computers & Security 110, 102436,
+% DOI), huang2017gray (HotOS 2017), huang2018panorama (OSDI 2018, title/venue),
+% lu2023perseus (FAST 2023), carlini2019evaluating (arXiv 1902.06705),
+% tramer2020adaptive (arXiv 2002.08347), envoy_outlier (project documentation).
+% Where a full author list was not confirmed, the entry says "and others"
+% rather than guess. rfc9334 is the IETF RATS architecture RFC; confirm the
+% author list against rfc-editor.org before submission.
 
 @techreport{rose2020zta,
   author      = {S. Rose and O. Borchert and S. Mitchell and S. Connelly},
@@ -187,4 +199,140 @@
   journal = {Journal of the American Statistical Association},
   volume  = {22}, number = {158}, pages = {209--212}, year = {1927},
   doi     = {10.1080/01621459.1927.10502953}
+}
+
+% --------------------------------------------------------------------------
+% Revision 3 additions
+% --------------------------------------------------------------------------
+@inproceedings{douceur2002sybil,
+  author    = {J. R. Douceur},
+  title     = {The {Sybil} Attack},
+  booktitle = {Peer-to-Peer Systems (IPTPS 2002)},
+  series    = {LNCS}, volume = {2429}, pages = {251--260}, year = {2002},
+  doi       = {10.1007/3-540-45748-8_24}
+}
+
+@article{xiao2019edgesec,
+  author  = {Y. Xiao and Y. Jia and C. Liu and X. Cheng and J. Yu and W. Lv},
+  title   = {Edge Computing Security: State of the Art and Challenges},
+  journal = {Proceedings of the IEEE},
+  volume  = {107}, pages = {1608}, year = {2019},
+  doi     = {10.1109/JPROC.2019.2918437}
+}
+
+@article{roman2018mec,
+  author  = {R. Roman and J. Lopez and M. Mambo},
+  title   = {Mobile Edge Computing, Fog et al.: A Survey and Analysis of Security
+             Threats and Challenges},
+  journal = {Future Generation Computer Systems},
+  volume  = {78}, pages = {680--698}, year = {2018},
+  doi     = {10.1016/j.future.2016.11.009}
+}
+
+@article{scotthayward2016sdnsec,
+  author  = {S. Scott-Hayward and S. Natarajan and S. Sezer},
+  title   = {A Survey of Security in Software Defined Networks},
+  journal = {IEEE Communications Surveys \& Tutorials},
+  volume  = {18}, number = {1}, pages = {623--654}, year = {2016},
+  doi     = {10.1109/COMST.2015.2453114}
+}
+
+@inproceedings{kreutz2013secure,
+  author    = {D. Kreutz and F. M. V. Ramos and P. Ver{\'\i}ssimo},
+  title     = {Towards Secure and Dependable Software-Defined Networks},
+  booktitle = {ACM SIGCOMM Workshop on Hot Topics in Software Defined Networking
+               (HotSDN)}, year = {2013}
+}
+
+@article{buck2021zt,
+  author  = {C. Buck and C. Olenberger and A. Schweizer and F. V{\"o}lter and T. Eymann},
+  title   = {Never Trust, Always Verify: A Multivocal Literature Review on Current
+             Knowledge and Research Gaps of Zero-Trust},
+  journal = {Computers \& Security},
+  volume  = {110}, pages = {102436}, year = {2021},
+  doi     = {10.1016/j.cose.2021.102436}
+}
+
+@techreport{rfc9334,
+  author      = {H. Birkholz and others},
+  title       = {Remote {ATtestation} procedureS ({RATS}) Architecture},
+  institution = {Internet Engineering Task Force},
+  number      = {RFC 9334}, year = {2023},
+  doi         = {10.17487/RFC9334}
+}
+
+@inproceedings{huang2017gray,
+  author    = {P. Huang and C. Guo and L. Zhou and J. R. Lorch and Y. Dang and
+               M. Chintalapati and R. Yao},
+  title     = {Gray Failure: The {Achilles'} Heel of Cloud-Scale Systems},
+  booktitle = {Workshop on Hot Topics in Operating Systems (HotOS)}, year = {2017}
+}
+
+@inproceedings{huang2018panorama,
+  author    = {P. Huang and others},
+  title     = {Capturing and Enhancing In Situ System Observability for Failure
+               Detection},
+  booktitle = {USENIX Symposium on Operating Systems Design and Implementation
+               (OSDI)}, year = {2018}
+}
+
+@inproceedings{lu2023perseus,
+  author    = {R. Lu and others},
+  title     = {Perseus: A Fail-Slow Detection Framework for Cloud Storage Systems},
+  booktitle = {USENIX Conference on File and Storage Technologies (FAST)},
+  year      = {2023}
+}
+
+@misc{carlini2019evaluating,
+  author       = {N. Carlini and others},
+  title        = {On Evaluating Adversarial Robustness},
+  howpublished = {arXiv:1902.06705}, year = {2019}
+}
+
+@inproceedings{tramer2020adaptive,
+  author    = {F. Tram{\`e}r and N. Carlini and W. Brendel and A. M{\k{a}}dry},
+  title     = {On Adaptive Attacks to Adversarial Example Defenses},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2020}, note = {arXiv:2002.08347}
+}
+
+@misc{envoy_outlier,
+  author       = {{Envoy Project}},
+  title        = {Outlier Detection -- Envoy Proxy Documentation},
+  howpublished = {\url{https://envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier}},
+  note         = {Accessed 14 October 2026}, year = {2026}
+}
+
+% Misreporting-attack prior art (added 2026-10-19). Author lists read from the
+% papers' own first pages (burke2023, yu2024: author PDFs; saha2025: arXiv
+% HTML; dhawan2015: NDSS programme page). Volume/issue/pages for burke2023 and
+% yu2024 are as cited by saha2025 and match the DOIs' landing URLs; confirm
+% the page ranges against the publisher before submission.
+@article{burke2023misreporting,
+  author  = {Q. Burke and P. McDaniel and T. La Porta and M. Yu and T. He},
+  title   = {Misreporting Attacks Against Load Balancers in Software-Defined
+             Networking},
+  journal = {Mobile Networks and Applications}, volume = {28}, number = {4},
+  pages   = {1482--1497}, year = {2023}, doi = {10.1007/s11036-023-02156-0}
+}
+
+@article{yu2024stealthy,
+  author  = {M. Yu and Q. K. Burke and T. La Porta and P. McDaniel},
+  title   = {Stealthy Misreporting Attacks Against Load Balancing},
+  journal = {IEEE/ACM Transactions on Networking}, volume = {32}, number = {4},
+  pages   = {3622--3635}, year = {2024}, doi = {10.1109/TNET.2024.3396387}
+}
+
+@misc{saha2025misreporting,
+  author       = {S. Saha and M. N. Absur and S. Yousefi and S. Debroy},
+  title        = {Detection of Misreporting Attacks on Software-Defined Immersive
+                  Environments},
+  howpublished = {arXiv:2509.18040}, year = {2025}
+}
+
+@inproceedings{dhawan2015sphinx,
+  author    = {M. Dhawan and R. Poddar and K. Mahajan and V. Mann},
+  title     = {{SPHINX}: Detecting Security Attacks in Software-Defined Networks},
+  booktitle = {Network and Distributed System Security Symposium (NDSS)},
+  year      = {2015}
 }

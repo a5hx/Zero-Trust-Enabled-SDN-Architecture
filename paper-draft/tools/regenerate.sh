@@ -5,9 +5,13 @@
 # the raw recordings and the project's own scoring output.
 #
 # This does NOT re-run the live experiments -- those need root, Open vSwitch
-# and Mininet, and about 100 minutes:
-#     sudo tools/run_replicates.sh
-# It re-scores the 15 recordings that run already archived.
+# and Mininet (about 6 minutes per run):
+#     sudo ARMS="base scoreonly treat" tools/run_replicates.sh
+#     sudo ARMS="scoreonly_t040 scoreonly_t045 scoreonly_t050" tools/run_replicates.sh
+#     sudo ARMS="flood_off flood_on" tools/run_replicates.sh
+# It re-scores the 40 recordings those runs archived under data/runs/, and
+# copies the replicated-ledger failover evidence from
+# data/raft_failover_2026-10-19/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -15,10 +19,31 @@ OUT="$ROOT/paper-draft/evidence"
 cd "$ROOT"
 
 [ -d data/runs ] || { echo "MISSING: data/runs -- see paper-draft/README.md"; exit 1; }
-mkdir -p "$OUT/replicates" "$OUT/capacity_cliff"
+mkdir -p "$OUT/replicates" "$OUT/capacity_cliff" "$OUT/theta_sweep" "$OUT/flood" "$OUT/raft"
 
-echo "== live replicates: Tables II-VI (the paper's core) =="
-python3 -m evaluation.replicates data/runs --out-dir "$OUT/replicates"
+echo "== live ablation: Tables II-IV and VI =="
+python3 -m evaluation.replicates data/runs --arms base,scoreonly,treat \
+        --out-dir "$OUT/replicates"
+
+echo "== live threshold sweep: Table V, Fig. 2 =="
+python3 -m evaluation.replicates data/runs \
+        --arms scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat \
+        --out-dir "$OUT/theta_sweep"
+
+echo "== live flood experiment: Table VII =="
+# flood_on r01 is excluded: the host suspended mid-run (recorded span 24331 s,
+# gaps of 891 s and 23092 s after t=316 s). Score the other nine through links.
+FL="$(mktemp -d)"; trap 'rm -rf "$FL"' EXIT
+mkdir -p "$FL/flood_off" "$FL/flood_on"
+for r in data/runs/flood_off/r0[1-5].jsonl; do ln -s "$ROOT/$r" "$FL/flood_off/"; done
+for r in data/runs/flood_on/r0[2-5].jsonl; do ln -s "$ROOT/$r" "$FL/flood_on/"; done
+python3 -m evaluation.replicates "$FL" --arms flood_off,flood_on --out-dir "$OUT/flood"
+mv "$OUT/flood/summary.txt" "$OUT/flood/summary_primary.txt"
+
+echo "== replicated ledger with a leader kill (S VII-F) =="
+RF=data/raft_failover_2026-10-19
+cp -p "$RF/raft_failover_20261019_140900.json" "$OUT/raft/failover_report.json"
+cp -p "$RF/nfr_report.txt" "$OUT/raft/nfr_report.txt"
 
 echo "== NFRs across the enforced runs =="
 : > "$OUT/nfr_replicates.txt"

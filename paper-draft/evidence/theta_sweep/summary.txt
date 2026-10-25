@@ -1,0 +1,370 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  scoreonly  score-only enforcement: 5 run(s)
+      r01.jsonl  324.7 s  theta=0.30  anomaly_rail_enforced=False
+      r02.jsonl  322.9 s  theta=0.30  anomaly_rail_enforced=False
+      r03.jsonl  319.6 s  theta=0.30  anomaly_rail_enforced=False
+      r04.jsonl  320.4 s  theta=0.30  anomaly_rail_enforced=False
+      r05.jsonl  320.4 s  theta=0.30  anomaly_rail_enforced=False
+  scoreonly_t040 score-only enforcement, theta 0.40: 5 run(s)
+      r01.jsonl  318.5 s  theta=0.40  anomaly_rail_enforced=False
+      r02.jsonl  320.7 s  theta=0.40  anomaly_rail_enforced=False
+      r03.jsonl  312.6 s  theta=0.40  anomaly_rail_enforced=False
+      r04.jsonl  313.6 s  theta=0.40  anomaly_rail_enforced=False
+      r05.jsonl  318.6 s  theta=0.40  anomaly_rail_enforced=False
+  scoreonly_t045 score-only enforcement, theta 0.45: 5 run(s)
+      r01.jsonl  319.6 s  theta=0.45  anomaly_rail_enforced=False
+      r02.jsonl  319.3 s  theta=0.45  anomaly_rail_enforced=False
+      r03.jsonl  311.9 s  theta=0.45  anomaly_rail_enforced=False
+      r04.jsonl  315.6 s  theta=0.45  anomaly_rail_enforced=False
+      r05.jsonl  311.6 s  theta=0.45  anomaly_rail_enforced=False
+  scoreonly_t050 score-only enforcement, theta 0.50: 5 run(s)
+      r01.jsonl  321.6 s  theta=0.50  anomaly_rail_enforced=False
+      r02.jsonl  324.2 s  theta=0.50  anomaly_rail_enforced=False
+      r03.jsonl  314.3 s  theta=0.50  anomaly_rail_enforced=False
+      r04.jsonl  316.0 s  theta=0.50  anomaly_rail_enforced=False
+      r05.jsonl  314.8 s  theta=0.50  anomaly_rail_enforced=False
+  treat      score + anomaly gate (full): 5 run(s)
+      r01.jsonl  324.8 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  325.2 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  323.3 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  320.3 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  322.6 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    scoreonly  99.40%  [99.29, 99.52]  sd 0.09  n=5
+    scoreonly_t040 99.33%  [99.02, 99.65]  sd 0.25  n=5
+    scoreonly_t045 99.11%  [98.82, 99.39]  sd 0.23  n=5
+    scoreonly_t050 99.44%  [99.28, 99.60]  sd 0.13  n=5
+    treat      99.25%  [99.06, 99.44]  sd 0.15  n=5
+throughput
+    scoreonly  19.53 tps  [19.23, 19.84]  sd 0.25  n=5
+    scoreonly_t040 20.07 tps  [19.63, 20.51]  sd 0.36  n=5
+    scoreonly_t045 19.20 tps  [18.74, 19.66]  sd 0.37  n=5
+    scoreonly_t050 18.78 tps  [18.40, 19.16]  sd 0.31  n=5
+    treat      19.72 tps  [19.12, 20.31]  sd 0.48  n=5
+mean latency (success)
+    scoreonly  98.3 ms  [93.7, 103.0]  sd 3.8  n=5
+    scoreonly_t040 95.6 ms  [93.6, 97.5]  sd 1.5  n=5
+    scoreonly_t045 95.8 ms  [93.8, 97.9]  sd 1.6  n=5
+    scoreonly_t050 95.4 ms  [93.2, 97.5]  sd 1.7  n=5
+    treat      91.6 ms  [86.8, 96.5]  sd 3.9  n=5
+p95 latency (success)
+    scoreonly  175.6 ms  [161.1, 190.2]  sd 11.7  n=5
+    scoreonly_t040 172.5 ms  [166.6, 178.4]  sd 4.7  n=5
+    scoreonly_t045 157.2 ms  [154.9, 159.4]  sd 1.8  n=5
+    scoreonly_t050 148.5 ms  [139.9, 157.1]  sd 6.9  n=5
+    treat      137.2 ms  [128.5, 145.9]  sd 7.0  n=5
+timeouts
+    scoreonly  35.4  [26.8, 44.0]  sd 6.9  n=5
+    scoreonly_t040 38.6  [20.6, 56.6]  sd 14.5  n=5
+    scoreonly_t045 52.4  [34.2, 70.6]  sd 14.6  n=5
+    scoreonly_t050 31.4  [20.1, 42.7]  sd 9.1  n=5
+    treat      43.2  [31.0, 55.4]  sd 9.9  n=5
+honest-device availability
+    scoreonly  99.29%  [99.15, 99.43]  sd 0.11  n=5
+    scoreonly_t040 99.23%  [98.93, 99.53]  sd 0.24  n=5
+    scoreonly_t045 99.02%  [98.79, 99.24]  sd 0.18  n=5
+    scoreonly_t050 99.35%  [99.17, 99.52]  sd 0.14  n=5
+    treat      99.13%  [98.92, 99.34]  sd 0.17  n=5
+starved honest devices (<50%)
+    scoreonly  0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t040 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t045 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t050 0.00  [0.00, 0.00]  sd 0.00  n=5
+    treat      0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    scoreonly  0.996  [0.994, 0.998]  sd 0.002  n=5
+    scoreonly_t040 0.997  [0.993, 1.000*]  sd 0.003  n=5
+    scoreonly_t045 0.996  [0.994, 0.999]  sd 0.002  n=5
+    scoreonly_t050 0.995  [0.989, 1.000*]  sd 0.005  n=5
+    treat      0.996  [0.991, 1.000*]  sd 0.004  n=5
+Jain, full roster
+    scoreonly  0.681  [0.672, 0.690]  sd 0.007  n=5
+    scoreonly_t040 0.674  [0.668, 0.681]  sd 0.005  n=5
+    scoreonly_t045 0.645  [0.623, 0.666]  sd 0.017  n=5
+    scoreonly_t050 0.620  [0.606, 0.634]  sd 0.011  n=5
+    treat      0.622  [0.615, 0.628]  sd 0.005  n=5
+share of routes to attackers
+    scoreonly  17.37%  [16.74, 18.00]  sd 0.51  n=5
+    scoreonly_t040 16.56%  [16.12, 17.00]  sd 0.35  n=5
+    scoreonly_t045 13.47%  [11.63, 15.32]  sd 1.49  n=5
+    scoreonly_t050 11.27%  [10.12, 12.42]  sd 0.93  n=5
+    treat      11.63%  [10.84, 12.42]  sd 0.63  n=5
+honest servers ever quarantined
+    scoreonly  0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t040 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t045 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t050 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    treat      0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    scoreonly  0.499  [0.497, 0.501]  sd 0.002  n=5
+    scoreonly_t040 0.467  [0.412, 0.523]  sd 0.045  n=5
+    scoreonly_t045 0.500  [0.500, 0.500]  sd 0.000  n=5
+    scoreonly_t050 0.499  [0.498, 0.501]  sd 0.001  n=5
+    treat      0.484  [0.440, 0.528]  sd 0.035  n=5
+attackers quarantined BEFORE onset
+    scoreonly  0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t040 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t045 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t050 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    treat      0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    scoreonly  100.00%  [100.00, 100.00]  sd 0.00  n=5
+    scoreonly_t040 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    scoreonly_t045 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    scoreonly_t050 99.15%  [96.77, 100.00*]  sd 1.91  n=5
+    treat      100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    scoreonly  41.38%  [40.21, 42.55]  sd 0.94  n=5
+    scoreonly_t040 41.92%  [40.77, 43.07]  sd 0.92  n=5
+    scoreonly_t045 56.40%  [53.21, 59.59]  sd 2.57  n=5
+    scoreonly_t050 68.19%  [62.63, 73.76]  sd 4.48  n=5
+    treat      67.13%  [64.28, 69.97]  sd 2.29  n=5
+attacks classified exactly (of 8)
+    scoreonly  7.00  [7.00, 7.00]  sd 0.00  n=5
+    scoreonly_t040 7.00  [7.00, 7.00]  sd 0.00  n=5
+    scoreonly_t045 7.00  [7.00, 7.00]  sd 0.00  n=5
+    scoreonly_t050 7.00  [7.00, 7.00]  sd 0.00  n=5
+    treat      6.80  [6.24, 7.36]  sd 0.45  n=5
+attacks in the right family (of 8)
+    scoreonly  8.00  [8.00, 8.00]  sd 0.00  n=5
+    scoreonly_t040 8.00  [8.00, 8.00]  sd 0.00  n=5
+    scoreonly_t045 8.00  [8.00, 8.00]  sd 0.00  n=5
+    scoreonly_t050 8.00  [8.00, 8.00]  sd 0.00  n=5
+    treat      8.00  [8.00, 8.00]  sd 0.00  n=5
+honest subjects mislabelled
+    scoreonly  0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t040 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t045 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t050 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    treat      0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    scoreonly  97.92%  [97.92, 97.92]  sd 0.00  n=5
+    scoreonly_t040 97.92%  [97.92, 97.92]  sd 0.00  n=5
+    scoreonly_t045 97.92%  [97.92, 97.92]  sd 0.00  n=5
+    scoreonly_t050 97.50%  [96.34, 98.66]  sd 0.93  n=5
+    treat      97.50%  [96.34, 98.66]  sd 0.93  n=5
+honest devices: mean latency
+    scoreonly  98.7 ms  [95.9, 101.5]  sd 2.3  n=5
+    scoreonly_t040 99.4 ms  [95.9, 102.9]  sd 2.8  n=5
+    scoreonly_t045 97.7 ms  [95.3, 100.0]  sd 1.9  n=5
+    scoreonly_t050 95.2 ms  [93.6, 96.7]  sd 1.3  n=5
+    treat      91.5 ms  [89.8, 93.2]  sd 1.4  n=5
+honest devices: p95 latency
+    scoreonly  174.0 ms  [163.6, 184.4]  sd 8.4  n=5
+    scoreonly_t040 176.5 ms  [171.2, 181.8]  sd 4.3  n=5
+    scoreonly_t045 158.4 ms  [153.1, 163.7]  sd 4.3  n=5
+    scoreonly_t050 148.6 ms  [142.8, 154.3]  sd 4.6  n=5
+    treat      136.0 ms  [130.4, 141.5]  sd 4.5  n=5
+honest devices: task success
+    scoreonly  99.29%  [99.16, 99.43]  sd 0.11  n=5
+    scoreonly_t040 99.23%  [98.94, 99.53]  sd 0.24  n=5
+    scoreonly_t045 99.03%  [98.80, 99.25]  sd 0.18  n=5
+    scoreonly_t050 99.36%  [99.18, 99.53]  sd 0.14  n=5
+    treat      99.14%  [98.93, 99.34]  sd 0.16  n=5
+tasks served to flooding device(s)
+    scoreonly  1468.8  [1349.4, 1588.2]  sd 96.2  n=5
+    scoreonly_t040 1554.8  [1416.5, 1693.1]  sd 111.4  n=5
+    scoreonly_t045 1343.8  [1269.1, 1418.5]  sd 60.1  n=5
+    scoreonly_t050 1228.0  [1141.1, 1314.9]  sd 70.0  n=5
+    treat      1545.4  [1342.8, 1748.0]  sd 163.1  n=5
+client throttles applied
+    scoreonly  0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t040 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t045 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t050 0.00  [0.00, 0.00]  sd 0.00  n=5
+    treat      0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    scoreonly  0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t040 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t045 0.00  [0.00, 0.00]  sd 0.00  n=5
+    scoreonly_t050 0.00  [0.00, 0.00]  sd 0.00  n=5
+    treat      0.00  [0.00, 0.00]  sd 0.00  n=5
+run length
+    scoreonly  321.6 s  [318.9, 324.3]  sd 2.1  n=5
+    scoreonly_t040 316.8 s  [312.4, 321.2]  sd 3.5  n=5
+    scoreonly_t045 315.6 s  [310.8, 320.4]  sd 3.9  n=5
+    scoreonly_t050 318.2 s  [312.6, 323.7]  sd 4.5  n=5
+    treat      323.2 s  [320.8, 325.7]  sd 2.0  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv1 (grayhole)
+    scoreonly  score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 15.6 s, range 12.1-22.6 s; mean 16.6 [11.5, 21.8]
+               min T after onset   : 0.180  [0.083, 0.277]  sd 0.078  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 15.6 s, range 12.1-22.6 s; mean 16.6 [11.5, 21.8]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.252  [0.211, 0.292]  sd 0.033  n=5
+    scoreonly_t040 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 13.0 s, range 10.6-19.6 s; mean 13.9 [9.5, 18.2]
+               min T after onset   : 0.210  [0.081, 0.340]  sd 0.104  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 13.0 s, range 10.6-19.6 s; mean 13.9 [9.5, 18.2]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.310  [0.172, 0.447]  sd 0.111  n=5
+    scoreonly_t045 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 11.4 s, range 10.5-11.4 s; mean 11.1 [10.5, 11.6]
+               min T after onset   : 0.204  [0.124, 0.285]  sd 0.065  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 11.4 s, range 10.5-11.4 s; mean 11.1 [10.5, 11.6]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.406  [0.377, 0.434]  sd 0.023  n=5
+    scoreonly_t050 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 12.0 s, range 9.3-12.5 s; mean 11.4 [9.6, 13.1]
+               min T after onset   : 0.283  [0.165, 0.401]  sd 0.095  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 12.0 s, range 9.3-12.6 s; mean 11.4 [9.6, 13.1]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.394  [0.350, 0.437]  sd 0.035  n=5
+    treat      score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 31.7 s, range 12.3-125.0 s; mean 43.5 [-14.5, 101.6]
+               min T after onset   : 0.129  [0.084, 0.174]  sd 0.036  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 15.5 s, range 12.3-31.7 s; mean 17.8 [7.9, 27.6]
+                 rail that fired   : both 3/5, gate 2/5
+                 T at quarantine   : 0.220  [0.066, 0.374]  sd 0.124  n=5
+
+srv3 (sybil)
+    scoreonly  score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.404  [0.401, 0.408]  sd 0.003  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+    scoreonly_t040 score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.408  [0.403, 0.414]  sd 0.004  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+    scoreonly_t045 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 26.2 s, range 14.5-91.9 s; mean 41.5 [2.1, 80.9]
+               min T after onset   : 0.423  [0.417, 0.429]  sd 0.005  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 26.2 s, range 14.5-91.9 s; mean 41.5 [2.1, 80.9]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.439  [0.427, 0.451]  sd 0.010  n=5
+    scoreonly_t050 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 50.1 s, range 32.9-57.9 s; mean 46.5 [34.3, 58.6]
+               min T after onset   : 0.421  [0.401, 0.442]  sd 0.017  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 50.1 s, range 32.9-57.9 s; mean 46.5 [34.4, 58.6]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.470  [0.441, 0.498]  sd 0.023  n=5
+    treat      score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.617  [0.578, 0.656]  sd 0.031  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 7.6 s, range 5.9-10.2 s; mean 7.6 [5.5, 9.8]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.710  [0.630, 0.791]  sd 0.065  n=5
+
+srv6 (drop)
+    scoreonly  score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 10.7 s, range 9.8-12.0 s; mean 10.8 [9.7, 11.8]
+               min T after onset   : 0.148  [0.083, 0.214]  sd 0.053  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.7 s, range 9.8-12.0 s; mean 10.8 [9.7, 11.8]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.148  [0.083, 0.214]  sd 0.053  n=5
+    scoreonly_t040 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 9.4 s, range 8.3-11.4 s; mean 9.7 [8.0, 11.4]
+               min T after onset   : 0.151  [0.087, 0.215]  sd 0.052  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 9.4 s, range 8.3-11.4 s; mean 9.7 [8.0, 11.4]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.152  [0.089, 0.215]  sd 0.050  n=5
+    scoreonly_t045 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 9.4 s, range 8.9-11.4 s; mean 9.9 [8.6, 11.2]
+               min T after onset   : 0.127  [0.070, 0.183]  sd 0.046  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 9.4 s, range 8.9-11.4 s; mean 9.9 [8.6, 11.2]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.127  [0.070, 0.183]  sd 0.046  n=5
+    scoreonly_t050 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 10.0 s, range 8.7-12.5 s; mean 10.2 [8.4, 12.1]
+               min T after onset   : 0.147  [0.077, 0.217]  sd 0.056  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.0 s, range 8.7-12.5 s; mean 10.2 [8.4, 12.1]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.147  [0.077, 0.217]  sd 0.056  n=5
+    treat      score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 10.1 s, range 9.3-11.7 s; mean 10.5 [9.3, 11.8]
+               min T after onset   : 0.130  [0.074, 0.185]  sd 0.045  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.1 s, range 9.3-11.7 s; mean 10.5 [9.3, 11.8]
+                 rail that fired   : both 1/5, score 4/5
+                 T at quarantine   : 0.130  [0.074, 0.185]  sd 0.045  n=5
+
+srv8 (onoff)
+    scoreonly  score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.399  [0.394, 0.404]  sd 0.004  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+    scoreonly_t040 score crossed theta : 1/5  [4%, 62%]
+                 time to cross     : 1/5 runs; median 228.9 s, range 228.9-228.9 s
+               min T after onset   : 0.401  [0.398, 0.405]  sd 0.002  n=5
+               quarantined         : 1/5  [4%, 62%]
+                 containment       : 1/5 runs; median 228.9 s, range 228.9-228.9 s
+                 rail that fired   : score 1/1
+                 T at quarantine   : 0.398 (n=1, no CI)
+    scoreonly_t045 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 207.3 s, range 153.0-259.6 s; mean 209.6 [160.9, 258.3]
+               min T after onset   : 0.409  [0.404, 0.414]  sd 0.004  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 207.3 s, range 153.0-259.6 s; mean 209.6 [160.9, 258.3]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.409  [0.404, 0.414]  sd 0.004  n=5
+    scoreonly_t050 score crossed theta : 5/5  [57%, 100%]
+                 time to cross     : 5/5 runs; median 54.4 s, range 0.6-131.7 s; mean 58.4 [-3.4, 120.1]
+               min T after onset   : 0.451  [0.434, 0.468]  sd 0.013  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 76.1 s, range 29.1-141.5 s; mean 86.6 [26.0, 147.1]
+                 rail that fired   : score 5/5
+                 T at quarantine   : 0.453  [0.433, 0.473]  sd 0.016  n=5
+    treat      score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.548  [0.460, 0.636]  sd 0.071  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.4 s, range 9.8-37.5 s; mean 16.1 [1.1, 31.1]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.709  [0.641, 0.777]  sd 0.055  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    scoreonly  isolated  40.0%   exact labels 7/8
+    scoreonly  isolated  41.0%   exact labels 7/8
+    scoreonly_t040 isolated  41.1%   exact labels 7/8
+    scoreonly_t040 isolated  41.3%   exact labels 7/8
+    scoreonly  isolated  41.4%   exact labels 7/8
+    scoreonly_t040 isolated  41.4%   exact labels 7/8
+    scoreonly  isolated  42.1%   exact labels 7/8
+    scoreonly  isolated  42.4%   exact labels 7/8
+    scoreonly_t040 isolated  42.7%   exact labels 7/8
+    scoreonly_t040 isolated  43.1%   exact labels 7/8
+    scoreonly_t045 isolated  52.4%   exact labels 7/8
+    scoreonly_t045 isolated  56.5%   exact labels 7/8
+    scoreonly_t045 isolated  56.5%   exact labels 7/8
+    scoreonly_t045 isolated  57.1%   exact labels 7/8
+    scoreonly_t045 isolated  59.5%   exact labels 7/8
+    scoreonly_t050 isolated  62.2%   exact labels 7/8
+    treat      isolated  64.0%   exact labels 7/8
+    scoreonly_t050 isolated  64.9%   exact labels 7/8
+    treat      isolated  65.4%   exact labels 7/8
+    treat      isolated  68.1%   exact labels 7/8
+    treat      isolated  68.8%   exact labels 7/8
+    treat      isolated  69.3%   exact labels 6/8
+    scoreonly_t050 isolated  69.5%   exact labels 7/8
+    scoreonly_t050 isolated  71.7%   exact labels 7/8
+    scoreonly_t050 isolated  72.6%   exact labels 7/8
+    Spearman rho(isolation, exact labels) = -0.255, p = 0.219, n = 25
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

@@ -6,8 +6,11 @@ root**.
 
 ## The experiment
 
-Fifteen live runs, ~320 s each, three arms × five runs, archived under
-`data/runs/<arm>/rNN.jsonl` (gitignored; ~130 MB each).
+Forty live runs, ~320 s each, five per arm, archived under
+`data/runs/<arm>/rNN.jsonl` (gitignored; ~130 MB each): the three ablation arms
+below, the θ-sweep arms `scoreonly_t040/_t045/_t050`, and the flood arms
+`flood_off/flood_on`. Plus one replicated-ledger run with a leader kill,
+archived in `data/raft_failover_2026-10-19/`.
 
 | Arm | Directory | Enforcement |
 |---|---|---|
@@ -19,7 +22,7 @@ Produced by `sudo tools/run_replicates.sh` (~100 min, unattended, rotating arm
 order). The ablation config differs from the full config in exactly two keys,
 pinned by `tests/test_scoreonly_arm.py`.
 
-## Tables II–VI — everything from the replicates
+## Tables II–IV and VI — the ablation replicates
 
 ```bash
 python3 -m evaluation.replicates data/runs --out-dir paper-draft/evidence/replicates
@@ -53,7 +56,7 @@ Statistical treatment: continuous → mean + two-sided 95% Student-t over runs;
 yes/no → k/n + Wilson interval (5/5 = [57%,100%], 0/5 = [0%,43%]); times only
 over runs where the event happened.
 
-## §VII-F — non-functional requirements
+## §VII-H — non-functional requirements
 
 ```bash
 for r in data/runs/treat/*.jsonl; do python3 -m evaluation.nfr_report "$r"; done
@@ -64,7 +67,7 @@ re-dispatch mean 12.9–23.5 ms (max 32.8, n=19–30); ledger overhead
 0.045–0.052 % over 625–661 blocks. Raft 4.3–4.8 ms is the **standalone**
 3-replica cluster, not the controller.
 
-## §VII-G — simulation (labelled as such in the paper)
+## §VII-I — simulation (labelled as such in the paper)
 
 ```bash
 python3 -m evaluation.baseline --runs 30 --csv paper-draft/evidence/baseline_600runs.csv
@@ -87,10 +90,53 @@ One pass over `data/runs/treat/*.jsonl` counting `report` events with
 The "2.86 of 4.0 s remaining, would have excused 0 of 26" counterfactual is
 from earlier archived runs, recorded in `SOURCE_OF_TRUTH.md` §4.1.
 
-## §VII-D — detection-to-quarantine gap
+## §VII-C — detection-to-quarantine gap
 
 One pass over `data/runs/treat/*.jsonl` pairing each node's first `anomaly`
 event with its first `quarantine`: 20 node-run pairs, **3.5–12.5 ms**.
+
+## §VII-D — the threshold sweep (Table V, Fig. 2)
+
+```bash
+python3 -m evaluation.replicates data/runs \
+  --arms scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat \
+  --out-dir paper-draft/evidence/theta_sweep
+```
+→ `evidence/theta_sweep/summary.txt`. Per attacker, `quarantined` +
+`containment` rows: θ 0.45 srv3 5/5 median **26.2 s**, srv8 5/5 median **207.3 s**;
+θ 0.50 srv3 5/5 **50.1 s**, srv8 5/5 **76.1 s**; θ 0.40 srv3 0/5, srv8 1/5
+(**228.9 s**); treat srv3 **7.6 s**, srv8 **10.4 s**. Ratios 26.2/7.6 = **3.4×**,
+207.3/10.4 = **20×**. `honest servers ever quarantined` 0.20 and
+`attackers quarantined BEFORE onset` 0.20 at θ 0.50 (one run each). p95 rows:
+175.6 / 172.5 / 157.2 / 148.5 / 137.2 ms.
+
+Honest dips (`per_run.csv`, `honest_min_trust` < 0.45): scoreonly_t040 r02
+**0.4199**, r03 **0.4171**; treat r05 **0.4208**. Attackers' floor while serving:
+`min T after onset` 0.399–0.411 in the score-only arms at θ ≤ 0.40.
+
+The prediction registered before the sweep: `data/theta_sweep_prediction_2026-09-29.txt`.
+
+## §VII-F — data-plane response to a flooding client (Table VII)
+
+`tools/regenerate.sh` scores `flood_off` r01–r05 and `flood_on` r02–r05 →
+`evidence/flood/summary_primary.txt`. flood_on r01 is excluded because the host
+suspended mid-run (`data/runs/manifest.csv`: recorded_s 24331; gaps of 891 s and
+23092 s after t = 316 s). Rows `honest devices: mean latency` 105.0 → **91.7** ms,
+`honest devices: p95 latency` 177.7 → **139.4** ms, `honest devices: task
+success` 98.91 vs 98.79 % (overlap), `tasks served to flooding device(s)` 8951 →
+**292.8**, `honest devices ever throttled` 0. Check with r01 truncated to its
+first 316 s: honest mean **93.0** ms, p95 **141.3** ms (scored 2026-10-18, recorded
+in `data/flood_experiment_2026-10-18/summary_trimmed_on_r01.txt`).
+
+## §VII-H — replicated ledger with a leader kill
+
+`evidence/raft/failover_report.json` (written by `tools/raft_failover_check.py`
+during the run) + `data/raft_failover_2026-10-19/events_raft.jsonl`: leader n3
+SIGKILLed after 61 blocks; new leader n1 after **0.47 s** (term 2 → 4);
+submitted **649** = committed **649**, retries 1, dropped 0; restarted n3 caught
+up in **1.0 s**. From the recording's `block` events: blocks 1–649 contiguous,
+every `previous_hash` links, terms {2: 61, 4: 588}, commit ms mean **14.06**,
+p95 **20.24**, max **143.6**. `evidence/raft/nfr_report.txt`: routing p95 **0.77 ms**.
 
 ## §V-B — why the analytic bound is conservative
 
@@ -101,6 +147,22 @@ held everywhere and held loosely. The gap is the honesty term: srv3's
 |claimed − observed| load gap averaged **0.084**, so h = 1 − gap/0.5 averaged
 **0.83** and γH̄ contributed ≈ +0.10 throughout.
 
+"The lie did not attract traffic" (added 2026-10-19): the `route share
+(post-onset)` lines of `evidence/replicates/summary.txt`, PER ATTACKER block
+(`per_attacker.csv` columns `route_share`, `excess_share`). Each value is the
+share of all `route` events at or after the attacker's onset that chose it,
+with probation trials counted the way `base_model/compare.py` counts routes.
+Fair share = 1/8 = 12.5 %.
+
+| Attacker | base | scoreonly | treat |
+|---|---|---|---|
+| srv3 load-misreporting | **9.22 %** [8.75, 9.69] | **1.98 %** [1.59, 2.36] | **0.45 %** [0.21, 0.69] |
+| srv8 on-off | 9.72 % [9.34, 10.10] | **9.53 %** [8.97, 10.08] | **5.04 %** [4.20, 5.89] |
+
+Why: at about 1 % occupancy honest agents report `cpu_load` ≈ 0
+(active/concurrency), so srv3's fixed claim of 0.10 ranks below them, and its
+slowness lowers T (EdgeScore w1 = 0.5 on T).
+
 ## §VIII-B — the retraction
 
 `CONTAINMENT vs ATTRIBUTION` block of `summary.txt`: ten acting runs,
@@ -110,17 +172,19 @@ containment 40.0–69.3 %, exact labels 7/8 in nine runs and 6/8 in one,
 ## Test suite
 
 ```bash
-python3 -m pytest tests/ -q
+python3 -m pytest tests/ base_model/tests/ -q
 ```
+**1,166 passed, 11 skipped** at `7a2d795` (2026-10-18).
 
 ## Figures
 
 | Figure | File | Built by |
 |---|---|---|
-| 1 two rails | `../ppt/figures/fig6_zero_trust_flow.png` | `ppt/fig_flows.py` |
-| 2 Raft failover | `../data/figures/raft_failover.png` | `evaluation/plot_raft_timeline.py` |
+| 1 two rails | drawn in `paper.tex` (TikZ) | — |
+| 2 time to isolation vs θ | drawn in `paper.tex` (pgfplots), values from `evidence/theta_sweep/summary.txt` | — |
 
-Referenced at source via `\graphicspath`; nothing is copied into `paper-draft/`.
+Both figures are drawn in LaTeX, so they hold no numbers of their own beyond the
+four medians and two gate times plotted in Fig. 2, each listed above.
 
 > The per-server trust and load-share figures used by the previous draft were
 > generated from two single runs that the replicate campaign superseded. They
@@ -137,3 +201,6 @@ M. Shiraz, M. Sookhak), `huang2024trustmultitier` (TDSC 21(4) 1639–1651),
 `mitzenmacher2001p2c` (TPDS 12(10) 1094–1104), `dahlin2000stale` (TPDS 11(10)
 1033–1047). The rest carry metadata from the project's earlier list and are
 flagged in `CHECKLIST.md` as not independently re-verified this session.
+
+Revision 3 additions were checked by web search on 2026-10-14..19; the list and
+what was confirmed for each is in the header comment of `references.bib`.

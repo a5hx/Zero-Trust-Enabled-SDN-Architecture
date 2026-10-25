@@ -107,6 +107,45 @@ def test_a_quarantine_before_onset_is_a_false_positive_not_containment(tmp_path)
     assert run.metrics['pre_onset_quarantines'] == 1.0
 
 
+class TestRouteShare:
+    """What the attack gained: its share of routing decisions after onset."""
+
+    def _with_routes(self, path, before, after):
+        _recording(path, sybil_gate=True)
+        lines = [json.loads(l) for l in path.read_text().splitlines()
+                 if json.loads(l)['type'] != 'route']
+        # Onset is t=10. `before` and `after` are lists of chosen nodes.
+        for i, node in enumerate(before):
+            lines.append({'type': 'route', 'ts': 1000.0 + 1 + i * 0.1, 'chosen': node})
+        for i, node in enumerate(after):
+            lines.append({'type': 'route', 'ts': 1000.0 + 20 + i * 0.1, 'chosen': node})
+        lines.sort(key=lambda e: e['ts'])
+        path.write_text(''.join(json.dumps(e) + '\n' for e in lines))
+
+    def test_only_post_onset_routes_count(self, tmp_path):
+        p = tmp_path / 'r01.jsonl'
+        # Popular while honest, shunned once lying: the shipped sybil's shape.
+        self._with_routes(p, before=['srv2'] * 8, after=['srv1'] * 9 + ['srv2'])
+        a = score_run('treat', str(p)).attackers['srv2']
+        assert a.route_share == pytest.approx(0.1)
+        assert a.excess_share == pytest.approx(0.1 - 0.5)    # 2 servers: fair 1/2
+
+    def test_a_liar_that_attracts_traffic_has_positive_excess(self, tmp_path):
+        p = tmp_path / 'r01.jsonl'
+        self._with_routes(p, before=['srv1'], after=['srv2'] * 3 + ['srv1'])
+        a = score_run('treat', str(p)).attackers['srv2']
+        assert a.excess_share == pytest.approx(0.25)
+
+    def test_written_to_per_attacker_csv(self, tmp_path):
+        d = tmp_path / 'runs' / 'treat'
+        d.mkdir(parents=True)
+        self._with_routes(d / 'r01.jsonl', before=[], after=['srv2', 'srv1'])
+        assert main([str(tmp_path / 'runs'), '--out-dir', str(tmp_path / 'out')]) == 0
+        header = (tmp_path / 'out' / 'per_attacker.csv').read_text().splitlines()[0]
+        assert header.endswith('route_share,excess_share')
+        assert 'route share (post-onset)' in (tmp_path / 'out' / 'summary.txt').read_text()
+
+
 class TestThetaSweep:
     """A sweep run must be scored against the theta it ran with, not the
     report's default -- otherwise a run at 0.45 would have its crossings and
