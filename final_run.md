@@ -10,13 +10,13 @@ the top two — the starvation fix (§5b).
 
 > This is the demo-day runbook. For the consolidated state of the project — what
 > was built, what the live runs measured, and what is still open — see
-> **`SOURCE_OF_TRUTH.md`**. For install/environment details and per-feature deep
-> dives see **`SETUP.md`**; for the optimizer design see **`docs/AI_OPTIMIZER.md`**;
+> **`docs/PROJECT_BRIEFING.md`** (`SOURCE_OF_TRUTH.md` is the September snapshot). For
+> install, environment, experiments and scoring see **`SETUP.md`**; for the optimizer design see **`docs/AI_OPTIMIZER.md`**;
 > for the flow-rule scheme see **`docs/FLOW_RULES.md`**; for the load-balancing
 > starvation fix see **`docs/LOAD_BALANCING_STARVATION.md`**.
 >
-> **Platform note:** this box ships only Python 3.14, so the controller uses
-> **os-ken** (a maintained Ryu fork), and `sudo` needs an interactive password —
+> **Platform note:** WSL2, Ubuntu 24.04, Python 3.12. The controller uses
+> **os-ken** (a maintained Ryu fork, from apt), and `sudo` needs an interactive password —
 > every **(sudo)** step must be run by you, in your own terminal. No venv/pip.
 
 **Two runs, two purposes — pick one before you start:**
@@ -54,13 +54,11 @@ From the repo root `Zero-Trust-Enabled-SDN-Architecture/`:
 ```bash
 # Dependencies installed and services up? (see SETUP.md §1 if not)
 mn --version                                            # 2.3.0
-python3 -c "import os_ken; print(os_ken.__version__)"   # 4.1.1
+python3 -c "import os_ken; print(os_ken.__version__)"   # 2.8.1
 
-# Everything green before you demo anything live:
-python3 -m pytest tests/ -q     # expect: 624 pass, 8 fail in test_stats.py
-#   Those 8 are a known scipy-version mismatch (needs >=1.9, box has 1.8.0)
-#   in evaluation/stats.py. Nothing in the live path imports it. Any OTHER
-#   failure means stop and fix before spending a sudo run.
+# Everything green before you demo anything live (about 1,460 tests, ~3 min):
+python3 -m pytest tests/ base_model/tests/ -q   # expect: all pass, a few skipped
+#   Any failure means stop and fix before spending a sudo run.
 
 # Confirm the demo config has the features on (they are, by default):
 grep -E "enabled|auth_scheme|rate_limit|selection|epsilon" config/params_trust_demo.yaml
@@ -75,8 +73,10 @@ sudo modprobe -a sch_htb sch_netem sch_tbf sch_prio ifb
 ```
 
 **Archive the previous recording before you run anything.** `data/` is
-gitignored and `run_demo.py --mode mininet` **unlinks `data/events.jsonl` at
-startup** — once it is gone, the run's numbers cannot be re-derived:
+gitignored, and a controller started directly (Terminal A below) **overwrites
+`data/events.jsonl` at startup** — once it is gone, the run's numbers cannot be
+re-derived. (`run_demo.py --mode mininet`, §10, moves a leftover recording to
+`data/archive/` itself.)
 
 ```bash
 cp data/events.jsonl data/events_runN.jsonl     # do this FIRST, every time
@@ -443,15 +443,14 @@ Keep this ready in a spare terminal as a safety net. Prefer the **live** run
 
 ## 10. The full-scale panel run (8 servers / 40 devices / 6 attacks)
 
-This is the run that produces the numbers in `SOURCE_OF_TRUTH.md` — every attack
+This is the full-scale scenario behind the ablation's `treat` arm — every attack
 the system implements, in one 300 s run, scored against ground truth afterwards.
 Unlike §1–6 it is **one command in one terminal**: `run_demo.py` launches the
 controller as a subprocess itself, then builds the network, then tears both down.
 Nothing to narrate live; you read the result from the four reports in §11.
 
 ```bash
-# 1. Archive the previous recording (data/ is gitignored, and this run deletes it)
-cp data/events.jsonl data/events_runN.jsonl
+# 1. Nothing to archive by hand: run_demo.py moves a leftover recording to data/archive/
 
 # 2. Clean state
 sudo service openvswitch-switch start
@@ -556,7 +555,7 @@ Sweep the **load factor** as well as N: argmax *starves* nodes at 10% load and
 
 **Checks (no root):**
 ```bash
-python3 -m pytest tests/ -q                                  # 624 pass, 8 known scipy fails
+python3 -m pytest tests/ base_model/tests/ -q                # all pass, a few skipped
 python3 -m pytest tests/test_live_config_preflight.py -q      # config sound before you spend sudo
 mn --version && python3 -c "import os_ken; print(os_ken.__version__)"
 ```
@@ -589,8 +588,7 @@ sudo python3 -m simulation.topology --config config/params_attacks_demo.yaml --i
 
 **Full-scale panel run — 8 / 40 / 6 attacks (§10):**
 ```bash
-cp data/events.jsonl data/events_runN.jsonl                  # archive first
-sudo mn -c
+sudo mn -c                                                   # run_demo.py archives the old recording
 sudo python3 run_demo.py --mode mininet --config config/params_trust_full.yaml
 ```
 

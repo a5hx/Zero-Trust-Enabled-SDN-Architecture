@@ -1,239 +1,202 @@
 # Zero Trust–Enabled SDN for Secure Load Balancing in Edge Networks
 
-A trust-aware SDN load balancer for OpenFlow 1.3 networks. The controller
-computes a per-node trust score, ranks edge servers by an EdgeScore, installs
-routing decisions as real flow rules, and quarantines misbehaving nodes in the
-data plane. Trust events are recorded in a tamper-evident (SHA-256 + Merkle)
-ledger.
+A trust-aware SDN load balancer for OpenFlow 1.3 networks.
+- The controller scores every edge server.
+- It routes IoT tasks through a virtual service IP, by an EdgeScore.
+- It installs each decision as a real flow rule.
+- It quarantines misbehaving servers in the data plane.
 
-Final-year project. The **product** is the controller application, its REST
-API, and the live dashboard — it runs against any OpenFlow 1.3 switch. Mininet,
-the node agents, and the IoT clients are its **test harness**, not the product.
+Every trust update is committed to a hash-chained, Merkle-rooted ledger, which can be
+replicated over Raft.
 
-> **The authoritative run-book is [`SETUP.md`](SETUP.md).** It has the exact,
-> environment-specific install and demo commands. Start there for anything
-> hands-on. This README is the map; `SETUP.md` is the instructions.
+The **product** is the controller application, its REST API and its live dashboard. It runs
+against any OpenFlow 1.3 switch. Mininet, the edge-server agents and the IoT clients are its
+**test harness**.
 
----
-
-## Overview
-
-A Zero Trust security model drives trust-aware routing for IoT workloads at the
-edge. Trust is computed continuously from task outcomes and node telemetry; an
-independent anomaly gate quarantines nodes that lie about their load but keep
-serving (a case the trust score alone provably cannot catch — see
-[`DIRECTION.md`](DIRECTION.md) §3, Finding 1). Trust decisions are enforced as
-OpenFlow rules, not simulated.
-
-**Core components:**
-- **SDN controller (os-ken)** — OpenFlow 1.3 trust-aware load balancer
-  (`controller/trust_balancer.py`). See note on os-ken vs Ryu below.
-- **Dynamic trust model** — normalised formula `T = αR̄+βB̄+γH̄−δĀ` with EMA
-  decay, plus a load-bearing anomaly gate (`trust_engine/trust_calculator.py`,
-  `controller/edge_selector.py`).
-- **Attack classification** — six attacks (sybil, blackhole, grayhole, on-off,
-  DDoS/flood, identity spoof) plus bad-credentials devices, each named rather
-  than merely flagged, by one pure function the live controller and the offline
-  scorer both call (`controller/attack_classifier.py`,
-  `controller/flood_detector.py`).
-- **Live dashboard** — topology, packet animation from real `OFPFlowStats`
-  counters, flow rules, trust, nine metric-vs-time charts and per-node
-  structural metrics, over server-sent events (`dashboard/`).
-- **Blockchain ledger** — SHA-256 + Merkle-tree trust record store
-  (`blockchain/`). Tamper-evident: an edit is localised to the seam, not just
-  reported as "chain invalid".
-- **PRESENT-80 cipher** — lightweight IoT device authentication, wired into
-  live device admission, extended with a provisioned source-IP pin so the
-  fleet-wide key authenticates the *device* and not merely possession of the key
-  (`security/present_cipher.py`, `security/authenticator.py`).
-- **RAFT consensus** — leader election, log replication, TCP transport and a
-  standalone 3-replica demo, all built and unit-tested
-  (`blockchain/raft.py`, `raft_transport.py`, `raft_replica.py`, `raft_demo.py`)
-  *(the live controller still runs a single local replica — not wired in)*.
-- **AI weight optimizer** — UCB1 bandit (online), wired into the live monitor
-  loop and dashboard (`trust_engine/ai_optimizer.py`) *(offline Random Forest
-  planned)*.
-- **Evaluation harness** — 4 baselines, 30 seeded runs/scenario, paired Wilcoxon
-  signed-rank with Holm–Bonferroni correction — 14/16 comparisons favour the
-  system (`evaluation/baseline.py`, `evaluation/stats.py`,
-  [results](docs/EVALUATION.md)).
-- **Live-run scorers** — NFR pass/fail, per-interval metrics, confusion matrix
-  with detection latency, and service availability, all read the same recording
-  and none needs the controller stack installed (`evaluation/nfr_report.py`,
-  `interval_report.py`, `attack_report.py`, `availability_report.py`).
-
-### os-ken, not Ryu
-
-The deck specified Ryu. This project runs on **os-ken** — the actively
-maintained fork of Ryu — because the target OS (Ubuntu 26.04) ships only
-Python 3.14 and has no Ryu package, and Ryu cannot run on Python > 3.13. os-ken
-has the same API (`os_ken.*` instead of `ryu.*`). This is an environment-driven
-engineering decision, documented in `SETUP.md` §0. There is no `ryu` dependency
-and no `ryu-manager` in this project.
+> **How to install and run everything: [`SETUP.md`](SETUP.md).** This README is the map.
+> For the research story and every result in full, read the paper in
+> [`paper-draft/`](paper-draft/).
 
 ---
 
-## Repository structure
+## What the project found
 
-```
-config/                  params.yaml (full scale), params_trust_full.yaml (the panel run),
-                         params_demo.yaml, params_trust_demo.yaml, params_attacks_demo.yaml
-contracts/               data contracts (trust_update, block schema, thresholds)
-trust_engine/            trust_calculator.py, ai_optimizer.py (UCB1 online; RF offline planned)
-controller/              trust_balancer.py, flow_monitor.py, edge_selector.py,
-                         attack_classifier.py, flood_detector.py, trust_state.py,
-                         northbound_api.py, event_bus.py, flow_stats.py,
-                         osken_manager.py (hand-written app launcher)
-blockchain/              merkle.py, block.py, ledger.py, commit_backend.py,
-                         raft.py, raft_transport.py, raft_replica.py, raft_demo.py
-security/                authenticator.py (PRESENT-80 + source-IP pin), present_cipher.py
-simulation/              topology.py, attack_simulator.py, node_agent.py, iot_client.py, addressing.py
-evaluation/              metrics.py, plots.py, baseline.py, stats.py, starvation_sweep.py,
-                         interval_report.py, availability_report.py, attack_report.py,
-                         nfr_report.py, topology_metrics.py
-dashboard/               index.html, replay.py, generate_demo_recording.py
-docs/paper/              the research paper (.docx) — built by tools/paper/
-tools/paper/             paper build: figures, template, docx renderer (see its README)
-trust_convergence_demo/  standalone demo proving trust base values are computed
-wsl_gui/                 WSL packet-capture + dashboard integration utilities
-tests/                   pytest suite, 669 tests (no sudo/Mininet required)
-uml_diagrams/            class, sequence, DFD, ER, activity
-```
+The research question is **what catches a server that lies about its own load, but still
+serves correctly**. Every result below comes from live Mininet runs, at least 5 per arm, with
+a prediction registered before the runs. Predictions and outcomes are in
+[`docs/predictions/`](docs/predictions/).
 
-### Where to read what
+- **The trust score alone has a narrow, slow margin. The anomaly gate is wide and fast.**
+  - In a 15-run ablation, the score never isolated the load liar or the on-off attacker at
+    θ = 0.30.
+  - The gate isolated both in every run, in a median of 7.6 s and 10.4 s.
+  - A registered θ sweep showed that the score *can* isolate them at θ = 0.45, but
+    3.4–20× slower, a few hundredths above honest servers under load.
+- **Route on what you verify.** A *split-claim* liar reports a low instantaneous load and a
+  truthful busy counter. It took +4.0 points of excess traffic and was never caught, because
+  the router read one figure and the honesty check verified the other. Routing on the
+  verified figure closes the hole, and is now the default.
+- **Honest slowness is not mistaken for lying.** Mixed hardware classes and a 25% CPU
+  throttle (cgroup v2) caused 0 false quarantines.
+- **The switches are a third witness.** Comparing server, client and switch-counter
+  evidence names the lying party (server, switch or badmouthing client) in 25/25 runs, and
+  has never blamed an honest party (100+ runs).
+  - When its verdicts act, honest task success under a controller that forges evidence
+    rises from 82.2% to 97.5%.
+- **Attestation and behaviour catch different things.**
+  - A tampered agent is refused before it serves anything (5/5, 0 connections).
+  - A run-time compromise passes attestation, and behaviour catches it.
+- **Ledger replicas re-check the controller's arithmetic.** Forged trust scores are rejected
+  in every run, and no honest record ever is. Forged *evidence* passes the replicas; only the
+  switch witness exposes it.
+- **Engineering figures:**
+  - routing decisions take about 0.55 ms;
+  - after a Raft leader kill, failover takes 0.47 s with no update lost;
+  - a flood is throttled by a per-client OpenFlow meter, and honest p95 latency falls from
+    178 to 139 ms.
 
-| Document | Role |
-|---|---|
-| [`SETUP.md`](SETUP.md) | **Start here for anything hands-on** — install, environment, per-feature deep dives |
-| [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) | Consolidated state: what was built, what the live runs say, what is still open |
-| [`final_run.md`](final_run.md) | The runbook — every command, in order |
-| [`docs/paper/`](docs/paper/) | The research paper: findings, evaluation, limitations |
-| [`docs/EVALUATION.md`](docs/EVALUATION.md) | The baseline experiment and its significance testing |
-| [`DIRECTION.md`](DIRECTION.md) | Honest status assessment, novelty analysis, roadmap |
-| [`PROBLEM_AND_IMPACT.md`](PROBLEM_AND_IMPACT.md) | What problem this solves, where it applies, what it does *not* claim |
-| `docs/` | `AI_OPTIMIZER.md`, `FLOW_RULES.md`, `LOAD_BALANCING_STARVATION.md`, `RAFT.md` |
+The method itself is part of the contribution. Predictions are registered before runs,
+offline models are checked against live runs, failed predictions are reported, and one
+earlier finding was retracted. Every defect we found in our own system is written up in the
+outcome that measured it (`docs/predictions/*_OUTCOME.md`).
+
+**Paper:** [`paper-draft/`](paper-draft/), *"What Catches a Lie That Works? Trust Scores,
+Anomaly Gates and Load-Misreporting Servers in Zero-Trust Edge Load Balancing"*. Every number
+in it maps to a file and a command in [`paper-draft/NUMBERS.md`](paper-draft/NUMBERS.md).
 
 ---
 
-## Prerequisites
+## Components
 
-- Ubuntu with Python 3.14 (system Python; no venv needed on the target box)
-- Mininet + Open vSwitch
-- os-ken (`python3-os-ken`) and the scientific stack, installed via `apt`
+| Part | What it does | Where |
+|---|---|---|
+| SDN controller (os-ken) | OpenFlow 1.3 load balancer behind a VIP: EdgeScore routing with power-of-two-choices + ε, quarantine drop rules, probation trials, re-steering, northbound REST API | `controller/trust_balancer.py`, `trust_state.py`, `edge_selector.py`, `northbound_api.py` |
+| Trust model | `T = αR̄ + βB̄ + γH̄ − δĀ` with EMA decay | `trust_engine/trust_calculator.py` |
+| Anomaly gate and detectors | Honesty (claimed vs observed load), latency, packet-drop, reachability and flood tells, with leaky-bucket persistence | `controller/flow_monitor.py`, `flood_detector.py` |
+| Attack classifier | Names the attack (sybil/load liar, blackhole, grayhole, on-off, flood, spoof, bad credentials). The live controller and the offline scorer share one pure function. | `controller/attack_classifier.py` |
+| Switch witness | Cross-checks client reports and server claims against switch flow and port counters. Optionally acts (`controller.witness.act`) and holds a blamed server until it serves trials. | `controller/switch_witness.py`, `flow_stats.py`, `port_stats.py` |
+| Flood response | Per-client OpenFlow meter throttle (opt-in) | `controller/flood_response.py` |
+| Ledger | SHA-256 blocks with Merkle roots, tamper localisation; Raft (3 replicas, TCP) with async commits; replica re-verification of every trust update (opt-in) | `blockchain/` |
+| Device admission | PRESENT-80 challenge–response with a source-IP pin; per-device keys | `security/authenticator.py`, `present_cipher.py`, `tools/device_key.py` |
+| Server attestation | Nonce challenge and Ed25519 software quote over the agent's code, with an allowlist and re-attestation (opt-in) | `security/attestation.py`, `simulation/attester.py` |
+| Management security | Admin token for the mutating endpoints; keys read from the environment, never from argv | `security/admin_auth.py` |
+| AI weight optimizer | UCB1 bandit over the EdgeScore weights (online); Random Forest (offline) | `trust_engine/ai_optimizer.py`, `rf_optimizer.py` |
+| Dashboard | Live topology, packet animation from real flow counters, rules, trust, metric charts, over SSE; replay of any recording | `dashboard/` |
+| Test harness | Mininet topology, edge-server agent with every attacker mode, IoT clients, cgroup v2 CPU profiles | `simulation/` |
+| Control arm | The same network with no enforcement | `base_model/` |
+| Evaluation | Replicate scorer with Wilson/t intervals, one report per experiment, offline models and sweeps, the seeded baseline comparison | `evaluation/` |
 
-All dependencies install as apt packages — see `SETUP.md` §1 for the exact
-command. There is no `pip install -r requirements.txt` step on the target
-environment.
+**os-ken, not Ryu.** The controller runs on [os-ken](https://opendev.org/openstack/os-ken),
+the maintained fork of Ryu with the same API (`os_ken.*` instead of `ryu.*`). Ryu does not
+run on current Python, and os-ken ships as an Ubuntu package. There is no `ryu` dependency
+and no `ryu-manager`: `controller/osken_manager.py` is the launcher.
 
 ---
 
 ## Quick start
 
-Full, environment-specific commands are in `SETUP.md`. In brief:
-
-**Run the unit tests** (no sudo, no Mininet — works anywhere the deps are installed):
-
-```bash
-python3 -m pytest tests/ -v
-```
-
-**Standalone trust-engine simulation** (figures + routing CSV, no Mininet):
+The full commands, including the one-time setup WSL2 needs after every restart, are in
+[`SETUP.md`](SETUP.md). In brief:
 
 ```bash
-python3 run_demo.py --mode standalone --duration 120 --attack both
+python3 -m pytest tests/ base_model/tests/ -q
 ```
-
-**Live trust-aware controller + Mininet demo** (three terminals, needs sudo for
-Mininet) — see `SETUP.md` §3b. The full-scale panel run is:
 
 ```bash
 sudo python3 run_demo.py --mode mininet --config config/params_trust_full.yaml
 ```
 
-> **Archive the recording before the next run.** `--mode mininet` unlinks
-> `data/events.jsonl` at startup and `data/` is gitignored, so copy it to
-> `data/events_runN.jsonl` the moment a run finishes or its numbers cannot be
-> re-derived.
-
-**Score a live run** (no sudo, no controller stack — all four read the same recording):
-
 ```bash
-python3 -m evaluation.nfr_report          data/events.jsonl   # the four NFRs, pass/fail
-python3 -m evaluation.attack_report       data/events.jsonl   # confusion matrix + detection latency
-python3 -m evaluation.availability_report data/events.jsonl   # honest availability vs containment
-python3 -m evaluation.interval_report     data/events.jsonl   # every metric vs time, 10 s buckets
+python3 -m dashboard.replay data/events.jsonl --loop
 ```
 
-**The statistical comparison** (5 strategies × 4 scenarios × 30 seeds = 600 runs, ~40 s):
+- The **test suite** (about 1,460 tests, about 3 minutes) needs no sudo and no Mininet.
+- The **live run** is the full-scale scenario: 8 servers, 40 devices, every attack,
+  300 s. The live dashboard is at <http://localhost:8081/>.
+- The **replay** shows a recorded run on the dashboard with no Mininet. Open
+  <http://localhost:8082/>.
+
+For **experiments**, the replicate runner runs each named arm (one config each, in
+`config/`) 5 times, interleaved and resumable:
 
 ```bash
-python3 -m evaluation.baseline --runs 30 --csv results.csv
-python3 -m evaluation.stats results.csv --metric slo_violation_rate
+sudo ARMS="wh3_control_hold wh3_forge_hold" tools/run_replicates.sh
 ```
 
-**Live dashboard without Mininet** (replay a recorded run):
+Score the result without sudo:
 
 ```bash
-python3 -m dashboard.replay data/events.jsonl --loop   # then open localhost:8082
+python3 -m evaluation.replicates data/runs --arms wh3_control_hold,wh3_forge_hold --out-dir data/my_experiment
 ```
 
-**Rebuild the paper** — see [`tools/paper/README.md`](tools/paper/README.md).
+---
 
-**Trust convergence demonstration** (prove base values are computed, not referenced):
+## Repository map
 
-```bash
-cd trust_convergence_demo
-python3 simulate_network.py   # See START_HERE.md for details
 ```
+controller/        the SDN application (routing, trust state, detectors, witness, API)
+trust_engine/      trust calculator, UCB1 and Random-Forest weight optimizers
+security/          PRESENT-80 admission, admin token and device keys, server attestation
+blockchain/        blocks, Merkle tree, ledger, Raft, commit backends, replica verifier
+contracts/         data contracts, thresholds, the address inventory
+simulation/        Mininet topology, edge-server agent, IoT client, cgroup CPU profiles, attester
+base_model/        the no-enforcement control arm
+evaluation/        scorers, reports, offline models and sweeps
+dashboard/         the browser dashboard, replay, demo-recording generator
+config/            one YAML per experiment arm, each pinned by a test
+tools/             replicate runner, Raft failover check, feasibility checks, device-key tool
+scripts/           WSL preflight and per-run preflight
+deploy/            systemd units and inventory for a real (non-Mininet) testbed
+docs/              topic documents; predictions/ holds every registered prediction and outcome
+paper-draft/       the paper (LaTeX), its evidence, NUMBERS.md and regenerate.sh
+ppt/               Panel Review 1 deck and briefing (September, partly superseded)
+tests/             the test suite (no root needed)
+data/              recordings and scored outputs: local only, not in git
+```
+
+### Where to read what
+
+| Document | For |
+|---|---|
+| [`SETUP.md`](SETUP.md) | Install, environment, every way to run, score and debug |
+| [`docs/PROJECT_BRIEFING.md`](docs/PROJECT_BRIEFING.md) | A briefing for staff and reviewers: design, experiments, results, limits. As of 20 October, so it predates the live witness, attestation and ledger work. |
+| [`docs/predictions/`](docs/predictions/) | Each experiment's registered prediction and its `_OUTCOME.md` |
+| [`paper-draft/`](paper-draft/) | The paper, `NUMBERS.md`, `CHECKLIST.md`, `evidence/` |
+| [`final_run.md`](final_run.md) | The narrated, four-terminal live demo |
+| [`deploy/README.md`](deploy/README.md) | Running on real machines |
+| `docs/` topic files | `RAFT.md`, `LIAR_BOUND.md`, `WITNESS_OFFLINE.md`, `FEASIBILITY.md`, `FLOW_RULES.md`, `AI_OPTIMIZER.md`, `LOAD_BALANCING_STARVATION.md`, `EVALUATION.md` |
+
+`SOURCE_OF_TRUTH.md`, `DIRECTION.md`, `panel_fix.md` and the `plan*.md` / `explain*.md`
+files record the state in August–September. They are kept for history; the paper
+supersedes them.
 
 ---
 
 ## Status
 
-**Test suite: 669 tests, all passing.**
+| Area | State |
+|---|---|
+| Trust-aware routing, quarantine, probation, re-steering | Done, validated live |
+| Anomaly gate and detectors; attack classification | Done, validated live |
+| Liar experiment (consistent, split-claim, adaptive liars); verified routing | Done; in the paper |
+| Heterogeneous hardware and throttling (cgroup v2) | Done; in the paper |
+| Switch witness: offline, live, acting | Done; acting not yet in the paper |
+| Witness hold (a blamed server stays held until it serves trials) | Re-run in progress (`wh3_*`, see `docs/predictions/withold3_2026-10-25.txt`) |
+| Server attestation (software quote) | Done; in the paper. No TPM (swtpm feasibility passed) |
+| Raft ledger, wired in (opt-in), live leader kill | Done |
+| Replica re-verification of the controller | Done; in the paper |
+| Flood throttle (per-client meter) | Done, opt-in |
+| Management security (admin token, per-device keys) | Done |
+| eBPF kernel witness | Not started (bpftrace/BCC feasibility passed) |
+| Hardware testbed (Raspberry Pis) | Deploy kit ready, not yet run |
 
-| Component | Status |
-|-----------|--------|
-| Repo structure & data contracts | ✅ Done |
-| Trust formula & calculator | ✅ Done |
-| Blockchain core (SHA-256 + Merkle) | ✅ Done (order-sensitive proofs) |
-| Standalone trust-engine simulation | ✅ Done |
-| Mininet topology + live controller connectivity | ✅ Done |
-| Trust-aware controller (EdgeScore routing, quarantine drop rules, REST API) | ✅ Done |
-| Live dashboard (topology, packets, rules, trust, time-series, ledger) | ✅ Done |
-| PRESENT-80 authentication | ✅ Done — live admission + provisioned source-IP pin |
-| Six attacks + classifier (named, not just flagged) | ✅ Done — 8/8 detected, 8/8 right family |
-| Live-run scorers (NFR, interval, confusion matrix, availability) | ✅ Done |
-| Evaluation harness (baselines + Wilcoxon) | ✅ Done — 14/16 comparisons favour the system ([results](docs/EVALUATION.md)) |
-| **Full-scale integration (8 edge / 40 IoT / 6 attack classes)** | ✅ **Done** — all four NFRs PASS, 100% honest-node availability |
-| Research paper | ✅ Done — [`docs/paper/`](docs/paper/) |
-| AI weight optimizer | 🟡 UCB1 (online) done and live, but this run could not separate its arms; Random Forest (offline) pending |
-| RAFT consensus | 🟡 Core, TCP transport and 3-replica demo built + tested; **not wired into the live controller** (single local replica) |
-| DDoS response | 🟡 Detected and classified, not throttled — needs a per-client-IP flow path |
+**Known limits.**
+- The defence needs spare capacity, and detection takes 6–16 s from an attack's onset.
+- With no attacks, it does slightly worse than round-robin in simulation.
+- It does not cover an attacker that searches for the defence's blind spots, malicious Raft
+  replicas, or all of one switch's clients colluding.
+- The dashboard and the read-only API have no TLS.
+- PRESENT-80 and the software quote demonstrate the architecture; they are not
+  production-grade security.
 
-See [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) for the consolidated state and the
-live-run numbers, and [`DIRECTION.md`](DIRECTION.md) for the novelty analysis and
-roadmap. Open limitations are listed in full in the paper (§9) and
-`SOURCE_OF_TRUTH.md` §6.
-
-### Headline results
-
-From the full-scale live run (8 edge servers, 40 IoT devices, 6 armed attacks,
-215 s) and the 600-run seeded comparison harness:
-
-- **The trust score alone provably cannot isolate a competent liar.** A node that
-  under-reports load while still serving correctly floors at `T = 0.44` against an
-  isolation threshold of `0.30`. In the live run the sybil and on-off attackers
-  were caught **only** by the anomaly gate, while the blackhole attacker was
-  caught **only** by the trust score and raised no anomaly at all. Neither rail
-  alone catches all four — this is why the gate is necessary, not belt-and-braces.
-- **8/8 attacks detected, 8/8 in the right family, 0/40 honest nodes mislabelled**
-  (95.8% over all 48 subjects).
-- **100% honest-node availability**, zero route denials, no outage.
-- **All four NFRs pass** — routing decision 2.02 ms mean, isolation re-dispatch
-  51.29 ms mean, ledger overhead 0.130%.
-- **19.7–68.8% fewer SLO violations** than incumbent load balancers and
-  **15.1–29.8%** fewer than the same selector with trust removed
-  (paired Wilcoxon, Holm–Bonferroni, p_adj = 6.94×10⁻⁶, r = +1.00).
-
----
+The full list is in the paper's limitations section.
