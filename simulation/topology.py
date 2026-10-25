@@ -355,6 +355,11 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     spoof_by_device = {
         m['device']: m for m in cfg['simulation'].get('malicious_spoof_devices', [])
     }
+    # Badmouthing devices (Phase 2c): admitted normally, serve normally, but
+    # report successful tasks as timeouts. See iot_client.badmouth().
+    badmouth_by_device = {
+        m['device']: m for m in cfg['simulation'].get('malicious_badmouth_devices', [])
+    }
 
     for j in range(1, n_iot + 1):
         device_id = f'iot{j}'
@@ -368,8 +373,15 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
             auth_args = f'--auth-scheme {auth_scheme} --auth-key-env ZTSDN_DEVICE_KEY '
         flood = flood_by_device.get(device_id)
         spoof = spoof_by_device.get(device_id)
+        mouth = badmouth_by_device.get(device_id)
         flood_args = ''
-        if spoof:
+        if mouth and not (spoof or flood):
+            flood_args = (
+                f'--malicious badmouth '
+                f'--malicious-start-s {float(mouth.get("start_s", 0.0))} '
+                f'--badmouth-rate {float(mouth.get("rate", 1.0))} '
+            )
+        elif spoof:
             # Takes precedence over a flood entry for the same device --
             # --malicious is a single choice, spoof is the more specific ask.
             flood_args = (

@@ -600,12 +600,34 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # Likewise polls OFPPortStats for the dashboard's link-load view.
         self.port_stats: Any = None
 
+        # Phase 2b: the switches as a third witness (controller/switch_witness.py).
+        # Observe-only: it publishes `witness` verdicts and quarantines nobody.
+        # Off unless controller.witness.enabled, so earlier configs are unchanged.
+        from controller.switch_witness import SwitchWitness, WitnessConfig, parse_switch_lies
+        wcfg = (self.cfg['controller'].get('witness') or {})
+        self.witness: Any = (SwitchWitness(self.vip_ip, WitnessConfig.from_config(self.cfg['controller']))
+                             if wcfg.get('enabled') else None)
+        # Phase 2c: an emulated misreporting switch, keyed by dpid.
+        self._switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
+        self._started_mono = time.monotonic()
+
         self._http_server = None  # set in start(), from northbound_api.py
 
     def start(self):
         super().start()
         hub.spawn(self._run_http_server)
         hub.spawn(self.flow_monitor.run)
+
+        if self.witness is not None and not self.dashboard_enabled:
+            # The witness needs the flow-stats poller even without a dashboard.
+            from controller.flow_stats import FlowStatsPoller
+            self.flow_stats = FlowStatsPoller(
+                datapaths=self._datapaths, bus=self.bus,
+                poll_interval_s=self.monitor_interval_s,
+            )
+            hub.spawn(self.flow_stats.run)
+        if self.witness is not None:
+            hub.spawn(self._witness_loop)
 
         if self.dashboard_enabled:
             from controller.flow_stats import FlowStatsPoller
@@ -701,8 +723,43 @@ class TrustBalancerApp(app_manager.OSKenApp):
         """OFPFlowStats replies arrive as os-ken events on this app, not on the
         poller that requested them (FlowStatsPoller is a plain object, not an
         OSKenApp, so it can't register handlers of its own) -- forward them."""
+        lie = self._switch_lies.get(ev.msg.datapath.id)
+        if lie is not None and time.monotonic() - self._started_mono >= lie.start_s:
+            # Phase 2c: the switch reports what a compromised switch would.
+            from controller.flow_stats import FlowStatsPoller
+            from controller.switch_witness import falsify
+            falsify(ev.msg.body, lie, self.vip_ip, FlowStatsPoller._node_for_cookie)
         if self.flow_stats is not None:
             self.flow_stats.handle_reply(ev)
+        if self.witness is not None:
+            from controller.flow_stats import FlowStatsPoller
+            rules = []
+            for st in ev.msg.body:
+                try:
+                    match = dict(st.match.items())
+                except (AttributeError, TypeError):
+                    continue
+                rules.append({'priority': st.priority, 'match': match, 'bytes': st.byte_count,
+                              'node': FlowStatsPoller._node_for_cookie(st.cookie)})
+            self.witness.on_flow_stats(ev.msg.datapath.id, rules, time.monotonic())
+
+    def _witness_loop(self) -> None:
+        """Judge settled connections every poll; publish the verdicts every
+        `publish_every` polls, and immediately whenever who is blamed changes."""
+        last = None
+        n = 0
+        while True:
+            hub.sleep(self.monitor_interval_s)
+            self.witness.tick(time.monotonic())
+            v = self.witness.verdicts()
+            blamed = (tuple(v['servers']), tuple(v['switches']), tuple(v['clients']))
+            n += 1
+            if blamed != last or n % 5 == 0:
+                self.bus.publish('witness', **v)
+                if blamed != last and any(blamed):
+                    logger.warning("witness: servers=%s switches=%s clients=%s",
+                                   v['servers'], v['switches'], v['clients'])
+                last = blamed
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -1476,6 +1533,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
         Returns the node's new trust score, or None if this report can't be
         attributed to any known dispatch (stale, duplicate, or reaped)."""
         completed = self.state.complete_dispatch(client_ip, vip_src_port)
+        witness = getattr(self, 'witness', None)
+        if completed is not None and witness is not None:
+            witness.on_report(client_ip, vip_src_port, completed.node_id, device_id,
+                                   status, completed.chargeable, time.monotonic())
         if completed is None:
             logger.warning(
                 "Unattributable /report from %s:%d (device=%s) -- stale or duplicate",
@@ -1681,6 +1742,11 @@ class TrustBalancerApp(app_manager.OSKenApp):
             for d in self.cfg.get('security', {}).get('malicious_iot_devices', []) or []
         }
         iot_onset: Dict[str, float] = {}
+        # Badmouthing (Phase 2c) has the LOWEST precedence, as in topology.py:
+        # a device that is also a flooder or spoofer launches as that.
+        for m in self.cfg['simulation'].get('malicious_badmouth_devices', []) or []:
+            iot_mal[m['device']] = 'badmouth'
+            iot_onset[m['device']] = float(m.get('start_s', 0.0))
         for m in self.cfg['simulation'].get('malicious_flood_devices', []) or []:
             iot_mal[m['device']] = 'flood'
             iot_onset[m['device']] = float(m.get('start_s', 0.0))
@@ -1696,11 +1762,20 @@ class TrustBalancerApp(app_manager.OSKenApp):
         from simulation.cpu_profiles import parse_profiles, parse_throttles
         hw_profiles = parse_profiles(self.cfg)
         hw_throttles = parse_throttles(self.cfg)
+        from controller.switch_witness import parse_switch_lies
+        switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
         for i in range(1, n_edge + 1):
             nodes.append({
                 'id': f's{i}', 'kind': 'edge_switch', 'dpid': i + 1,
                 'label': f's{i}',
             })
+            lie = switch_lies.get(i + 1)
+            if lie is not None:
+                # Phase 2c ground truth: only when configured, so earlier
+                # recordings' topology is unchanged.
+                nodes[-1].update(attack=f'switch_{lie.mode}', attack_start_s=lie.start_s)
+                if lie.node:
+                    nodes[-1]['cover_node'] = lie.node
             nodes.append({
                 'id': f'srv{i}', 'kind': 'server',
                 'ip': inventory.servers.get(f'srv{i}', ('', ''))[0],

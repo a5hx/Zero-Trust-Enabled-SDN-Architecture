@@ -30,7 +30,7 @@ python3 -m evaluation.replicates data/runs \
         --arms scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat \
         --out-dir "$OUT/theta_sweep"
 
-echo "== live flood experiment: Table VII =="
+echo "== live flood experiment: Table 9 (S VII-I) =="
 # flood_on r01 is excluded: the host suspended mid-run (recorded span 24331 s,
 # gaps of 891 s and 23092 s after t=316 s). Score the other nine through links.
 FL="$(mktemp -d)"; trap 'rm -rf "$FL"' EXIT
@@ -52,15 +52,38 @@ python3 -m evaluation.replicates data/runs \
         --arms liarfix3_honest,liarfix3_honest_verified,liarfix3_c_treat --out-dir "$OUT/liar/batch3"
 python3 -m evaluation.replicates data/runs --arms ship_c_raw,ship_c_verified \
         --out-dir "$OUT/liar/shipped_load"
-cp -p docs/predictions/*.txt docs/predictions/*.md "$OUT/liar/" 2>/dev/null || true
+cp -p docs/predictions/liar*.txt docs/predictions/liar*.md docs/predictions/ship_verified* \
+      "$OUT/liar/" 2>/dev/null || true
 rm -f "$OUT"/liar/*_live_summary.txt
 
-echo "== switch witness, offline (S X) =="
+echo "== switch witness, offline (S VII-G) =="
+# The 110 recordings that existed when it was scored; later arms would change it.
 mkdir -p "$OUT/witness"
-python3 -m evaluation.witness_offline data/runs --out "$OUT/witness" >/dev/null
+python3 -m evaluation.witness_offline data/runs --out "$OUT/witness" \
+        --arms base,flood_off,flood_on,scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat,liar_c_treat,liar_honest,liar_t_treat,liar_t_treat_slots,stealthy_treat,liarfix_c_treat,liarfix_honest,liarfix_honest_verified,liarfix_stealthy,liarfix_t_treat,liarfix_t_verified,liarfix3_c_treat,liarfix3_honest,liarfix3_honest_verified \
+        >/dev/null
 rm -f "$OUT/witness/per_server.csv"
 
-echo "== replicated ledger with a leader kill (S VII-I) =="
+echo "== honest-slow servers (S VII-F) =="
+mkdir -p "$OUT/hw"
+python3 -m evaluation.replicates data/runs \
+        --arms hw_fleet,hw_class,hw_throttle25,hw_throttle10,hw_sybil_slow,hw_sybil_fast \
+        --out-dir "$OUT/hw"
+cp -p docs/predictions/hw_2026-10-20.txt docs/predictions/hw_2026-10-20_OUTCOME.md "$OUT/hw/"
+
+echo "== switch witness, live: Table 7 (S VII-G) =="
+for b in "batch1 wit witness" "after_fixes witfix witfix"; do
+  set -- $b
+  mkdir -p "$OUT/witness/$1"
+  ARMS="$2_control,$2_drop,$2_switch_hide,$2_badmouth,$2_collude"
+  python3 -m evaluation.replicates data/runs --arms "$ARMS" --out-dir "$OUT/witness/$1"
+  python3 -m evaluation.witness_report data/runs --arms "$ARMS" \
+          --out "$OUT/witness/$1/witness_summary.txt" >/dev/null
+  cp -p docs/predictions/$3_2026-10-21.txt docs/predictions/$3_2026-10-21_OUTCOME.md \
+        docs/predictions/$3_2026-10-21_live_verdicts.txt "$OUT/witness/$1/"
+done
+
+echo "== replicated ledger with a leader kill (S VII-K) =="
 RF=data/raft_failover_2026-10-19
 cp -p "$RF/raft_failover_20261019_140900.json" "$OUT/raft/failover_report.json"
 cp -p "$RF/nfr_report.txt" "$OUT/raft/nfr_report.txt"

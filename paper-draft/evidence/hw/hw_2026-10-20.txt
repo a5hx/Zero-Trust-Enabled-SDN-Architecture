@@ -1,0 +1,46 @@
+PREDICTION -- Phase 3, honest-slow versus lying (emulated mixed hardware)
+Registered 2026-10-20, BEFORE any hw_* run.
+
+Setup (config/params_hw_*.yaml): shipped rate (40 devices / 2 s), fixed-work
+tasks (45,000 SHA-256 iterations, ~15 ms at full speed), all attacks removed
+except one sybil in two arms, verified-claim routing. srv1-4 "fast"
+(uncapped), srv5-8 "slow" (cgroup cpu.max 5000/10000 = half a core). Five
+runs per arm. Scored with evaluation.replicates (honest servers ever
+quarantined, honest quarantines per server-hour, honest seconds quarantined,
+throttled-server quarantines and time to release, per-attacker containment).
+
+No model. Reasoning, written down so it can be checked:
+* At ~1% occupancy every honest server claims a verified duty near 0, i.e.
+  "idle", so the latency tell's only remaining condition is its round trip:
+  > 3x the baseline AND > baseline + 40 ms, sustained (3 strikes, leaky).
+* A half-core cap doubles a 15 ms task to ~30 ms and delays a /status reply
+  only while a task holds the CPU (GIL + quota). At ~2.5 tasks/s per server
+  that is rarely, and rarely by more than a few tens of ms -- under 3x a fleet
+  median of tens of ms.
+* The honesty check compares against the FLEET-median service time, which
+  sits between the classes; at 1% occupancy the resulting gap is ~0.01, far
+  under 0.40.
+* A 25% throttle stretches a task to ~60 ms; a 10% throttle to ~150 ms and
+  keeps the server busy ~35-40% of the time, which is when /status is slow.
+  Three slow polls net of fast ones becomes plausible at 10%, not at 25%.
+
+  H1  hw_fleet: honest false quarantines 0 in >= 4/5 runs. Mixed hardware
+      alone does not trip the fleet-median latency tell at this load.
+  H2  hw_class: honest false quarantines 0 in >= 4/5 runs.
+  H3  hw_throttle25: the throttled honest server (srv4) is quarantined in
+      <= 1/5 runs.
+  H4  hw_throttle10: srv4 is quarantined in >= 3/5 runs (the honest-slow
+      server the latency tell cannot tell from a liar), and when it is, it
+      is released within 30 s of the throttle ending (median release < 30 s)
+      -- probation and the anomaly EMA, not an absorbing quarantine.
+  H5  hw_sybil_slow and hw_sybil_fast: the sybil is contained in 5/5 runs
+      each, and its median containment on a slow server is no more than
+      twice that on a fast one: the class baseline does not hide a liar
+      among slow peers.
+  H6  every arm: honest-device mean latency within 15 % of hw_class.
+
+If H1-H3 hold and H4 fails (the 10% throttle is NOT quarantined), the
+latency tell is more tolerant of honest slowness than assumed; if H4 holds,
+that is the false-positive mode to fix next (e.g. require the latency tell
+to agree with the duty evidence before it may quarantine). No fix before the
+runs are scored.

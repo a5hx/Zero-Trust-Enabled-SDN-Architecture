@@ -36,6 +36,7 @@ data plane rather than just advisory.
 
 import argparse
 import os
+import random
 import http.client
 import json
 import logging
@@ -367,6 +368,19 @@ def _run_spoof(
         raise
 
 
+def badmouth(status: str, latency_ms: float, armed: bool, rate: float,
+             roll: float, timeout_s: float) -> Tuple[str, float]:
+    """--malicious badmouth: report a task that SUCCEEDED as a timeout, with
+    probability `rate` once armed. The client sees only the virtual IP, never
+    which server served it, so the lie lands on whichever servers serve it --
+    it cannot target one. Phase 2c: the case the client-versus-switch witness
+    exists for (the switch saw the full response; the client says it never
+    came)."""
+    if armed and status == 'success' and roll < rate:
+        return 'timeout', timeout_s * 1000.0
+    return status, latency_ms
+
+
 def run(
     device_id: str, vip: str, vip_port: int, controller: str, controller_port: int,
     interval_s: float, timeout_s: float,
@@ -374,6 +388,7 @@ def run(
     malicious: str = 'none', malicious_start_s: float = 0.0,
     flood_concurrency: int = 20, flood_interval_s: float = 0.0,
     spoof_target_id: Optional[str] = None,
+    badmouth_rate: float = 1.0,
 ) -> None:
     logger.info(
         "iot_client %s -> VIP %s:%d, reporting to %s:%d",
@@ -409,9 +424,17 @@ def run(
         )
         return
 
+    started = time.monotonic()
     while True:
         status, latency_ms, local_port = _send_task(vip, vip_port, timeout_s)
         logger.info("%s task -> %s (%.1f ms)", device_id, status, latency_ms)
+        if malicious == 'badmouth':
+            armed = time.monotonic() - started >= malicious_start_s
+            reported, latency_ms = badmouth(status, latency_ms, armed, badmouth_rate,
+                                            random.random(), timeout_s)
+            if reported != status:
+                logger.warning("%s: BADMOUTH -- reporting a %s as %s", device_id, status, reported)
+            status = reported
         _report(controller, controller_port, device_id, local_port, status, latency_ms, timeout_s)
         time.sleep(interval_s)
 
@@ -443,7 +466,13 @@ def build_parser() -> argparse.ArgumentParser:
              'over --auth-key-hex: a command-line key is readable by every user '
              'on the machine through `ps`.',
     )
-    parser.add_argument('--malicious', choices=['none', 'flood', 'spoof'], default='none')
+    parser.add_argument('--malicious', choices=['none', 'flood', 'spoof', 'badmouth'],
+                        default='none')
+    parser.add_argument(
+        '--badmouth-rate', type=float, default=1.0,
+        help='--malicious badmouth only: fraction of successful tasks reported '
+             'as timeouts once armed.',
+    )
     parser.add_argument(
         '--malicious-start-s', type=float, default=0.0,
         help='Delay (s) after start before --malicious flood/spoof arms. 0 '
@@ -503,6 +532,7 @@ def main() -> None:
             malicious=args.malicious, malicious_start_s=args.malicious_start_s,
             flood_concurrency=args.flood_concurrency, flood_interval_s=args.flood_interval_s,
             spoof_target_id=args.spoof_target_device_id,
+            badmouth_rate=args.badmouth_rate,
         )
     except KeyboardInterrupt:
         pass

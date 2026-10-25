@@ -1,0 +1,29 @@
+PREDICTION -- Phase 2d re-run on the fixed switch witness
+Registered 2026-10-21, BEFORE any witfix_* run.
+Context: docs/predictions/witness_2026-10-21_OUTCOME.md. W1, W4, W5, W6 held;
+W2 failed (dropping servers blamed a median 54-61 s after onset, srv6 4/5)
+and W3 failed on transient client misattribution (3/5 runs, 1-4 s).
+Fix 1: judge each party on its recent connections (servers/switches last 20,
+clients last 10). Fix 2: blame a client alone only if its switch-mates are
+clean. Arms are the wit_* arms with only the recording path changed.
+
+Basis: the simulation that reproduces the live failures
+(tests/test_switch_witness.py: a 4 s quarantine starves the witness; clients
+behind a switch on different phases) -- dropper blamed 4 s after onset with
+fix 1 (42 s without); 0 ticks of client misattribution with fix 2 (1 without).
+Live onsets are controller-relative and agents start a few seconds later, and
+a timed-out client reports 4 s after dispatch, so live times run longer than
+simulated ones.
+
+  X1  witfix_control: no party blamed in >= 4/5 runs.
+  X2  witfix_drop: srv6 and srv1 each blamed in 5/5, median <= 20 s after
+      onset (batch 1: 53.9 s and 61.2 s); no honest party in >= 4/5 runs.
+  X3  witfix_switch_hide: dpid 4 blamed 5/5, median <= 20 s; NO client and no
+      server blamed in >= 4/5 runs (batch 1: clients in 3/5).
+  X4  witfix_badmouth: iot3 and iot12 blamed 5/5, median <= 30 s; no switch
+      and no server in >= 4/5 (fix 2 must not hide a lone badmouther).
+  X5  witfix_collude: srv6 blamed 5/5. The covering switch dpid 4 MAY now be
+      blamed -- it lies, so that counts as a detection, not a false
+      accusation. No client behind dpid 4 blamed in >= 4/5 runs.
+  X6  witfix_control honest-device mean latency within the interval of
+      wit_control (87.9-92.2 ms): the fixes change judging, not routing.
