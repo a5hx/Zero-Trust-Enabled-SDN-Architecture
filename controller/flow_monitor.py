@@ -52,6 +52,7 @@ from controller.attack_classifier import (
     SIG_PACKET_DROP,
     SIG_TRUST_COLLAPSE,
     SIG_UNREACHABLE,
+    SIG_WITNESS,
     AttackEvidence,
 )
 from controller.event_bus import NullBus
@@ -266,6 +267,10 @@ class FlowMonitor:
         # nothing to undo.
         self.on_recover = on_recover if on_recover is not None else (lambda _nid: None)
         self.bus = bus if bus is not None else NullBus()
+        # The switch witness's current verdicts (controller/switch_witness.py),
+        # set by TrustBalancerApp only when controller.witness.act.servers is
+        # on. None -- every config before it -- keeps the witness observe-only.
+        self.witness_verdicts: Optional[Callable[[], Optional[Dict[str, Any]]]] = None
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, len(self.node_ids)), thread_name_prefix='flow-monitor-poll',
         )
@@ -311,6 +316,11 @@ class FlowMonitor:
         # long its reply actually took.
         latency_baseline = fleet_latency_baseline([p.rtt_ms for p in results.values()])
         baselines = self._latency_baselines(results, latency_baseline)
+
+        # Servers the switch witness currently blames, read once per cycle.
+        verdict = self.witness_verdicts() if self.witness_verdicts is not None else None
+        witness_blamed = set((verdict or {}).get('servers') or [])
+        witness_rate = (verdict or {}).get('server_rate') or {}
 
         for node_id in self.node_ids:
             probe = results[node_id]
@@ -504,6 +514,21 @@ class FlowMonitor:
                     f'{self.honesty_deviation_threshold:.2f}'
                 )
                 signals[SIG_PACKET_DROP] = round(timeout_rate, 4)
+
+            # The switch witness acting (controller.witness.act.servers): the
+            # switches saw requests reach this server and no full response come
+            # back, on clean connections whose clients and switches it has no
+            # reason to doubt. Unlike the timeout tell this does not read the
+            # controller's own task records, so it still sees a dropper when
+            # those records are wrong (the forged-evidence case, Phase 6).
+            if node_id in witness_blamed:
+                rate = float(witness_rate.get(node_id, 1.0))
+                anomaly_raw = 1.0
+                reasons.append(
+                    f'switch witness: {rate:.0%} of recent connections failed with '
+                    f'no full response at the switch'
+                )
+                signals[SIG_WITNESS] = round(rate, 4)
 
             # The trust rail can isolate a node before the anomaly rail has the
             # _MIN_TIMEOUT_SAMPLES it needs to say anything -- live run 8's

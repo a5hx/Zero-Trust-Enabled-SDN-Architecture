@@ -80,6 +80,7 @@ SIG_FLOOD = 'flood'                  # value: measured rate / expected rate
 SIG_AUTH_IP_PIN = 'auth_ip_pin'      # value: 1.0 -- correct key, wrong source
 SIG_AUTH_BAD_RESPONSE = 'auth_bad_response'   # value: 1.0 -- key not held
 SIG_TRUST_COLLAPSE = 'trust_collapse'  # value: post-collapse failure rate, 0..1
+SIG_WITNESS = 'witness_blame'        # value: the switch witness's failure rate for the server
 
 # Signals that say "this subject is lying about its own load". A pure dropper
 # reports its CPU honestly and answers /status at fleet speed, so it never
@@ -88,11 +89,13 @@ SIG_TRUST_COLLAPSE = 'trust_collapse'  # value: post-collapse failure rate, 0..1
 _LYING_SIGNALS = (SIG_CPU_HONESTY, SIG_LATENCY_TELL)
 _AUTH_SIGNALS = (SIG_AUTH_IP_PIN, SIG_AUTH_BAD_RESPONSE)
 
-#: Signals that say "this subject loses the work it is given". Both put a
+#: Signals that say "this subject loses the work it is given". All put a
 #: subject in the drop family, but only SIG_PACKET_DROP carries a timeout rate
 #: measured over enough samples to split blackhole from grayhole --
-#: SIG_TRUST_COLLAPSE deliberately does not. See _split_drop_family.
-_DROP_SIGNALS = (SIG_PACKET_DROP, SIG_TRUST_COLLAPSE)
+#: SIG_TRUST_COLLAPSE and SIG_WITNESS (the switches saw requests go in and no
+#: full response come out, controller/switch_witness.py) deliberately do not.
+#: See _split_drop_family.
+_DROP_SIGNALS = (SIG_PACKET_DROP, SIG_TRUST_COLLAPSE, SIG_WITNESS)
 
 # --------------------------------------------------------------------------- #
 # Labels

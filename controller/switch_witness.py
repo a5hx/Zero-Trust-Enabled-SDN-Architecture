@@ -37,8 +37,10 @@ quarantined node's rules are deleted with them.
 
 This module is pure bookkeeping -- no OpenFlow, no I/O -- so it is tested on
 its own. `TrustBalancerApp` feeds it flow-stats replies and client reports and
-publishes its verdicts as `witness` events. It is OBSERVE-ONLY: nothing it
-says quarantines anyone, until its false-positive rate has been measured.
+publishes its verdicts as `witness` events. By default it is OBSERVE-ONLY.
+After 45 live runs with no honest party blamed, `controller.witness.act`
+(parse_act) can let its verdicts act: a blamed server raises the anomaly
+gate's witness signal, and a blamed client's reports are charged to no server.
 """
 
 from __future__ import annotations
@@ -110,6 +112,25 @@ class WitnessConfig:
     def from_config(cls, ctrl_cfg: Dict[str, Any]) -> 'WitnessConfig':
         b = (ctrl_cfg or {}).get('witness') or {}
         return cls(**{k: type(getattr(cls, k))(b[k]) for k in cls.__dataclass_fields__ if k in b})
+
+
+def parse_act(witness_cfg: Optional[Dict[str, Any]]) -> Tuple[bool, bool]:
+    """(act on servers, act on clients) from a `controller.witness:` block.
+
+    servers -- a blamed server raises the anomaly gate's witness signal
+               (controller/flow_monitor.py), so it is quarantined and released
+               like any other gate verdict;
+    clients -- a blamed client's reports are published but charged to no server.
+    Both off unless set; acting needs the witness itself to be enabled.
+    """
+    wcfg = witness_cfg or {}
+    act = dict(wcfg.get('act') or {})
+    unknown = set(act) - {'servers', 'clients'}
+    if unknown:
+        raise ValueError(f'controller.witness.act: unknown keys {sorted(unknown)}')
+    if act and not wcfg.get('enabled'):
+        raise ValueError('controller.witness.act needs controller.witness.enabled')
+    return bool(act.get('servers')), bool(act.get('clients'))
 
 
 class SwitchWitness:
