@@ -1,0 +1,261 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  liar_honest : 5 run(s)
+      r01.jsonl  314.3 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  313.2 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+  liar_c_treat : 5 run(s)
+      r01.jsonl  315.1 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  311.0 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+  liar_t_treat : 5 run(s)
+      r01.jsonl  315.2 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  309.0 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  313.5 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  306.4 s  theta=0.30  anomaly_rail_enforced=True
+  liar_t_treat_slots : 5 run(s)
+      r01.jsonl  314.3 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  310.3 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  312.4 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+  stealthy_treat : 5 run(s)
+      r01.jsonl  315.1 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  312.1 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  313.2 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  306.4 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    liar_honest 99.77%  [99.64, 99.90]  sd 0.10  n=5
+    liar_c_treat 99.41%  [99.26, 99.55]  sd 0.12  n=5
+    liar_t_treat 99.77%  [99.65, 99.88]  sd 0.09  n=5
+    liar_t_treat_slots 99.74%  [99.65, 99.84]  sd 0.08  n=5
+    stealthy_treat 99.63%  [99.55, 99.71]  sd 0.06  n=5
+throughput
+    liar_honest 15.91 tps  [15.66, 16.16]  sd 0.20  n=5
+    liar_c_treat 15.80 tps  [15.57, 16.03]  sd 0.19  n=5
+    liar_t_treat 15.90 tps  [15.63, 16.17]  sd 0.22  n=5
+    liar_t_treat_slots 15.69 tps  [15.48, 15.90]  sd 0.17  n=5
+    stealthy_treat 15.61 tps  [15.39, 15.83]  sd 0.18  n=5
+mean latency (success)
+    liar_honest 395.0 ms  [391.5, 398.5]  sd 2.8  n=5
+    liar_c_treat 394.8 ms  [393.0, 396.5]  sd 1.4  n=5
+    liar_t_treat 395.9 ms  [393.2, 398.7]  sd 2.2  n=5
+    liar_t_treat_slots 427.1 ms  [423.2, 431.1]  sd 3.2  n=5
+    stealthy_treat 428.1 ms  [425.5, 430.7]  sd 2.1  n=5
+p95 latency (success)
+    liar_honest 448.7 ms  [436.3, 461.0]  sd 10.0  n=5
+    liar_c_treat 449.6 ms  [443.5, 455.7]  sd 4.9  n=5
+    liar_t_treat 448.9 ms  [439.7, 458.0]  sd 7.4  n=5
+    liar_t_treat_slots 627.6 ms  [614.9, 640.3]  sd 10.2  n=5
+    stealthy_treat 628.0 ms  [616.7, 639.3]  sd 9.1  n=5
+timeouts
+    liar_honest 4.8  [1.4, 8.2]  sd 2.8  n=5
+    liar_c_treat 21.0  [17.4, 24.6]  sd 2.9  n=5
+    liar_t_treat 3.2  [0.0*, 6.6]  sd 2.8  n=5
+    liar_t_treat_slots 5.6  [0.4, 10.8]  sd 4.2  n=5
+    stealthy_treat 11.2  [7.8, 14.6]  sd 2.8  n=5
+honest-device availability
+    liar_honest 99.77%  [99.64, 99.90]  sd 0.10  n=5
+    liar_c_treat 99.40%  [99.26, 99.55]  sd 0.12  n=5
+    liar_t_treat 99.77%  [99.66, 99.88]  sd 0.09  n=5
+    liar_t_treat_slots 99.74%  [99.64, 99.84]  sd 0.08  n=5
+    stealthy_treat 99.62%  [99.54, 99.70]  sd 0.06  n=5
+starved honest devices (<50%)
+    liar_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat_slots 0.00  [0.00, 0.00]  sd 0.00  n=5
+    stealthy_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    liar_honest 0.998  [0.997, 0.999]  sd 0.001  n=5
+    liar_c_treat 0.999  [0.998, 1.000]  sd 0.001  n=5
+    liar_t_treat 0.998  [0.997, 1.000*]  sd 0.002  n=5
+    liar_t_treat_slots 0.999  [0.998, 1.000]  sd 0.001  n=5
+    stealthy_treat 0.999  [0.999, 1.000]  sd 0.000  n=5
+Jain, full roster
+    liar_honest 0.998  [0.997, 0.999]  sd 0.001  n=5
+    liar_c_treat 0.991  [0.988, 0.994]  sd 0.002  n=5
+    liar_t_treat 0.982  [0.976, 0.988]  sd 0.005  n=5
+    liar_t_treat_slots 0.981  [0.973, 0.988]  sd 0.006  n=5
+    stealthy_treat 0.996  [0.995, 0.997]  sd 0.001  n=5
+share of routes to attackers
+    liar_honest 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 9.54%  [9.02, 10.06]  sd 0.42  n=5
+    liar_t_treat 16.76%  [15.97, 17.55]  sd 0.64  n=5
+    liar_t_treat_slots 17.02%  [16.09, 17.96]  sd 0.75  n=5
+    stealthy_treat 10.75%  [10.55, 10.95]  sd 0.16  n=5
+honest servers ever quarantined
+    liar_honest 3.40  [1.32, 5.48]  sd 1.67  n=5
+    liar_c_treat 4.40  [2.98, 5.82]  sd 1.14  n=5
+    liar_t_treat 3.20  [1.16, 5.24]  sd 1.64  n=5
+    liar_t_treat_slots 3.80  [2.18, 5.42]  sd 1.30  n=5
+    stealthy_treat 3.00  [0.85, 5.15]  sd 1.73  n=5
+lowest T of any honest server
+    liar_honest 0.355  [0.346, 0.365]  sd 0.008  n=5
+    liar_c_treat 0.362  [0.351, 0.373]  sd 0.009  n=5
+    liar_t_treat 0.368  [0.351, 0.386]  sd 0.014  n=5
+    liar_t_treat_slots 0.360  [0.335, 0.385]  sd 0.020  n=5
+    stealthy_treat 0.361  [0.333, 0.390]  sd 0.023  n=5
+attackers quarantined BEFORE onset
+    liar_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat_slots 0.00  [0.00, 0.00]  sd 0.00  n=5
+    stealthy_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    liar_honest 99.77%  [99.64, 99.91]  sd 0.11  n=5
+    liar_c_treat 99.68%  [99.50, 99.86]  sd 0.14  n=5
+    liar_t_treat 99.78%  [99.61, 99.95]  sd 0.14  n=5
+    liar_t_treat_slots 99.70%  [99.51, 99.89]  sd 0.16  n=5
+    stealthy_treat 99.84%  [99.75, 99.94]  sd 0.07  n=5
+mean attacker time isolated
+    liar_honest not measured
+    liar_c_treat 17.77%  [15.24, 20.29]  sd 2.03  n=5
+    liar_t_treat 0.46%  [0.00, 0.93]  sd 0.37  n=5
+    liar_t_treat_slots 0.20%  [0.00*, 0.57]  sd 0.30  n=5
+    stealthy_treat 11.41%  [7.99, 14.82]  sd 2.75  n=5
+attacks classified exactly (of 8)
+    liar_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat 0.80  [0.24, 1.36]  sd 0.45  n=5
+    liar_t_treat_slots 0.40  [0.00*, 1.08]  sd 0.55  n=5
+    stealthy_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+attacks in the right family (of 8)
+    liar_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 1.00  [1.00, 1.00]  sd 0.00  n=5
+    liar_t_treat 0.80  [0.24, 1.36]  sd 0.45  n=5
+    liar_t_treat_slots 0.40  [0.00*, 1.08]  sd 0.55  n=5
+    stealthy_treat 1.00  [1.00, 1.00]  sd 0.00  n=5
+honest subjects mislabelled
+    liar_honest 3.40  [1.32, 5.48]  sd 1.67  n=5
+    liar_c_treat 4.40  [2.98, 5.82]  sd 1.14  n=5
+    liar_t_treat 3.20  [1.16, 5.24]  sd 1.64  n=5
+    liar_t_treat_slots 3.80  [2.18, 5.42]  sd 1.30  n=5
+    stealthy_treat 3.00  [0.85, 5.15]  sd 1.73  n=5
+classification accuracy, all subjects
+    liar_honest 92.92%  [88.59, 97.25]  sd 3.49  n=5
+    liar_c_treat 88.75%  [85.80, 91.70]  sd 2.38  n=5
+    liar_t_treat 92.92%  [88.59, 97.25]  sd 3.49  n=5
+    liar_t_treat_slots 90.83%  [86.13, 95.53]  sd 3.78  n=5
+    stealthy_treat 91.67%  [87.19, 96.15]  sd 3.61  n=5
+honest devices: mean latency
+    liar_honest 395.0 ms  [391.5, 398.5]  sd 2.8  n=5
+    liar_c_treat 394.8 ms  [393.0, 396.5]  sd 1.4  n=5
+    liar_t_treat 395.9 ms  [393.2, 398.7]  sd 2.2  n=5
+    liar_t_treat_slots 427.1 ms  [423.2, 431.1]  sd 3.2  n=5
+    stealthy_treat 428.1 ms  [425.5, 430.7]  sd 2.1  n=5
+honest devices: p95 latency
+    liar_honest 448.7 ms  [436.3, 461.0]  sd 10.0  n=5
+    liar_c_treat 449.6 ms  [443.5, 455.7]  sd 4.9  n=5
+    liar_t_treat 448.9 ms  [439.7, 458.0]  sd 7.4  n=5
+    liar_t_treat_slots 627.6 ms  [614.9, 640.3]  sd 10.2  n=5
+    stealthy_treat 628.0 ms  [616.7, 639.3]  sd 9.1  n=5
+honest devices: task success
+    liar_honest 99.77%  [99.64, 99.90]  sd 0.10  n=5
+    liar_c_treat 99.41%  [99.26, 99.55]  sd 0.12  n=5
+    liar_t_treat 99.77%  [99.65, 99.88]  sd 0.09  n=5
+    liar_t_treat_slots 99.74%  [99.65, 99.84]  sd 0.08  n=5
+    stealthy_treat 99.63%  [99.55, 99.71]  sd 0.06  n=5
+tasks served to flooding device(s)
+    liar_honest 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liar_c_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liar_t_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liar_t_treat_slots 0.0  [0.0, 0.0]  sd 0.0  n=5
+    stealthy_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    liar_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat_slots 0.00  [0.00, 0.00]  sd 0.00  n=5
+    stealthy_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    liar_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liar_t_treat_slots 0.00  [0.00, 0.00]  sd 0.00  n=5
+    stealthy_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+run length
+    liar_honest 310.0 s  [305.6, 314.3]  sd 3.5  n=5
+    liar_c_treat 309.7 s  [305.5, 313.9]  sd 3.4  n=5
+    liar_t_treat 310.3 s  [305.6, 315.1]  sd 3.8  n=5
+    liar_t_treat_slots 310.4 s  [306.6, 314.2]  sd 3.0  n=5
+    stealthy_treat 310.9 s  [306.2, 315.5]  sd 3.8  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv3 (liar)
+    liar_c_treat score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.405  [0.393, 0.416]  sd 0.009  n=5
+               route share (post-onset): 9.37%  [9.05, 9.68]  sd 0.25  n=5
+                 minus fair 1/N    : -3.13%  [-3.45, -2.82]  sd +0.25  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 8.2 s, range 6.3-8.5 s; mean 7.6 [6.3, 8.9]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.529  [0.495, 0.562]  sd 0.027  n=5
+    liar_t_treat score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.470  [0.422, 0.517]  sd 0.038  n=5
+               route share (post-onset): 17.01%  [16.16, 17.86]  sd 0.68  n=5
+                 minus fair 1/N    : +4.51%  [+3.66, +5.36]  sd +0.68  n=5
+               quarantined         : 4/5  [38%, 96%]
+                 containment       : 4/5 runs; median 51.7 s, range 21.7-185.0 s; mean 77.5 [-39.5, 194.6]
+                 rail that fired   : gate 4/4
+                 T at quarantine   : 0.565  [0.506, 0.623]  sd 0.037  n=4
+    liar_t_treat_slots score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.501  [0.481, 0.520]  sd 0.015  n=5
+               route share (post-onset): 17.21%  [16.30, 18.12]  sd 0.73  n=5
+                 minus fair 1/N    : +4.71%  [+3.80, +5.62]  sd +0.73  n=5
+               quarantined         : 2/5  [12%, 77%]
+                 containment       : 2/5 runs; median 87.0 s, range 50.9-123.0 s; mean 87.0 [-371.1, 545.0]
+                 rail that fired   : gate 2/2
+                 T at quarantine   : 0.593  [0.525, 0.660]  sd 0.007  n=2
+    stealthy_treat score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.365  [0.345, 0.385]  sd 0.016  n=5
+               route share (post-onset): 10.63%  [10.35, 10.90]  sd 0.22  n=5
+                 minus fair 1/N    : -1.87%  [-2.15, -1.60]  sd +0.22  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 12.6 s, range 7.2-74.7 s; mean 27.0 [-8.5, 62.4]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.479  [0.422, 0.535]  sd 0.045  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    liar_t_treat isolated   0.0%   exact labels 0/8
+    liar_t_treat_slots isolated   0.0%   exact labels 0/8
+    liar_t_treat_slots isolated   0.0%   exact labels 0/8
+    liar_t_treat_slots isolated   0.0%   exact labels 0/8
+    liar_t_treat_slots isolated   0.3%   exact labels 1/8
+    liar_t_treat isolated   0.3%   exact labels 1/8
+    liar_t_treat isolated   0.3%   exact labels 1/8
+    liar_t_treat isolated   0.7%   exact labels 1/8
+    liar_t_treat_slots isolated   0.7%   exact labels 1/8
+    liar_t_treat isolated   1.0%   exact labels 1/8
+    stealthy_treat isolated   9.5%   exact labels 0/8
+    stealthy_treat isolated   9.8%   exact labels 0/8
+    stealthy_treat isolated  10.8%   exact labels 0/8
+    stealthy_treat isolated  10.8%   exact labels 0/8
+    liar_c_treat isolated  15.5%   exact labels 0/8
+    liar_c_treat isolated  16.2%   exact labels 0/8
+    stealthy_treat isolated  16.2%   exact labels 0/8
+    liar_c_treat isolated  17.5%   exact labels 0/8
+    liar_c_treat isolated  19.3%   exact labels 0/8
+    liar_c_treat isolated  20.3%   exact labels 0/8
+    Spearman rho(isolation, exact labels) = -0.342, p = 0.140, n = 20
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

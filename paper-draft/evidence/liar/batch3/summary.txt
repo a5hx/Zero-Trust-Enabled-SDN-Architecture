@@ -1,0 +1,154 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  liarfix3_honest : 5 run(s)
+      r01.jsonl  308.6 s  theta=0.30
+      r02.jsonl  307.5 s  theta=0.30
+      r03.jsonl  307.4 s  theta=0.30
+      r04.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.5 s  theta=0.30
+  liarfix3_honest_verified : 5 run(s)
+      r01.jsonl  307.4 s  theta=0.30
+      r02.jsonl  307.5 s  theta=0.30
+      r03.jsonl  307.5 s  theta=0.30
+      r04.jsonl  307.4 s  theta=0.30
+      r05.jsonl  307.5 s  theta=0.30
+  liarfix3_c_treat : 5 run(s)
+      r01.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.4 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.5 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    liarfix3_honest 99.83%  [99.77, 99.88]  sd 0.05  n=5
+    liarfix3_honest_verified 99.87%  [99.82, 99.91]  sd 0.03  n=5
+    liarfix3_c_treat 99.51%  [99.30, 99.73]  sd 0.17  n=5
+throughput
+    liarfix3_honest 16.08 tps  [16.00, 16.15]  sd 0.06  n=5
+    liarfix3_honest_verified 16.09 tps  [16.05, 16.13]  sd 0.03  n=5
+    liarfix3_c_treat 15.94 tps  [15.88, 16.01]  sd 0.05  n=5
+mean latency (success)
+    liarfix3_honest 394.6 ms  [391.1, 398.0]  sd 2.8  n=5
+    liarfix3_honest_verified 394.3 ms  [391.9, 396.7]  sd 1.9  n=5
+    liarfix3_c_treat 396.2 ms  [392.5, 399.9]  sd 3.0  n=5
+p95 latency (success)
+    liarfix3_honest 446.0 ms  [434.1, 457.9]  sd 9.6  n=5
+    liarfix3_honest_verified 444.8 ms  [436.4, 453.1]  sd 6.7  n=5
+    liarfix3_c_treat 449.3 ms  [440.9, 457.8]  sd 6.8  n=5
+timeouts
+    liarfix3_honest 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix3_honest_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix3_c_treat 14.2  [8.0, 20.4]  sd 5.0  n=5
+honest-device availability
+    liarfix3_honest 99.83%  [99.77, 99.89]  sd 0.05  n=5
+    liarfix3_honest_verified 99.87%  [99.83, 99.91]  sd 0.03  n=5
+    liarfix3_c_treat 99.51%  [99.30, 99.72]  sd 0.17  n=5
+starved honest devices (<50%)
+    liarfix3_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    liarfix3_honest 0.998  [0.997, 1.000]  sd 0.001  n=5
+    liarfix3_honest_verified 0.999  [0.999, 1.000]  sd 0.000  n=5
+    liarfix3_c_treat 0.999  [0.998, 1.000]  sd 0.001  n=5
+Jain, full roster
+    liarfix3_honest 0.998  [0.997, 1.000]  sd 0.001  n=5
+    liarfix3_honest_verified 0.999  [0.999, 1.000]  sd 0.000  n=5
+    liarfix3_c_treat 0.994  [0.993, 0.996]  sd 0.001  n=5
+share of routes to attackers
+    liarfix3_honest 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 10.27%  [10.04, 10.51]  sd 0.19  n=5
+honest servers ever quarantined
+    liarfix3_honest 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    liarfix3_honest 0.354  [0.350, 0.358]  sd 0.004  n=5
+    liarfix3_honest_verified 0.351  [0.351, 0.352]  sd 0.000  n=5
+    liarfix3_c_treat 0.358  [0.350, 0.365]  sd 0.006  n=5
+attackers quarantined BEFORE onset
+    liarfix3_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    liarfix3_honest 99.99%  [99.97, 100.00*]  sd 0.02  n=5
+    liarfix3_honest_verified 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    liarfix3_c_treat 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    liarfix3_honest not measured
+    liarfix3_honest_verified not measured
+    liarfix3_c_treat 10.87%  [8.24, 13.49]  sd 2.12  n=5
+attacks classified exactly (of 8)
+    liarfix3_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+attacks in the right family (of 8)
+    liarfix3_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 1.00  [1.00, 1.00]  sd 0.00  n=5
+honest subjects mislabelled
+    liarfix3_honest 0.20  [0.00*, 0.76]  sd 0.45  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    liarfix3_honest 99.58%  [98.43, 100.00*]  sd 0.93  n=5
+    liarfix3_honest_verified 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    liarfix3_c_treat 97.92%  [97.92, 97.92]  sd 0.00  n=5
+honest devices: mean latency
+    liarfix3_honest 394.6 ms  [391.1, 398.0]  sd 2.8  n=5
+    liarfix3_honest_verified 394.3 ms  [391.9, 396.7]  sd 1.9  n=5
+    liarfix3_c_treat 396.2 ms  [392.5, 399.9]  sd 3.0  n=5
+honest devices: p95 latency
+    liarfix3_honest 446.0 ms  [434.1, 457.9]  sd 9.6  n=5
+    liarfix3_honest_verified 444.8 ms  [436.4, 453.1]  sd 6.7  n=5
+    liarfix3_c_treat 449.3 ms  [440.9, 457.8]  sd 6.8  n=5
+honest devices: task success
+    liarfix3_honest 99.83%  [99.77, 99.88]  sd 0.05  n=5
+    liarfix3_honest_verified 99.87%  [99.82, 99.91]  sd 0.03  n=5
+    liarfix3_c_treat 99.51%  [99.30, 99.73]  sd 0.17  n=5
+tasks served to flooding device(s)
+    liarfix3_honest 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix3_honest_verified 0.0  [0.0, 0.0]  sd 0.0  n=5
+    liarfix3_c_treat 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    liarfix3_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    liarfix3_honest 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_honest_verified 0.00  [0.00, 0.00]  sd 0.00  n=5
+    liarfix3_c_treat 0.00  [0.00, 0.00]  sd 0.00  n=5
+run length
+    liarfix3_honest 307.7 s  [307.1, 308.3]  sd 0.5  n=5
+    liarfix3_honest_verified 307.5 s  [307.4, 307.5]  sd 0.1  n=5
+    liarfix3_c_treat 307.4 s  [307.4, 307.5]  sd 0.1  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv3 (liar)
+    liarfix3_c_treat score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.394  [0.390, 0.398]  sd 0.003  n=5
+               route share (post-onset): 10.29%  [9.99, 10.60]  sd 0.25  n=5
+                 minus fair 1/N    : -2.21%  [-2.51, -1.90]  sd +0.25  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 6.4 s, range 5.3-12.6 s; mean 7.6 [3.8, 11.4]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.465  [0.395, 0.534]  sd 0.056  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    liarfix3_c_treat isolated   7.5%   exact labels 0/8
+    liarfix3_c_treat isolated  10.8%   exact labels 0/8
+    liarfix3_c_treat isolated  10.8%   exact labels 0/8
+    liarfix3_c_treat isolated  12.5%   exact labels 0/8
+    liarfix3_c_treat isolated  12.8%   exact labels 0/8
+    Spearman rho: needs >= 4 runs with varying values
+

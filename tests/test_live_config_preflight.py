@@ -405,3 +405,64 @@ class TestTheRosterMatchesTheTopologyItGuards:
         from controller.trust_balancer import _device_roster
         assert _device_roster({}) == {}
         assert _device_roster({'simulation': {}}) == {}
+
+
+class TestPhase1AgentFlags(unittest.TestCase):
+    """The liar/stealthy attackers and the work-model flags (2026-10-19).
+
+    Two properties: a config that sets them gets them, parsed by the agent's
+    own argparse; and a config that does not set them launches the exact
+    command it always did (base_model/tests/test_launcher_parity.py pins the
+    shipped commands byte-for-byte)."""
+
+    def _cfg(self):
+        path = 'config/params_trust_full.yaml'
+        if not Path(path).exists():
+            self.skipTest(f'{path} not present')
+        cfg = load(path)
+        cfg['agents'].update(work_mode='hold', work_ops=5000, concurrency=4,
+                             enforce_concurrency=True)
+        cfg['simulation']['malicious_edge_nodes'] = [
+            {'node': 'srv3', 'attack': 'liar', 'start_s': 20, 'claimed_cpu_lie': 0.0,
+             'liar_busy': 'truthful'},
+            {'node': 'srv5', 'attack': 'stealthy', 'start_s': 20, 'stealth_rho': 0.1},
+        ]
+        return cfg
+
+    def _parsed(self, cmd):
+        from simulation import node_agent
+        _, argv = argv_for(cmd)
+        return node_agent.build_parser().parse_args(argv)
+
+    def test_fleet_work_model_reaches_every_server(self):
+        cfg = self._cfg()
+        for host, cmd in launch_commands(cfg):
+            if host.startswith('srv'):
+                a = self._parsed(cmd)
+                self.assertEqual((a.work_mode, a.work_ops, a.concurrency), ('hold', 5000, 4))
+                self.assertTrue(a.enforce_concurrency)
+
+    def test_liar_parameters_reach_the_liar(self):
+        cmds = dict(launch_commands(self._cfg()))
+        a = self._parsed(cmds['srv3'])
+        self.assertEqual((a.malicious, a.claimed_cpu_lie, a.liar_busy), ('liar', 0.0, 'truthful'))
+
+    def test_stealthy_is_told_the_detector_and_where_to_look(self):
+        cfg = self._cfg()
+        a = self._parsed(dict(launch_commands(cfg))['srv5'])
+        self.assertEqual(a.malicious, 'stealthy')
+        self.assertEqual(a.stealth_rho, 0.1)
+        self.assertEqual(a.stealth_honesty_threshold,
+                         cfg['controller']['honesty_deviation_threshold'])
+        from simulation.addressing import CX_IP
+        self.assertEqual(a.stealth_observe_url,
+                         f"http://{CX_IP}:{cfg['controller']['api_port']}/node/status")
+
+    def test_unset_means_absent(self):
+        for path in CONFIGS:
+            if not Path(path).exists():
+                continue
+            for host, cmd in launch_commands(load(path)):
+                for flag in ('--work-mode', '--work-ops', '--enforce-concurrency',
+                             '--liar-busy', '--stealth-'):
+                    self.assertNotIn(flag, cmd, f'{path}: {host}')

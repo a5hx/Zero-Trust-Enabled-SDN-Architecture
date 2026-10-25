@@ -1,0 +1,19 @@
+SWITCH WITNESS, OFFLINE  (110 runs)
+==============================================================================
+Whole-run agreement, switch-served / client-reported successes, honest servers:
+  n=675 server-runs  median 0.9992  p5 0.9917  p95 1.0000  min 0.9379  max 1.0449
+Per 10 s window, honest servers with >= 5 successes:
+  n=21143 windows  agreement median 1.000  p1 0.765  p99 1.250
+  served - reported: median +0.0  p1 -9.0  p99 +6.0
+
+Unanswered fraction (requests in, zero bytes back), by ground truth:
+  drop       n= 40  median 0.3844  min 0.0000  max 0.7536
+  grayhole   n= 40  median 0.1958  min 0.0000  max 0.4757
+  liar       n= 35  median 0.0000  min 0.0000  max 0.0109
+  none       n=675  median 0.0000  min 0.0000  max 0.0107
+  onoff      n= 40  median 0.0000  min 0.0000  max 0.1565
+  stealthy   n= 10  median 0.0020  min 0.0000  max 0.0092
+  sybil      n= 40  median 0.0000  min 0.0000  max 0.4000
+
+Flow conservation, own edge-switch port 1 bytes vs VIP-rule bytes (honest):
+  residual share of port bytes: median 0.333  p5 0.155  p95 0.355

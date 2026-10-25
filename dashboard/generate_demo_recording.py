@@ -158,6 +158,14 @@ class Sim:
             # observed_load integrates occupancy over time; feed it the same
             # simulated clock everything else here runs on, not wall time.
             time_source=lambda: self.clock.t,
+            # The scripted replay is pinned to the RAW claim it was built and
+            # tested with. Under the 'verified' default (2026-10-20) this 4-node
+            # Sim, which injects an 8% random timeout into every node, quarantined
+            # an honest node through the drop tell's 4-sample minimum in 5 of 20
+            # seeds against 1 of 20 with raw (Fisher p ~ 0.18, synthetic only;
+            # 0 honest quarantines in 20 live verified-routing runs). Recorded in
+            # docs/predictions/ship_verified_2026-10-20_OUTCOME.md.
+            cpu_claim='raw',
             trust_calculator=TrustCalculator(
                 alpha=0.35, beta=0.25, gamma=0.25, delta=0.15,
                 lambda_decay=0.85, initial_score=0.5,

@@ -243,3 +243,32 @@ class TestTeardownPausesTheMonitor:
     def test_no_controller_block_is_a_no_op(self):
         import simulation.topology as topo
         topo._pause_controller_monitor({'simulation': {}})
+
+
+class TestPreviousRecordingIsArchivedNotDeleted:
+    """The unlink this replaced destroyed the 632-block RAFT run of 2026-10-15."""
+
+    def test_moved_aside_with_its_own_finish_time(self, tmp_path) -> None:
+        import os
+        rec = tmp_path / 'events_raft.jsonl'
+        rec.write_text('{"type": "block"}\n')
+        os.utime(rec, (1_792_000_000, 1_792_000_000))
+        dst = run_demo._archive_previous_recording(str(rec), tmp_path / 'archive')
+        assert not rec.exists()
+        assert dst.name == 'events_raft_20261014T174640Z.jsonl'
+        assert dst.read_text() == '{"type": "block"}\n'
+
+    def test_same_second_runs_do_not_overwrite_each_other(self, tmp_path) -> None:
+        import os
+        arch = tmp_path / 'archive'
+        for body in ('first', 'second'):
+            rec = tmp_path / 'events.jsonl'
+            rec.write_text(body)
+            os.utime(rec, (1_792_000_000, 1_792_000_000))
+            run_demo._archive_previous_recording(str(rec), arch)
+        assert sorted(p.read_text() for p in arch.iterdir()) == ['first', 'second']
+
+    def test_nothing_to_archive(self, tmp_path) -> None:
+        assert run_demo._archive_previous_recording(
+            str(tmp_path / 'missing.jsonl'), tmp_path / 'archive') is None
+        assert not (tmp_path / 'archive').exists()

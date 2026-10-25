@@ -157,6 +157,12 @@ GROUND_TRUTH_ALIASES = {
     'drop': ATTACK_BLACKHOLE,
     'blackhole': ATTACK_BLACKHOLE,
     'sybil': ATTACK_SYBIL,
+    # The Phase 1 load liars (node_agent.py --malicious liar/stealthy): the
+    # same load-dishonesty family as the sybil, without its CPU burning. The
+    # classifier has no separate label for them, and should not: what it can
+    # observe -- a lying load claim -- is the same.
+    'liar': ATTACK_SYBIL,
+    'stealthy': ATTACK_SYBIL,
     'grayhole': ATTACK_GRAYHOLE,
     'onoff': ATTACK_ONOFF,
     'flood': ATTACK_FLOOD,

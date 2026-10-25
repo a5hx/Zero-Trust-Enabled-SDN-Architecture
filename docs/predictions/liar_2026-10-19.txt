@@ -1,0 +1,127 @@
+PREDICTION -- Phase 1 live liar experiment
+Registered 2026-10-19, BEFORE any live run with --malicious liar/stealthy.
+Source: python3 -m evaluation.liar_sweep --seeds 5   (5 seeds x 300 s per cell)
+Model: the real select_edge_node (p2c, d=2, eps=0.05, weights 0.50/0.30/0.20)
+and the real TrustCalculator; the honesty check, A-bar EMA and probation are
+re-implemented from flow_monitor.py / trust_state.py. N=8, liar = srv3 from
+t=20 s, 20 tasks/s, concurrency 2, hold-mode service time = occupancy*N*c/20.
+
+WHY: the shipped load-misreporting attacker never tested the gate against a
+lie that works. Its post-onset route share in the 15-run ablation was 1.98 %
+(score only) against a fair 12.5 %: at ~1 % occupancy an honest server reports
+~0, so its 0.1 claim ranks below the truth, and it burns CPU (slow).
+
+FULL MODEL TABLE
+ceiling under p2c+eps: 24.4% (fair 12.5%)
+  occ attacker         gate  slots  share%  excess% caught  med s  quar%  minT  honT honQ%  hon ms liar ms
+----------------------------------------------------------------------------------------------------------
+ 0.01 liar_consistent  False False    3.85    -8.65    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_consistent  False True     3.83    -8.67    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_consistent  True  False    3.85    -8.65    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_consistent  True  True     3.83    -8.67    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_truthful    False False   12.57    +0.07    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_truthful    False True    12.75    +0.25    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_truthful    True  False   12.57    +0.07    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 liar_truthful    True  True    12.75    +0.25    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 stealthy         False False    3.85    -8.65    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 stealthy         False True     3.83    -8.67    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 stealthy         True  False    3.85    -8.65    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.01 stealthy         True  True     3.83    -8.67    0/5      -    0.0 0.500 0.803   0.0      83      83
+ 0.10 liar_consistent  False False    6.11    -6.39    0/5      -    0.0 0.688 0.712   0.0     155     155
+ 0.10 liar_consistent  False True     6.42    -6.08    0/5      -    0.0 0.679 0.699   0.0     156     155
+ 0.10 liar_consistent  True  False    6.10    -6.40    0/5      -    0.0 0.670 0.425   0.0     155     155
+ 0.10 liar_consistent  True  True     6.50    -6.00    0/5      -    0.0 0.671 0.425   0.0     156     155
+ 0.10 liar_truthful    False False   14.03    +1.53    0/5      -    0.0 0.717 0.710   0.0     155     155
+ 0.10 liar_truthful    False True    13.94    +1.44    0/5      -    0.0 0.703 0.669   0.0     156     156
+ 0.10 liar_truthful    True  False   14.23    +1.73    0/5      -    0.0 0.708 0.425   0.0     155     155
+ 0.10 liar_truthful    True  True    14.39    +1.89    0/5      -    0.0 0.679 0.425   0.0     156     156
+ 0.10 stealthy         False False    6.04    -6.46    0/5      -    0.0 0.688 0.712   0.0     155     155
+ 0.10 stealthy         False True     6.46    -6.04    0/5      -    0.0 0.679 0.696   0.0     156     155
+ 0.10 stealthy         True  False    6.10    -6.40    0/5      -    0.0 0.670 0.425   0.0     155     155
+ 0.10 stealthy         True  True     6.50    -6.00    0/5      -    0.0 0.671 0.425   0.0     156     155
+ 0.20 liar_consistent  False False    8.50    -4.00    0/5      -    0.0 0.535 0.585   0.0     235     235
+ 0.20 liar_consistent  False True     9.14    -3.36    0/5      -    0.0 0.344 0.509   0.0     243     238
+ 0.20 liar_consistent  True  False    8.76    -3.74    0/5      -    0.0 0.556 0.585   0.0     235     235
+ 0.20 liar_consistent  True  True     9.34    -3.16    0/5      -    0.0 0.511 0.509   0.0     243     238
+ 0.20 liar_truthful    False False   15.48    +2.98    0/5      -    0.0 0.622 0.615   0.0     235     235
+ 0.20 liar_truthful    False True    15.77    +3.27    0/5      -    0.0 0.477 0.526   0.0     242     244
+ 0.20 liar_truthful    True  False   15.57    +3.07    0/5      -    0.0 0.610 0.600   0.0     235     235
+ 0.20 liar_truthful    True  True    15.72    +3.22    0/5      -    0.0 0.477 0.511   0.0     242     244
+ 0.20 stealthy         False False    8.73    -3.77    0/5      -    0.0 0.535 0.595   0.0     235     235
+ 0.20 stealthy         False True     9.23    -3.27    0/5      -    0.0 0.525 0.509   0.0     243     238
+ 0.20 stealthy         True  False    8.96    -3.54    0/5      -    0.0 0.558 0.595   0.0     235     235
+ 0.20 stealthy         True  True     9.51    -2.99    0/5      -    0.0 0.511 0.509   0.0     243     238
+ 0.30 liar_consistent  False False    9.65    -2.85    4/5     16    4.8 0.293 0.511   0.0     315     315
+ 0.30 liar_consistent  False True    10.60    -1.90    5/5     57    7.0 0.208 0.442   0.0     340     330
+ 0.30 liar_consistent  True  False    9.95    -2.55    5/5     10    8.5 0.293 0.521   0.0     315     315
+ 0.30 liar_consistent  True  True    10.21    -2.29    5/5     10    7.4 0.200 0.450   0.0     341     330
+ 0.30 liar_truthful    False False   16.15    +3.65    0/5      -    0.0 0.517 0.512   0.0     315     315
+ 0.30 liar_truthful    False True    17.20    +4.70    0/5      -    0.0 0.462 0.449   0.0     338     348
+ 0.30 liar_truthful    True  False   16.70    +4.20    0/5      -    0.0 0.497 0.464   0.0     315     315
+ 0.30 liar_truthful    True  True    17.17    +4.67    0/5      -    0.0 0.449 0.415   0.0     338     347
+ 0.30 stealthy         False False   10.22    -2.28    4/5     81    3.6 0.293 0.462   0.0     315     315
+ 0.30 stealthy         False True    10.99    -1.51    5/5     67    4.6 0.220 0.469   0.0     340     333
+ 0.30 stealthy         True  False   10.41    -2.09    5/5     13    2.2 0.298 0.495   0.0     315     315
+ 0.30 stealthy         True  True    11.03    -1.47    5/5     10    5.6 0.240 0.410   0.0     341     334
+ 0.40 liar_consistent  False False    8.40    -4.10    5/5      7   37.8 0.253 0.403   0.0     395     395
+ 0.40 liar_consistent  False True     8.47    -4.03    5/5      6   40.3 0.200 0.404   0.0     458     438
+ 0.40 liar_consistent  True  False    9.62    -2.88    5/5      3   33.4 0.253 0.404   0.0     395     395
+ 0.40 liar_consistent  True  True     9.84    -2.66    5/5      3   37.2 0.200 0.411   0.0     455     438
+ 0.40 liar_truthful    False False   17.88    +5.38    0/5      -    0.0 0.418 0.403   0.0     395     395
+ 0.40 liar_truthful    False True    17.84    +5.34    0/5      -    0.0 0.360 0.410   0.0     445     489
+ 0.40 liar_truthful    True  False   17.68    +5.18    0/5      -    0.0 0.406 0.404   0.0     395     395
+ 0.40 liar_truthful    True  True    18.08    +5.58    0/5      -    0.0 0.385 0.430   0.0     445     488
+ 0.40 stealthy         False False    9.61    -2.89    5/5     14   21.4 0.253 0.417   0.0     395     395
+ 0.40 stealthy         False True     9.74    -2.76    5/5     22   25.0 0.200 0.388   0.0     455     440
+ 0.40 stealthy         True  False   10.69    -1.81    5/5      9   16.9 0.253 0.403   0.0     395     395
+ 0.40 stealthy         True  True    11.21    -1.29    5/5     11   18.1 0.200 0.404   0.0     452     440
+ 0.50 liar_consistent  False False    7.30    -5.20    5/5      4   52.4 0.213 0.363   0.0     475     475
+ 0.50 liar_consistent  False True     7.55    -4.95    5/5      4   54.2 0.200 0.365   0.0     592     564
+ 0.50 liar_consistent  True  False    8.49    -4.01    5/5      2   51.8 0.213 0.363   0.0     475     475
+ 0.50 liar_consistent  True  True     8.82    -3.68    5/5      2   55.2 0.200 0.368   0.0     593     580
+ 0.50 liar_truthful    False False   18.59    +6.09    3/5     50    1.6 0.213 0.364   0.0     475     475
+ 0.50 liar_truthful    False True    20.32    +7.82    0/5      -    0.0 0.373 0.358   0.0     560     930
+ 0.50 liar_truthful    True  False   18.86    +6.36    1/5     93    0.1 0.363 0.364   0.0     475     475
+ 0.50 liar_truthful    True  True    20.78    +8.28    0/5      -    0.0 0.401 0.353   0.0     560     927
+ 0.50 stealthy         False False    8.53    -3.97    5/5      7   34.5 0.213 0.364   0.0     475     475
+ 0.50 stealthy         False True     9.27    -3.23    5/5      7   33.2 0.200 0.352   0.0     585     582
+ 0.50 stealthy         True  False   10.09    -2.41    5/5      6   31.8 0.213 0.363   0.0     475     475
+ 0.50 stealthy         True  True    10.92    -1.58    5/5      5   28.1 0.200 0.376   0.0     581     585
+
+WHAT THE MODEL SAYS
+1. A consistent lie (claim 0, busy counter faked to match) never pays: below
+   fair share at every occupancy from 0.01 to 0.50. The honesty term
+   penalises the gap between claimed and expected busy time on every task,
+   and p2c decides each comparison by score, so even a 0.002 trust deficit
+   loses the comparison. It is caught by the gate from occupancy 0.30 up
+   (once share x N x occupancy - claim > 0.40).
+2. The SPLIT CLAIM (instantaneous cpu_load = 0, busy counter truthful) is the
+   hole: routing reads the raw cpu_load, the honesty check reads the busy
+   counter. It gains at every occupancy >= 0.10 (+1.5 points at 0.10, +5.2 at
+   0.40, +8.3 at 0.50) and is never caught by the gate at occupancy <= 0.40.
+3. The stealthy liar (adaptive, consistent) is dominated by the split claim
+   and stays below fair share.
+4. No liar exceeds the p2c+eps ceiling of 24.4 %.
+
+LIVE ARMS (occupancy 0.40: agents.concurrency 2, work_mode hold,
+task_work_ms 320, report_interval_s 2.0; gate on; 5 runs each)
+  liar_honest         no liar (control)
+  liar_c_treat        liar, liar_busy consistent, claimed_cpu_lie 0.0
+  liar_t_treat        liar, liar_busy truthful (split claim), claimed_cpu_lie 0.0
+  liar_t_treat_slots  as liar_t_treat with agents.enforce_concurrency
+  stealthy_treat      stealthy, enforce_concurrency
+
+REGISTERED PREDICTIONS (scored with evaluation.replicates: route_share,
+excess_share, quarantined, honest_false_quarantines)
+  P1  liar_t_treat: excess_share > 0 with the t-interval excluding 0
+      (model: share 17.7 %, excess +5.2 points); quarantined <= 1/5.
+  P2  liar_c_treat: route_share < 12.5 % (model 9.6 %); quarantined >= 4/5,
+      median containment < 15 s (model 3 s).
+  P3  stealthy_treat: route_share < 12.5 % (model 11.2 %).
+  P4  every arm: 0 honest false quarantines, as in the control.
+  P5  no run: route_share > 24.4 %.
+Known ways the live system differs from the model, each of which could move
+the result: UCB1 changes the selection weights during a run (its arm
+[0.34, 0.50, 0.16] gives the cpu claim the most weight, which favours the
+split claim); live claims are polled once per second; live latency includes
+flow installation; live probation has a stale-evidence rule.

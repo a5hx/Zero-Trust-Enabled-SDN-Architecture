@@ -1,0 +1,54 @@
+PREDICTION -- Phase 1 RE-RUN on the corrected honesty check
+Registered 2026-10-20, BEFORE any liarfix_* run.
+Context: docs/predictions/liar_2026-10-19_OUTCOME.md. The first batch held
+P1 (gain), P2, P3, P5 and failed P4 (honest false quarantines). Every honest
+false quarantine, and every quarantine of the split-claim liar, traced to one
+defect: TrustState._completion_rate_locked ended its span at the last
+completion, so a burst then quiet read as ~3x the real rate.
+Fix 1 (default, code): the span ends at now.
+Fix 2 (opt-in): edge_score.cpu_claim: verified -- rank on the busy-counter
+duty cycle, not the raw instantaneous cpu_load.
+
+Model: python3 -m evaluation.liar_sweep (its rate estimator already divides by
+the window, i.e. it matches fix 1). Occupancy 0.40, gate on, 5 seeds x 300 s.
+The first batch's live route shares landed within ~1 point of this model.
+
+  --cpu-claim raw:
+ceiling under p2c+eps: 24.4% (fair 12.5%)
+  occ attacker         gate  slots  share%  excess% caught  med s  quar%  minT  honT honQ%  hon ms liar ms
+----------------------------------------------------------------------------------------------------------
+ 0.40 liar_consistent  True  False    9.62    -2.88    5/5      3   33.4 0.253 0.404   0.0     395     395
+ 0.40 liar_truthful    True  False   17.68    +5.18    0/5      -    0.0 0.406 0.404   0.0     395     395
+ 0.40 stealthy         True  False   10.69    -1.81    5/5      9   16.9 0.253 0.403   0.0     395     395
+ 0.40 stealthy         True  True    11.21    -1.29    5/5     11   18.1 0.200 0.404   0.0     452     440
+
+  --cpu-claim verified:
+ceiling under p2c+eps: 24.4% (fair 12.5%)
+  occ attacker         gate  slots  share%  excess% caught  med s  quar%  minT  honT honQ%  hon ms liar ms
+----------------------------------------------------------------------------------------------------------
+ 0.01 liar_consistent  True  False   14.26    +1.76    0/5      -    0.0 0.500 0.800   0.0      83      83
+ 0.01 liar_truthful    True  False   12.31    -0.19    0/5      -    0.0 0.500 0.800   0.0      83      83
+ 0.01 stealthy         True  False   14.26    +1.76    0/5      -    0.0 0.500 0.800   0.0      83      83
+ 0.40 liar_consistent  True  False   11.30    -1.20    5/5      2   56.8 0.253 0.403   0.0     395     395
+ 0.40 liar_truthful    True  False   12.36    -0.14    0/5      -    0.0 0.403 0.403   0.0     395     395
+ 0.40 stealthy         True  False   11.96    -0.54    5/5      2   29.9 0.253 0.403   0.0     395     395
+
+REGISTERED PREDICTIONS (evaluation.replicates; 5 runs per arm)
+  R1  liarfix_honest: honest false quarantines 0 in at least 4 of 5 runs
+      (first batch: 3.4 per run) -- the defect, not the workload, caused them.
+  R2  liarfix_t_treat: excess_share > 0 with the interval excluding 0
+      (model +5.2 points), AND quarantined in <= 1/5 runs (model 0/5): the
+      split claim is invisible to the corrected gate.
+  R3  liarfix_c_treat: route_share < 12.5 % (model 9.6 %); quarantined >= 4/5
+      (model 5/5, median 3 s). Open question this answers: whether the 15 % of
+      first-batch firings that survive the correction still contain it.
+  R4  liarfix_stealthy: route_share < 12.5 % (model 11.2 % with slots).
+  R5  liarfix_t_verified: excess_share interval includes 0 or lies below +1.5
+      points (model -0.14): fix 2 removes the split claim's gain.
+  R6  liarfix_honest_verified: honest false quarantines 0 in >= 4/5 runs, and
+      honest mean latency within 5 % of liarfix_honest: fix 2 costs honest
+      servers nothing.
+  Side effect to watch, NOT tested live here: at the shipped 1 % occupancy the
+  model gives a consistent liar +1.8 points under cpu_claim verified (its
+  fabricated duty 0 now undercuts an honest ~0.01). Small, and below the
+  honesty threshold's reach.

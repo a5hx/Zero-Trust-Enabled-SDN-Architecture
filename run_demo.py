@@ -424,6 +424,38 @@ def _wait_for_controller(api_host: str, api_port: int, timeout_s: float) -> bool
     return False
 
 
+ARCHIVE_DIR = Path('data/archive')
+
+
+def _archive_previous_recording(events_path: str,
+                                archive_dir: Path = ARCHIVE_DIR) -> Optional[Path]:
+    """Move a leftover recording aside instead of deleting it.
+
+    A run must start from an empty recording, or the stale events corrupt this
+    run's NFR report. This used to be an unlink, and it destroyed the 632-block
+    replicated-ledger run of 2026-10-15 when the failover run reused its
+    record_path. A rename into data/archive/ (same filesystem, so free even for
+    a 130 MB recording) keeps the clean start and loses nothing. The archived
+    name carries the file's own modification time, which is when that run
+    finished. tools/run_replicates.sh moves each recording away itself, so in a
+    replicate sweep there is nothing left here to archive.
+
+    Returns the archived path, or None if there was no previous recording.
+    """
+    src = Path(events_path)
+    if not src.exists():
+        return None
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(src.stat().st_mtime))
+    dst = archive_dir / f'{src.stem}_{stamp}{src.suffix}'
+    n = 1
+    while dst.exists():                     # two runs finishing in the same second
+        dst = archive_dir / f'{src.stem}_{stamp}_{n}{src.suffix}'
+        n += 1
+    src.rename(dst)
+    return dst
+
+
 def run_mininet(config_path: str, duration: Optional[int]) -> None:
     """Real `--mode mininet` entry point (Project Plan Step 3).
 
@@ -472,8 +504,12 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
     ctrl_cfg = cfg['controller']
     events_path = ctrl_cfg.get('dashboard', {}).get('record_path', 'data/events.jsonl')
     # Start from a clean recording -- a stale file from a previous run would
-    # silently corrupt the NFR report computed at the end of this one.
-    Path(events_path).unlink(missing_ok=True)
+    # silently corrupt the NFR report computed at the end of this one -- but
+    # archive that file rather than delete it.
+    archived = _archive_previous_recording(events_path)
+    if archived is not None:
+        logger.info("Previous recording at %s archived to %s", events_path, archived)
+        _give_back_to_invoking_user(ARCHIVE_DIR)
 
     # Replicated ledger: when the config asks for a local RAFT cluster, it must
     # be up and have elected a leader before the controller starts, because the

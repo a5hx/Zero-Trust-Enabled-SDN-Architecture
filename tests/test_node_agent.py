@@ -9,6 +9,7 @@ relying on import order or test order.
 """
 
 import http.client
+import http.server
 import socket
 import threading
 import time
@@ -48,6 +49,19 @@ def agent_server():
     node_agent._recent_latencies_ms.clear()
     node_agent._attack_armed_at = None
     node_agent._onoff_bad_phase_started_at = None
+    node_agent._slots = None
+    node_agent._lie_busy_base = 0.0
+    node_agent._lie_busy_at = None
+    node_agent._stealth_last_busy = None
+    AgentHandler.work_mode = 'burn'
+    AgentHandler.work_ops = 20000
+    AgentHandler.liar_busy = 'consistent'
+    AgentHandler.stealth_rho = 0.25
+    AgentHandler.stealth_margin = 0.8
+    AgentHandler.stealth_honesty_threshold = 0.40
+    AgentHandler.stealth_interval_s = 2.0
+    AgentHandler.stealth_observe_url = 'http://127.0.0.1:1/node/status'
+    AgentHandler.stealth_claim_now = 0.0
 
     AgentHandler.node_id = 'srvT'
     AgentHandler.concurrency = 4
@@ -241,3 +255,177 @@ class TestOnOff:
         AgentHandler.onoff_bad = True
         status = _get_status(agent_server)
         assert status['cpu_load'] != 0.1
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1 (2026-10-19): work models, worker slots, and the liars whose lie
+# works. The shipped sybil burns CPU (so it is slow) and its 0.1 claim sits
+# above an honest server's truthful ~0 at the shipped ~1% duty, so it repels
+# traffic; these are the attackers that test whether the gate catches the LIE.
+
+def _post_tasks_concurrently(port: int, n: int) -> list:
+    out, threads = [], []
+    for _ in range(n):
+        t = threading.Thread(target=lambda: out.append(_post_task(port).status))
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    return out
+
+
+class TestWorkModes:
+    def test_hold_occupies_a_worker_for_work_ms(self, agent_server):
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 120.0
+        t0 = time.monotonic()
+        assert _post_task(agent_server).status == 200
+        assert time.monotonic() - t0 >= 0.12
+        assert _get_status(agent_server)['busy_seconds'] >= 0.12
+
+    def test_hold_uses_no_cpu(self, agent_server):
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 200.0
+        cpu0 = time.process_time()
+        _post_task(agent_server)
+        assert time.process_time() - cpu0 < 0.1     # a sleep, not a spin
+
+    def test_ops_is_a_fixed_amount_of_work(self, agent_server, monkeypatch):
+        calls = []
+        monkeypatch.setattr(node_agent, '_burn_ops', lambda n: calls.append(n))
+        AgentHandler.work_mode = 'ops'
+        AgentHandler.work_ops = 777
+        _post_task(agent_server)
+        assert calls == [777]
+
+    def test_burn_is_still_the_default(self):
+        args = node_agent.build_parser().parse_args(['--node-id', 'srv1'])
+        assert args.work_mode == 'burn' and args.enforce_concurrency is False
+
+
+class TestWorkerSlots:
+    def test_unbounded_by_default(self, agent_server):
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 300.0
+        AgentHandler.concurrency = 1
+        t0 = time.monotonic()
+        assert _post_tasks_concurrently(agent_server, 2) == [200, 200]
+        assert time.monotonic() - t0 < 0.55          # served side by side
+
+    def test_enforced_slots_make_excess_work_queue(self, agent_server):
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 300.0
+        AgentHandler.concurrency = 1
+        node_agent._slots = threading.BoundedSemaphore(1)
+        t0 = time.monotonic()
+        assert _post_tasks_concurrently(agent_server, 2) == [200, 200]
+        assert time.monotonic() - t0 >= 0.6          # one after the other
+        # Queueing is not service: busy time is ~2 x 0.3 s, not more.
+        assert _get_status(agent_server)['busy_seconds'] == pytest.approx(0.6, abs=0.1)
+
+
+def _arm(kind):
+    node_agent._arm_malicious('srvT', kind, concurrency=AgentHandler.concurrency,
+                              stop_event=threading.Event())
+
+
+class TestLiar:
+    def test_claims_the_lie_and_burns_nothing(self, agent_server):
+        AgentHandler.malicious = 'liar'
+        AgentHandler.claimed_cpu_lie = 0.0
+        before = threading.active_count()
+        _arm('liar')
+        assert threading.active_count() == before     # no burner threads
+        assert _get_status(agent_server)['cpu_load'] == 0.0
+
+    def test_consistent_busy_counter_continues_from_the_real_one(self, agent_server):
+        AgentHandler.malicious = 'liar'
+        AgentHandler.claimed_cpu_lie = 0.0
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 100.0
+        _post_task(agent_server)                       # honest work before onset
+        real_at_arm = _get_status(agent_server)['busy_seconds']
+        _arm('liar')
+        _post_task(agent_server)                       # real work, hidden
+        busy = _get_status(agent_server)['busy_seconds']
+        # Claimed duty 0: the counter stops where the real one was at arming.
+        # It never jumps backwards (the sybil's restarts from 0).
+        assert busy == pytest.approx(real_at_arm, abs=1e-6)
+        assert node_agent._busy_seconds_total > real_at_arm + 0.09
+
+    def test_truthful_busy_counter_is_the_split_claim(self, agent_server):
+        AgentHandler.malicious = 'liar'
+        AgentHandler.claimed_cpu_lie = 0.0
+        AgentHandler.liar_busy = 'truthful'
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 100.0
+        _arm('liar')
+        _post_task(agent_server)
+        status = _get_status(agent_server)
+        assert status['cpu_load'] == 0.0               # what routing reads
+        assert status['busy_seconds'] >= 0.1           # what the honesty check reads
+
+    def test_unarmed_liar_is_honest(self, agent_server):
+        AgentHandler.malicious = 'liar'
+        AgentHandler.claimed_cpu_lie = 0.0
+        AgentHandler.work_mode = 'hold'
+        AgentHandler.work_ms = 100.0
+        _post_task(agent_server)
+        assert _get_status(agent_server)['busy_seconds'] >= 0.1
+
+
+class TestStealthClaim:
+    def test_undercuts_to_the_peer_quantile(self):
+        peers = [0.2, 0.4, 0.6, 0.8]
+        assert node_agent.stealth_claim(peers, true_duty=0.3, rho=0.0,
+                                        margin=0.8, honesty_threshold=0.4) == 0.2
+
+    def test_never_below_the_honesty_floor(self):
+        # True duty 0.9; floor 0.9 - 0.8*0.4 = 0.58, above every peer's claim.
+        c = node_agent.stealth_claim([0.1, 0.2], true_duty=0.9, rho=0.25,
+                                     margin=0.8, honesty_threshold=0.4)
+        assert c == pytest.approx(0.58)
+
+    def test_blind_falls_back_to_the_floor(self):
+        assert node_agent.stealth_claim([], true_duty=0.5, rho=0.25, margin=1.0,
+                                        honesty_threshold=0.4) == pytest.approx(0.1)
+        assert node_agent.stealth_claim([], true_duty=0.1, rho=0.25, margin=1.0,
+                                        honesty_threshold=0.4) == 0.0
+
+    def test_quantile_interpolates(self):
+        assert node_agent._quantile([0.0, 1.0], 0.25) == pytest.approx(0.25)
+
+
+class TestStealthyAgent:
+    def test_reads_the_controller_and_claims_the_quantile(self, agent_server):
+        import json as _json
+
+        class _Snap(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = _json.dumps({
+                    'srvT': {'claimed_cpu': 0.0},          # itself: excluded
+                    'srv1': {'claimed_cpu': 0.30}, 'srv2': {'claimed_cpu': 0.50},
+                    'srv3': {'claimed_cpu': 0.70}}).encode()
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        port = _free_port()
+        ctrl = http.server.HTTPServer(('127.0.0.1', port), _Snap)
+        threading.Thread(target=ctrl.serve_forever, daemon=True).start()
+        try:
+            AgentHandler.malicious = 'stealthy'
+            AgentHandler.stealth_observe_url = f'http://127.0.0.1:{port}/node/status'
+            AgentHandler.stealth_interval_s = 0.05
+            AgentHandler.stealth_rho = 0.0
+            stop = threading.Event()
+            node_agent._arm_malicious('srvT', 'stealthy', concurrency=4, stop_event=stop)
+            assert _wait_until(lambda: _get_status(agent_server)['cpu_load'] == 0.3)
+            stop.set()
+        finally:
+            ctrl.shutdown()
+            ctrl.server_close()

@@ -1,0 +1,11 @@
+arm,run,node,attack,onset_s,score_cross_s,min_trust,contain_s,rail,t_at_q,a_at_q,pre_onset_quarantines,route_share,excess_share
+ship_c_raw,r01.jsonl,srv3,liar,20.0,,0.7385,,,,,0,0.1023725014010835,-0.022627498598916496
+ship_c_raw,r02.jsonl,srv3,liar,20.0,,0.7426,,,,,0,0.0883451624953306,-0.0366548375046694
+ship_c_raw,r03.jsonl,srv3,liar,20.0,,0.5288,,,,,0,0.09708193041526375,-0.02791806958473625
+ship_c_raw,r04.jsonl,srv3,liar,20.0,,0.7535,,,,,0,0.11512542119056533,-0.009874578809434667
+ship_c_raw,r05.jsonl,srv3,liar,20.0,,0.7465,,,,,0,0.1040104947526237,-0.020989505247376306
+ship_c_verified,r01.jsonl,srv3,liar,20.0,,0.731,,,,,0,0.14682835820895523,0.021828358208955234
+ship_c_verified,r02.jsonl,srv3,liar,20.0,,0.7239,,,,,0,0.128568762828886,0.0035687628288859907
+ship_c_verified,r03.jsonl,srv3,liar,20.0,,0.7306,,,,,0,0.11639619473978735,-0.008603805260212649
+ship_c_verified,r04.jsonl,srv3,liar,20.0,,0.7454,,,,,0,0.14323111443530293,0.018231114435302925
+ship_c_verified,r05.jsonl,srv3,liar,20.0,,0.7574,,,,,0,0.14408521771631472,0.019085217716314717

@@ -1,0 +1,24 @@
+PREDICTION -- Phase 1 THIRD BATCH (fix 3: the honesty check abstains until a
+full load window of completions exists)
+Registered 2026-10-20, BEFORE any liarfix3_* run.
+Context: docs/predictions/liarfix_2026-10-20_OUTCOME.md. R2-R5 held; R1/R6
+failed on honest false quarantines (1.4 and 2.0 per run), 50 of 52 remaining
+honest honesty firings in the first 36 s, 35 with no completion older than
+the window.
+
+Counterfactual on the second batch's recordings (not a model): the 35
+partial-window firings abstain under fix 3. The other 17 had an older
+reference; most fall on servers that a warm-up firing had already
+quarantined (likely cascade), so they should mostly disappear with their
+cause, but this cannot be shown from the recordings alone.
+
+  T1  liarfix3_honest: honest false quarantines 0 in >= 4 of 5 runs.
+  T2  liarfix3_honest_verified: honest false quarantines 0 in >= 4 of 5 runs.
+  T3  liarfix3_c_treat: the consistent liar still contained, >= 4/5 runs,
+      median containment < 15 s (second batch: 5/5, 7.4 s; fix 3 adds at
+      most ~3 s and the liar arms at 20 s, after the warm-up window).
+  T4  honest-device mean latency in all three arms within 5 % of the second
+      batch's (~396 ms): the guard changes nothing in steady state.
+If T1 or T2 fails, the residual firings are the "older reference" kind and
+need their own diagnosis before any further fix; they are not to be tuned
+away by raising the threshold.

@@ -10,6 +10,7 @@ independent anomaly-gate quarantine check, which this test exercises through
 the real TrustState/TrustCalculator, not a mock.
 """
 
+import pytest
 import time
 
 from contracts.trust_update import TrustUpdate
@@ -1294,3 +1295,105 @@ class TestTheReportPathAbstainsWithoutGoingSilent:
         assert score is not None and score < before
         assert [s for _, s in state._recent_statuses['srv2']] == ['timeout']
         assert published[0][1].get('charged') is not False
+
+
+def test_a_burst_then_quiet_does_not_inflate_the_expected_duty():
+    """Liar experiment, 2026-10-20: 3.0-4.4 honest servers per run were
+    quarantined at 40% occupancy, every one by the honesty check, because the
+    completion rate divided by the span to the LAST completion rather than to
+    now. A burst early in the window followed by ~2 s of quiet read as ~3x the
+    real rate (rebuilt median 0.81 vs 0.30 over 119 firings).
+
+    Here: an honest node at 0.32 s/task on 2 workers, steady 2 tasks/s, then 6
+    tasks finished inside 0.6 s, then 2.4 s with nothing. Its true duty over
+    the last 3 s is 6 x 0.32 / (3 x 2) = 0.32.
+    """
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    for nid in ('srv1', 'srv2', 'srv3', 'srv4'):
+        state.set_concurrency(nid, 2)
+    busy = _drive_fleet(state, clock, {nid: (2, 0.32) for nid in
+                                       ('srv1', 'srv2', 'srv3', 'srv4')}, seconds=10)
+    for _ in range(6):                       # the burst
+        busy['srv1'] += 0.32
+        state.record_task_outcome(TrustUpdate(
+            device_id='iot1', edge_node_id='srv1', task_status='success',
+            cpu_usage=0.0, reported_cpu=0.0, latency_ms=400.0))
+        clock.advance(0.1)
+    for _ in range(3):                       # the quiet; the others carry on
+        clock.advance(0.8)
+        state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=busy['srv1'])
+        for nid in ('srv2', 'srv3', 'srv4'):
+            busy[nid] += 2 * 0.32
+            state.report_claimed_status(nid, 0.0, 30.0, busy_seconds=busy[nid])
+            for _ in range(2):
+                state.record_task_outcome(TrustUpdate(
+                    device_id='iot1', edge_node_id=nid, task_status='success',
+                    cpu_usage=0.0, reported_cpu=0.0, latency_ms=400.0))
+
+    claimed = state.claimed_load('srv1')
+    expected = state.expected_duty_cycle('srv1')
+    assert expected is not None
+    assert abs(claimed - expected) < 0.40, (
+        f'honest node would be flagged: claimed {claimed:.2f} vs expected '
+        f'{expected:.2f} -- the rate must be measured over the window ending now')
+    assert expected < 0.6
+
+
+class TestVerifiedClaimRouting:
+    """edge_score.cpu_claim: 'verified' routes on the busy-counter duty cycle
+    the honesty check validates, closing the split claim (cpu_load 0 to the
+    router, a truthful busy counter to the check)."""
+
+    def _split_claimer(self, cpu_claim):
+        clock = _Clock()
+        state = TrustState(node_ids=['srv1', 'srv2'], time_source=clock, cpu_claim=cpu_claim)
+        state.set_concurrency('srv1', 2)
+        busy = 0.0
+        for _ in range(4):
+            busy += 1.6                    # 0.8 of 2 workers over each 1 s
+            state.report_claimed_status('srv1', 0.0, 30.0, busy_seconds=busy)
+            clock.advance(1.0)
+        return state
+
+    def test_raw_routes_on_the_lie(self):
+        assert self._split_claimer('raw')._routing_claim_locked('srv1') == 0.0
+
+    def test_verified_routes_on_the_busy_counter(self):
+        claim = self._split_claimer('verified')._routing_claim_locked('srv1')
+        assert claim == pytest.approx(0.8, abs=0.05)
+
+    def test_an_unpolled_node_keeps_the_neutral_default(self):
+        assert self._split_claimer('verified')._routing_claim_locked('srv2') == 0.5
+
+    def test_an_unknown_mode_is_refused(self):
+        with pytest.raises(ValueError):
+            TrustState(node_ids=['srv1'], cpu_claim='trusted')
+
+
+def test_no_opinion_until_a_full_window_of_completions_exists():
+    """Re-run, 2026-10-20: after fix 1, 50 of the 52 remaining honest honesty
+    firings came in the first 36 s of a run, 35 of them with no completion
+    older than the 3 s window. All 40 clients start together, so the first
+    seconds are one synchronized burst, and a rate measured over a partial
+    window reads it as the steady state. The controller's own missing history
+    is not the node's misbehaviour: abstain until the window is full."""
+    clock = _Clock()
+    state = _busy_fleet(clock)
+    for nid in ('srv1', 'srv2', 'srv3', 'srv4'):
+        state.set_concurrency(nid, 2)
+    # 2.5 s of a start-up burst: no completion is yet older than the window.
+    busy = {nid: 0.0 for nid in ('srv1', 'srv2', 'srv3', 'srv4')}
+    for _ in range(5):
+        for nid in busy:
+            busy[nid] += 2 * 0.32
+            state.report_claimed_status(nid, 0.0, 30.0, busy_seconds=busy[nid])
+            for _ in range(4):
+                state.record_task_outcome(TrustUpdate(
+                    device_id='iot1', edge_node_id=nid, task_status='success',
+                    cpu_usage=0.0, reported_cpu=0.0, latency_ms=400.0))
+        clock.advance(0.5)
+    assert state.expected_duty_cycle('srv1') is None
+    # Once a completion is at least a window old, it has an opinion again.
+    _drive_fleet(state, clock, {nid: (2, 0.32) for nid in busy}, seconds=5)
+    assert state.expected_duty_cycle('srv1') is not None
