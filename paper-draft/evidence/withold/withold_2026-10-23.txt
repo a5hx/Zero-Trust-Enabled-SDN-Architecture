@@ -1,0 +1,66 @@
+PREDICTION -- the witness holds a blamed server until it serves trials
+Registered 2026-10-23, BEFORE any wh_* run.
+
+What is being tested. When the witness acted (witact_2026-10-23_OUTCOME.md)
+the remaining loss was a cycle: a blamed server's verdict lapsed once its
+failures left the witness's 60 s window, the gate released it, and it failed
+~10 more connections before being blamed again. With
+controller.witness.act.hold (controller/switch_witness.py, WitnessHold) a
+blamed server is HELD: the gate signal stays on after the verdict lapses, the
+server gets one trial connection every 10 s (installed above the quarantine
+drop rules, like a probation trial), and it is released only after the
+WITNESS sees 3 trials in a row served -- switch counters show a full
+response and the client reports a success. The controller's own records do
+not judge the trial; with forged evidence they would pass it. On release the
+witness forgets the server's old failures.
+
+Arms (config/params_wh_*.yaml; pinned by tests/test_witness_hold_arms.py):
+  wh_control_hold  witfix_control + act + hold         (false holds, cost)
+  wh_forge_act     lv_forge_evidence + act             (fresh twin of wa_forge_act)
+  wh_forge_hold    lv_forge_evidence + act + hold
+  wh_drop_act      witfix_drop + act                   (srv6 blackhole from 30 s,
+  wh_drop_hold     witfix_drop + act + hold             srv1 50% grayhole from 40 s)
+
+Basis.
+  * Tests (tests/test_witness_hold.py): a held server gets exactly one trial
+    per interval and no other traffic; trials ignore Ā and trust but respect
+    admission; only connections routed AS trials count; a failure resets the
+    run; release after 3 in a row forgets the server's old failures. Breaking
+    any of: the forgetting, the trial-only counting, or the reset, fails a test.
+  * wa_forge_act (acting, no hold): srv3 got 43-51 connections between onset
+    and its first quarantine, 148 [139, 157] in all after onset; quarantined
+    84.3%; honest task success 97.54% [97.45, 97.64].
+  * witfix_drop (gate only, witness observing): srv6 46 [34, 59] connections
+    after onset, quarantined 49%; srv1 97 [56, 137], quarantined 56%; honest
+    task success 98.57% [98.35, 98.79].
+  * Arithmetic: a held blackhole costs ~1 trial connection per 10 s (~24 over
+    a 240 s attack) instead of the act-only cycle. That clearly beats the
+    forge case's ~100 post-detection connections, but is about what the gate
+    already allows a plain blackhole, so for the drop arms the sign is not
+    predicted. A 50% grayhole passes 3 trials in a row after ~14 trials on
+    average (2 + 4 + 8), i.e. ~140 s held: the consecutive-pass rule's known
+    weakness, stated before the runs.
+
+  H1  wh_control_hold: no honest server held in >= 4/5 runs; honest task
+      success >= 99.9% in every run.
+  H2  wh_forge_hold: srv3 held 5/5 and released in <= 1/5 runs; quarantined
+      >= 95% of the post-onset time; <= 100 connections after onset; honest
+      task success >= 98.5%, interval disjoint above wh_forge_act's.
+  H3  wh_forge_act reproduces wa_forge_act: honest task success within 1
+      point of 97.5%.
+  H4  wh_drop_hold: srv6 held 5/5 and never released; its connections after
+      onset within 20 of wh_drop_act's (the hold neither helps nor hurts much
+      against a blackhole the gate already contains).
+  H5  wh_drop_hold: srv1 (50% grayhole) released at least once in >= 3/5
+      runs.
+  H6  Across all 25 runs: no honest party blamed by the witness and no honest
+      server held.
+
+Not predicted, reported as measured: honest task success in the drop arms;
+how long srv1 is held per hold.
+
+Run (about 2 h 10 min; the forgery arms need the gate):
+  sudo ZTSDN_ALLOW_FORGERY=1 ARMS="wh_control_hold wh_forge_act wh_forge_hold wh_drop_act wh_drop_hold" tools/run_replicates.sh
+Score (no sudo):
+  python3 -m evaluation.witness_act_report data/runs --arms wh_control_hold,wh_forge_act,wh_forge_hold,wh_drop_act,wh_drop_hold
+  python3 -m evaluation.replicates data/runs --arms wh_control_hold,wh_forge_act,wh_forge_hold,wh_drop_act,wh_drop_hold --out-dir data/withold_experiment_<date>

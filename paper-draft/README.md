@@ -1,14 +1,16 @@
 # paper-draft — research paper draft
 
 **"What Catches a Lie That Works? Trust Scores, Anomaly Gates and
-Load-Misreporting Servers in Zero-Trust Edge Load Balancing"** (revision 7,
-2026-10-23: ledger replicas re-verify the controller; revision 6 added
+Load-Misreporting Servers in Zero-Trust Edge Load Balancing"** (revision 8,
+2026-10-25: the switch witness acts and holds, and two probation-path defects
+are measured in Threats to Validity; revision 7 added ledger replicas that
+re-verify the controller; revision 6 added
 attestation, revision 5 honest-slow servers and the live switch witness,
 revision 4 the liar experiment; see `CHECKLIST.md`)
 
 A conference-length (IEEE-style, two-column) research paper drawing together
 the project's findings, measurements and negative results. `paper.pdf` is the
-current build: **17 pages, 39 references (all cited), 12 tables, 2 figures (both drawn in LaTeX), 1 proposition.**
+current build: **18 pages, 39 references (all cited), 13 tables, 2 figures (both drawn in LaTeX), 1 proposition.**
 
 ---
 

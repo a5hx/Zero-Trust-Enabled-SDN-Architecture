@@ -24,14 +24,16 @@ apply. `[x]` done, `[ ]` open. Target: **conference**.
 
 ### Still open after revision 3
 
-- [ ] Per-class recall / balanced accuracy in §VII-L (accuracy is dominated by the 40 honest subjects)
+- [ ] Per-class recall / balanced accuracy in §VII-M (accuracy is dominated by the 40 honest subjects)
 - [x] A load-misreporting server that does not slow itself — done, §VII-E (80 runs, four batches)
-- [ ] Page count is **17** (revision 7, 2026-10-23: ledger re-verification §VII-I + Table 9; service/flood/detection/NFR/simulation renumbered to §VII-J…N, Tables 10–11. Revision 6: attestation §VII-H. Revision 5: honest-slow §VII-F, witness §VII-G); trim to the chosen venue's limit (order below)
+- [ ] Page count is **18** (revision 8, 2026-10-25: the witness acting and holding §VII-J + Table 10, and "The probation path" in §IX; service/flood/detection/NFR/simulation renumbered to §VII-K…O, Tables 11–12. Revision 7, 2026-10-23: ledger re-verification §VII-I + Table 9. Revision 6: attestation §VII-H. Revision 5: honest-slow §VII-F, witness §VII-G); trim to the chosen venue's limit (order below)
 - [x] Honest-slow servers (Phase 3, 30 runs) and the live switch witness (Phase 2, 50 runs) — done, §VII-F, §VII-G
 - [x] Attestation beside behaviour (Phase 4, 25 runs) — done, §VII-H, Table 8
 - [x] Ledger replicas re-verify the controller (Phase 6, 20 runs) — done, §VII-I, Table 9
 - [x] "Zero- Trust" hyphen break in the revision-6 abstract fixed (textwrap broke on the hyphen)
-- [ ] Abstract is 247 words after revision 7; the honesty-defect clause was cut from it (still in §VII-E and the contributions)
+- [x] Witness acting + hold (83 runs) — done, §VII-J, Table 10; the two trial-path defects are in §IX, and §VII-D's honest dips are re-attributed to them (0.417–0.421 were each one misattributed trial timeout)
+- [ ] Witness persistence: the one false witness action (a host stall) is in §VII-J and limitation 8; the fix is not built or run
+- [ ] Abstract is 250 words after revision 8 (it was 247 after revision 7); the honesty-defect clause was cut from it (still in §VII-E and the contributions)
 - [x] Abstract trimmed to 246 words (revision 4); the retraction moved out of it, still in §VIII-B
 - [x] Retitled around the liar experiment: "What Catches a Lie That Works? Trust Scores, Anomaly Gates and Load-Misreporting Servers in Zero-Trust Edge Load Balancing"
 - [ ] Choose the venue; swap in `IEEEtran.cls`; anonymise if double-blind

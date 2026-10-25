@@ -30,7 +30,7 @@ python3 -m evaluation.replicates data/runs \
         --arms scoreonly,scoreonly_t040,scoreonly_t045,scoreonly_t050,treat \
         --out-dir "$OUT/theta_sweep"
 
-echo "== live flood experiment: Table 11 (S VII-K) =="
+echo "== live flood experiment: Table 12 (S VII-L) =="
 # flood_on r01 is excluded: the host suspended mid-run (recorded span 24331 s,
 # gaps of 891 s and 23092 s after t=316 s). Score the other nine through links.
 FL="$(mktemp -d)"; trap 'rm -rf "$FL"' EXIT
@@ -99,7 +99,27 @@ python3 -m evaluation.ledger_report data/runs --arms "$LV" --out "$OUT/ledger/le
 python3 -m evaluation.witness_report data/runs --arms "$LV" --out "$OUT/ledger/witness_summary.txt" >/dev/null
 cp -p docs/predictions/ledger_2026-10-22.txt docs/predictions/ledger_2026-10-22_OUTCOME.md "$OUT/ledger/"
 
-echo "== replicated ledger with a leader kill (S VII-M) =="
+echo "== the witness acting and holding: Table 10 (S VII-J) =="
+# Acting batch (13006e8): its observe-only forge arm is Table 10's first row,
+# and the badmouth arms are the text. Hold rows: the third hold batch
+# (26e2b04), on the corrected trial path; the first two (wh_*, wh2_*) are
+# described in S IX and their outcomes are copied for the record.
+WA=wa_control,wa_badmouth_observe,wa_badmouth_act,wa_forge_observe,wa_forge_act
+WH=wh3_control_hold,wh3_forge_act,wh3_forge_hold,wh3_drop_act,wh3_drop_hold
+mkdir -p "$OUT/witact" "$OUT/withold"
+python3 -m evaluation.replicates data/runs --arms "$WA" --out-dir "$OUT/witact"
+python3 -m evaluation.witness_act_report data/runs --arms "$WA" --out "$OUT/witact/witact_summary.txt" >/dev/null
+python3 -m evaluation.witness_report data/runs --arms "$WA" --out "$OUT/witact/witness_summary.txt" >/dev/null
+cp -p docs/predictions/witact_2026-10-23.txt docs/predictions/witact_2026-10-23_OUTCOME.md "$OUT/witact/"
+python3 -m evaluation.replicates data/runs --arms "$WH" --out-dir "$OUT/withold"
+python3 -m evaluation.witness_act_report data/runs --arms "$WH" --out "$OUT/withold/withold_summary.txt" >/dev/null
+cp -p docs/predictions/withold_2026-10-23.txt docs/predictions/withold_2026-10-23_OUTCOME.md \
+      docs/predictions/withold2_2026-10-24.txt docs/predictions/withold2_2026-10-24_OUTCOME.md \
+      docs/predictions/withold3_2026-10-25.txt docs/predictions/withold3_2026-10-25_OUTCOME.md "$OUT/withold/"
+# S IX, "The probation path": the two trial-path defects in the earlier recordings.
+python3 paper-draft/tools/trial_path_audit.py data/runs > "$OUT/withold/trial_path_audit.txt"
+
+echo "== replicated ledger with a leader kill (S VII-N) =="
 RF=data/raft_failover_2026-10-19
 cp -p "$RF/raft_failover_20261019_140900.json" "$OUT/raft/failover_report.json"
 cp -p "$RF/nfr_report.txt" "$OUT/raft/nfr_report.txt"

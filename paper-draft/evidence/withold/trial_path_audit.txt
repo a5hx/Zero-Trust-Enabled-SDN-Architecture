@@ -1,0 +1,76 @@
+Probation-path audit over scoreonly, scoreonly_t040, scoreonly_t045, scoreonly_t050, treat, flood_off, flood_on
+(re-route window 8.0 s, report window 1.0 s, exclusion 40.0 s)
+
+scoreonly/r01          trials  102  same-switch   6  misattributed 1 (1 honest)  lowest honest T 0.7474 (srv7 at 203.7 s)  without them 0.7474
+                        charged timeout to honest srv4 at 61.0 s
+scoreonly/r02          trials  105  same-switch   8  misattributed 3 (2 honest)  lowest honest T 0.5174 (srv5 at 41.3 s)  without them 0.5174
+                        charged timeout to honest srv2 at 67.9 s
+                        charged timeout to honest srv4 at 315.0 s
+scoreonly/r03          trials  105  same-switch   7  misattributed 0 (0 honest)  lowest honest T 0.7335 (srv5 at 44.8 s)  without them 0.7335
+scoreonly/r04          trials  103  same-switch   6  misattributed 0 (0 honest)  lowest honest T 0.5000 (srv2 at 20.2 s)  without them 0.5000
+scoreonly/r05          trials  102  same-switch   6  misattributed 0 (0 honest)  lowest honest T 0.7440 (srv7 at 174.7 s)  without them 0.7440
+scoreonly_t040/r01     trials  112  same-switch  16  misattributed 0 (0 honest)  lowest honest T 0.5267 (srv7 at 131.5 s)  without them 0.5267
+scoreonly_t040/r02     trials  106  same-switch   5  misattributed 2 (2 honest)  lowest honest T 0.4199 (srv4 at 133.5 s)  without them 0.7366
+                        charged timeout to honest srv4 at 132.7 s
+                        charged timeout to honest srv5 at 151.6 s
+scoreonly_t040/r03     trials  104  same-switch   9  misattributed 2 (2 honest)  lowest honest T 0.4171 (srv2 at 204.2 s)  without them 0.5222
+                        charged timeout to honest srv5 at 110.9 s
+                        charged timeout to honest srv2 at 203.8 s
+scoreonly_t040/r04     trials  104  same-switch  11  misattributed 1 (1 honest)  lowest honest T 0.7333 (srv5 at 22.3 s)  without them 0.7333
+                        charged timeout to honest srv5 at 68.5 s
+scoreonly_t040/r05     trials  104  same-switch  11  misattributed 2 (2 honest)  lowest honest T 0.7271 (srv5 at 27.8 s)  without them 0.7271
+                        charged timeout to honest srv2 at 121.9 s
+                        charged timeout to honest srv5 at 174.2 s
+scoreonly_t045/r01     trials  150  same-switch  10  misattributed 1 (1 honest)  lowest honest T 0.6282 (srv4 at 125.8 s)  without them 0.6282
+                        charged timeout to honest srv7 at 133.9 s
+scoreonly_t045/r02     trials  146  same-switch  21  misattributed 2 (2 honest)  lowest honest T 0.6279 (srv2 at 228.8 s)  without them 0.6279
+                        charged timeout to honest srv5 at 163.7 s
+                        charged timeout to honest srv2 at 169.9 s
+scoreonly_t045/r03     trials  154  same-switch  10  misattributed 1 (1 honest)  lowest honest T 0.6296 (srv2 at 113.3 s)  without them 0.6296
+                        charged timeout to honest srv4 at 288.1 s
+scoreonly_t045/r04     trials  157  same-switch  13  misattributed 4 (3 honest)  lowest honest T 0.7492 (srv2 at 176.2 s)  without them 0.7492
+                        charged timeout to honest srv5 at 193.7 s
+                        charged timeout to honest srv4 at 202.5 s
+                        charged timeout to honest srv4 at 311.9 s
+scoreonly_t045/r05     trials  150  same-switch  12  misattributed 0 (0 honest)  lowest honest T 0.6046 (srv2 at 62.1 s)  without them 0.6046
+scoreonly_t050/r01     trials  172  same-switch  12  misattributed 2 (1 honest)  lowest honest T 0.4975 (srv5 at 20.3 s)  without them 0.4975
+                        charged timeout to honest srv7 at 60.6 s
+scoreonly_t050/r02     trials  185  same-switch  20  misattributed 0 (0 honest)  lowest honest T 0.6306 (srv5 at 62.9 s)  without them 0.6306
+scoreonly_t050/r03     trials  167  same-switch  13  misattributed 2 (1 honest)  lowest honest T 0.7283 (srv7 at 154.9 s)  without them 0.7283
+                        charged timeout to honest srv5 at 118.8 s
+scoreonly_t050/r04     trials  184  same-switch  12  misattributed 2 (2 honest)  lowest honest T 0.7444 (srv4 at 245.9 s)  without them 0.7444
+                        charged timeout to honest srv4 at 177.1 s
+                        charged timeout to honest srv4 at 192.4 s
+scoreonly_t050/r05     trials  179  same-switch  14  misattributed 2 (2 honest)  lowest honest T 0.7456 (srv2 at 290.0 s)  without them 0.7456
+                        charged timeout to honest srv7 at 65.0 s
+                        charged timeout to honest srv4 at 94.1 s
+treat/r01              trials   97  same-switch   5  misattributed 1 (0 honest)  lowest honest T 0.7396 (srv2 at 30.6 s)  without them 0.7396
+treat/r02              trials   87  same-switch   4  misattributed 1 (0 honest)  lowest honest T 0.7037 (srv2 at 20.9 s)  without them 0.7037
+treat/r03              trials   92  same-switch   4  misattributed 0 (0 honest)  lowest honest T 0.5273 (srv5 at 130.4 s)  without them 0.5273
+treat/r04              trials   76  same-switch   4  misattributed 0 (0 honest)  lowest honest T 0.7380 (srv4 at 237.0 s)  without them 0.7380
+treat/r05              trials   85  same-switch  10  misattributed 3 (3 honest)  lowest honest T 0.4208 (srv7 at 85.4 s)  without them 0.7247
+                        charged timeout to honest srv4 at 58.3 s
+                        charged timeout to honest srv7 at 85.2 s
+                        charged timeout to honest srv7 at 164.0 s
+flood_off/r01          trials   84  same-switch   3  misattributed 1 (0 honest)
+flood_off/r02          trials   55  same-switch   0  misattributed 0 (0 honest)
+flood_off/r03          trials  106  same-switch   5  misattributed 2 (2 honest)
+                        charged success to honest srv5 at 134.6 s
+                        charged timeout to honest srv4 at 303.1 s
+flood_off/r04          trials   72  same-switch   2  misattributed 1 (1 honest)
+                        charged timeout to honest srv5 at 251.7 s
+flood_off/r05          trials   52  same-switch   4  misattributed 2 (2 honest)
+                        charged success to honest srv2 at 109.6 s
+                        charged timeout to honest srv5 at 281.4 s
+flood_on/r01           trials   78  same-switch  11  misattributed 3 (1 honest)
+                        charged timeout to honest srv5 at 67.7 s
+flood_on/r02           trials   72  same-switch  11  misattributed 0 (0 honest)
+flood_on/r03           trials   52  same-switch   7  misattributed 1 (1 honest)
+                        charged timeout to honest srv7 at 228.9 s
+flood_on/r04           trials   51  same-switch   4  misattributed 0 (0 honest)
+flood_on/r05           trials   66  same-switch   8  misattributed 1 (1 honest)
+                        charged timeout to honest srv5 at 207.3 s
+
+35 runs: 3816 trials, 304 from the server's own switch (8.0%)
+misattributed reports: 43, 34 to an honest server; statuses ['success', 'timeout']: success 2, timeout 41
+lowest honest trust after onset without them, over the 25 scoreonly/scoreonly_t040/scoreonly_t045/scoreonly_t050/treat runs: 0.4975

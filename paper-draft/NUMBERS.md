@@ -48,15 +48,15 @@ T=0.220.
 > carry Ā ≈ 1.0 beside T < θ) — fixed 2026-09-29.
 
 **Table IV (containment).** `contain_s` medians and ranges.
-**Table 10 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
-**§VII-L (detection).** `attacks classified exactly` / `right family` /
+**Table 11 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
+**§VII-M (detection).** `attacks classified exactly` / `right family` /
 `honest subjects mislabelled` / `classification accuracy` rows.
 
 Statistical treatment: continuous → mean + two-sided 95% Student-t over runs;
 yes/no → k/n + Wilson interval (5/5 = [57%,100%], 0/5 = [0%,43%]); times only
 over runs where the event happened.
 
-## §VII-M — non-functional requirements
+## §VII-N — non-functional requirements
 
 ```bash
 for r in data/runs/treat/*.jsonl; do python3 -m evaluation.nfr_report "$r"; done
@@ -67,7 +67,7 @@ re-dispatch mean 12.9–23.5 ms (max 32.8, n=19–30); ledger overhead
 0.045–0.052 % over 625–661 blocks. Raft 4.3–4.8 ms is the **standalone**
 3-replica cluster, not the controller.
 
-## §VII-N — simulation (labelled as such in the paper)
+## §VII-O — simulation (labelled as such in the paper)
 
 ```bash
 python3 -m evaluation.baseline --runs 30 --csv paper-draft/evidence/baseline_600runs.csv
@@ -116,7 +116,7 @@ Honest dips (`per_run.csv`, `honest_min_trust` < 0.45): scoreonly_t040 r02
 
 The prediction registered before the sweep: `data/theta_sweep_prediction_2026-09-29.txt`.
 
-## §VII-K — data-plane response to a flooding client (Table 11)
+## §VII-L — data-plane response to a flooding client (Table 12)
 
 `tools/regenerate.sh` scores `flood_off` r01–r05 and `flood_on` r02–r05 →
 `evidence/flood/summary_primary.txt`. flood_on r01 is excluded because the host
@@ -128,7 +128,7 @@ success` 98.91 vs 98.79 % (overlap), `tasks served to flooding device(s)` 8951 �
 first 316 s: honest mean **93.0** ms, p95 **141.3** ms (scored 2026-10-18, recorded
 in `data/flood_experiment_2026-10-18/summary_trimmed_on_r01.txt`).
 
-## §VII-M — replicated ledger with a leader kill
+## §VII-N — replicated ledger with a leader kill
 
 `evidence/raft/failover_report.json` (written by `tools/raft_failover_check.py`
 during the run) + `data/raft_failover_2026-10-19/events_raft.jsonl`: leader n3
@@ -309,12 +309,101 @@ python3 -m evaluation.witness_report data/runs --arms lv_noverify,lv_honest,lv_f
   5/5, median 11.1 s (`witness_summary.txt`); trust ≥ 0.836 after onset (`node_status`);
   736 timeouts per run (`summary.txt`, `timeouts`).
 
+## §VII-J and Table 10 — the witness acting and holding (added 2026-10-25)
+
+**Runs:**
+- The acting batch: 25 runs at `13006e8`, prediction `evidence/witact/witact_2026-10-23.txt`.
+- Three hold batches, each against its own prediction (all in `evidence/withold/`):
+  - 25 runs at `1dd5a8d`;
+  - 8 of 25 at `284ecf4` (the machine went down);
+  - 25 at `26e2b04`.
+- 83 runs in all, 73 of them acting: the 10 observe-only twins are `wa_badmouth_observe`
+  and `wa_forge_observe`.
+
+```bash
+python3 -m evaluation.witness_act_report data/runs --arms wa_control,wa_badmouth_observe,wa_badmouth_act,wa_forge_observe,wa_forge_act
+python3 -m evaluation.witness_act_report data/runs --arms wh3_control_hold,wh3_forge_act,wh3_forge_hold,wh3_drop_act,wh3_drop_hold
+python3 -m evaluation.replicates data/runs --arms <same> --out-dir paper-draft/evidence/{witact,withold}
+```
+
+| Table 10 cell | Source |
+|---|---|
+| Observes: 0 / 770 [766, 774] / 82.24 [82.07, 82.42] | `witact/witact_summary.txt` `wa_forge_observe` (never quarantined, `connections after onset`); `witact/summary.txt` `honest devices: task success` |
+| Acts: 84.0 [82.6, 85.5] / 135 [122, 147] / 97.68 [97.49, 97.87] | `withold/withold_summary.txt` `wh3_forge_act` `share of time quarantined`, `connections after onset`; `withold/summary.txt` |
+| Holds: 95.3 [95.1, 95.6] / 64 [58, 70] / 99.06 [98.96, 99.16] | same, `wh3_forge_hold` |
+| Droppers, acts: 54.4 / 75.8 %, 32 / 62, 99.11 [98.88, 99.35] | same, `wh3_drop_act` srv6 / srv1 |
+| Droppers, holds: 96.2 / 77.7 %, 40 / 60, 98.91 [98.81, 99.00] | same, `wh3_drop_hold` srv6 / srv1 |
+| None, holds: 99.99 [99.97, 100] | `withold/summary.txt` `wh3_control_hold` |
+
+**Text figures:**
+- **Median 11.0 s to quarantine:** `wh3_forge_act`, `quarantined after onset`.
+- **"About ten fresh failures":** `witact_2026-10-23_OUTCOME.md`, "What remains".
+- **Gap closed:** (99.06 − 82.24) / (99.99 − 82.24) = **95%**; (97.68 − 82.24) / 17.75 = **87%**.
+- **23 trials per run, 0 served (srv3); 26 per run, 0 served (srv6):** `trials routed / judged`,
+  and the per-run breakdown in `withold3_2026-10-25_OUTCOME.md`.
+- **Grayhole released 1–2× in 5/5 runs:** `withold3_2026-10-25_OUTCOME.md`, L4.
+- **Fourteen trials on average:** the expected number of Bernoulli(0.5) trials until three
+  successes in a row is (1 − p³) / ((1 − p) p³) = 14.
+- **Badmouth arms:**
+  - charged reports 257–261 → 9–12;
+  - polls below 0.45: 19.7% → 0.6%;
+  - lowest honest trust 0.409, predicted ≥ 0.45.
+
+  All from `witact_2026-10-23_OUTCOME.md`, W4 and its follow-up table.
+- **One charged 4 s timeout takes a steady honest server to ≈ 0.42:** R 0.405, B 0.12
+  (`witact_2026-10-23_OUTCOME.md`).
+- **245/245 trials judged, 0 charged elsewhere:** `withold/withold_summary.txt`, the
+  `trials routed / judged` and `trial tails re-routed / charged elsewhere` rows.
+- **The one false action** is `wh3_forge_act` r03, srv2, at 279.5 s
+  (`withold3_2026-10-25_OUTCOME.md`, L6):
+  - 16 in flight at 276.2 s; 6 failures at 276.46 s;
+  - quarantined for 26 s, to the end of the run;
+  - trust ≥ 0.598;
+  - srv1's single failure at 273.4 s took it from 0.80 to 0.331 (`node_status`).
+
+## §IX "The probation path" — the two trial-path defects (added 2026-10-25)
+
+The 35 runs are `scoreonly`, `scoreonly_t040`, `scoreonly_t045`, `scoreonly_t050`, `treat`,
+`flood_off` and `flood_on`, 5 each: every earlier arm with probation trials. The counts come
+from the recordings (`route` events with `probation: true`, and their `dpid`).
+
+**304 of 3,816 trials from a client on the server's own switch (8.0%):** a trial counts as
+same-switch when its route's `dpid` = the server index + 1.
+
+**43 misattributed reports, 34 to an honest server:**
+- A trial key is routed again to a different server within 8 s, and the next report from
+  that device within 1 s is charged to the new server.
+- Ground truth comes from each recording's `topology` event.
+- Of the 43, 41 were timeouts and 2 successes.
+- None preceded an honest quarantine: the only honest quarantine in these runs is
+  `scoreonly_t050` r01 at 4.7 s, before any trial.
+
+**The three honest dips of §VII-D, each within a second of a misattributed timeout to the
+same server:**
+
+| Run | Charged timeout | Dip |
+|---|---|---|
+| `scoreonly_t040` r02 | srv4 at 132.7 s | 0.4199 at 133.5 s |
+| `scoreonly_t040` r03 | srv2 at 203.8 s | 0.4171 at 204.2 s |
+| `treat` r05 | srv7 at 85.2 s | 0.4208 at 85.4 s |
+
+**Without them:** excluding each server's 40 s after a misattributed report, the lowest honest
+trust after onset is ≥ **0.4975** in all 25 score-only, sweep and both-rails runs.
+- 0.4975 is `scoreonly_t050` r01, the server quarantined at start-up.
+- Otherwise it is ≥ 0.50.
+
+All of this section comes from one command:
+
+```bash
+python3 paper-draft/tools/trial_path_audit.py data/runs > paper-draft/evidence/withold/trial_path_audit.txt
+```
+
 ## Test suite
 
 ```bash
 python3 -m pytest tests/ base_model/tests/ -q
 ```
-**1,404 passed, 11 skipped** on `feature/ledger-verify` (2026-10-23).
+**1,461 passed, 11 skipped** on `feature/witness-hold` (2026-10-25); was 1,404 / 11 on `feature/ledger-verify` (2026-10-23).
 
 ## Figures
 
