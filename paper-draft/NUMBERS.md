@@ -48,15 +48,15 @@ T=0.220.
 > carry Ā ≈ 1.0 beside T < θ) — fixed 2026-09-29.
 
 **Table IV (containment).** `contain_s` medians and ranges.
-**Table 9 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
-**§VII-K (detection).** `attacks classified exactly` / `right family` /
+**Table 10 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
+**§VII-L (detection).** `attacks classified exactly` / `right family` /
 `honest subjects mislabelled` / `classification accuracy` rows.
 
 Statistical treatment: continuous → mean + two-sided 95% Student-t over runs;
 yes/no → k/n + Wilson interval (5/5 = [57%,100%], 0/5 = [0%,43%]); times only
 over runs where the event happened.
 
-## §VII-L — non-functional requirements
+## §VII-M — non-functional requirements
 
 ```bash
 for r in data/runs/treat/*.jsonl; do python3 -m evaluation.nfr_report "$r"; done
@@ -67,7 +67,7 @@ re-dispatch mean 12.9–23.5 ms (max 32.8, n=19–30); ledger overhead
 0.045–0.052 % over 625–661 blocks. Raft 4.3–4.8 ms is the **standalone**
 3-replica cluster, not the controller.
 
-## §VII-M — simulation (labelled as such in the paper)
+## §VII-N — simulation (labelled as such in the paper)
 
 ```bash
 python3 -m evaluation.baseline --runs 30 --csv paper-draft/evidence/baseline_600runs.csv
@@ -116,7 +116,7 @@ Honest dips (`per_run.csv`, `honest_min_trust` < 0.45): scoreonly_t040 r02
 
 The prediction registered before the sweep: `data/theta_sweep_prediction_2026-09-29.txt`.
 
-## §VII-J — data-plane response to a flooding client (Table 10)
+## §VII-K — data-plane response to a flooding client (Table 11)
 
 `tools/regenerate.sh` scores `flood_off` r01–r05 and `flood_on` r02–r05 →
 `evidence/flood/summary_primary.txt`. flood_on r01 is excluded because the host
@@ -128,7 +128,7 @@ success` 98.91 vs 98.79 % (overlap), `tasks served to flooding device(s)` 8951 �
 first 316 s: honest mean **93.0** ms, p95 **141.3** ms (scored 2026-10-18, recorded
 in `data/flood_experiment_2026-10-18/summary_trimmed_on_r01.txt`).
 
-## §VII-L — replicated ledger with a leader kill
+## §VII-M — replicated ledger with a leader kill
 
 `evidence/raft/failover_report.json` (written by `tools/raft_failover_check.py`
 during the run) + `data/raft_failover_2026-10-19/events_raft.jsonl`: leader n3
@@ -281,12 +281,40 @@ python3 -m evaluation.replicates data/runs \
 - Staggered admission: `att_on_tampered` r01, srv4 first admitted, 56 ms alone, 28 of the
   first 40 routes, trust 0.354 (`node_status` at 5.6 s).
 
+## §VII-I and Table 9 — replicas that check the controller (added 2026-10-23)
+
+20 live runs at `257b5ed`, scored against `evidence/ledger/ledger_2026-10-22.txt`
+(committed and pushed before the runs); outcome in `evidence/ledger/ledger_2026-10-22_OUTCOME.md`.
+
+```bash
+python3 -m evaluation.ledger_report data/runs --arms lv_noverify,lv_honest,lv_forge_score,lv_forge_evidence
+python3 -m evaluation.replicates data/runs --arms lv_noverify,lv_honest,lv_forge_score,lv_forge_evidence --out-dir paper-draft/evidence/ledger
+python3 -m evaluation.witness_report data/runs --arms lv_noverify,lv_honest,lv_forge_score,lv_forge_evidence
+```
+
+| Table 9 cell | Source |
+|---|---|
+| Forged rejected 5,478/5,482 and 0/3,787 | `ledger_summary.txt`, `forged-server records rejected` |
+| Others rejected 0 | `ledger_summary.txt`, `false rejections per run` |
+| Share 23.9% / 23.6% (before: 13.2 / 12.5%) | `ledger_summary.txt`, `srv3 route share after onset` / `before onset` |
+| Honest success | `summary.txt`, `honest devices: task success` |
+| Commit ms 9.5 / 9.7 / 9.5 / 9.7 | `ledger_summary.txt`, `commit time per block` (median) |
+
+- The 4 forged records not rejected: the last records of `lv_forge_score` r04 (304.7 s,
+  305.1 s) and r05 (305.5 s, 305.7 s), never committed (they are inside `records unaccounted`).
+- 22,869 other records: `lv_forge_score` records written minus forged-target records, from
+  `evaluation.ledger_report.LedgerRun` (records − target_records, summed).
+- Rejection delay 0.22 s median: `record -> rejection reported`.
+- Evidence arm: srv3 never quarantined (`quarantined by the controller: 0/5`); witness
+  5/5, median 11.1 s (`witness_summary.txt`); trust ≥ 0.836 after onset (`node_status`);
+  736 timeouts per run (`summary.txt`, `timeouts`).
+
 ## Test suite
 
 ```bash
 python3 -m pytest tests/ base_model/tests/ -q
 ```
-**1,375 passed, 11 skipped** on `feature/attestation` (2026-10-22).
+**1,404 passed, 11 skipped** on `feature/ledger-verify` (2026-10-23).
 
 ## Figures
 

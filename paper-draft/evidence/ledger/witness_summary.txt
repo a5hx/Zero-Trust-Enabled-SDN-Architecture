@@ -1,0 +1,11 @@
+SWITCH WITNESS, LIVE VERDICTS (observe-only)
+==============================================================================
+lv_noverify: 5 run(s)
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+lv_honest: 5 run(s)
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+lv_forge_score: 5 run(s)
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)
+lv_forge_evidence: 5 run(s)
+    server:srv3      blamed 5/5 [57%, 100%]  median 11.1 s
+    honest parties falsely blamed per run: mean 0.00 [0.00, 0.00]  (runs with any: 0/5)

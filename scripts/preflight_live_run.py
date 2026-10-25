@@ -352,6 +352,29 @@ def check_attestation(cfg: dict) -> None:
             bad(f"cannot compute the reference measurement: {exc}")
 
 
+def check_ledger_verification(cfg: dict) -> None:
+    """Phase 6. A forging controller refuses to start without its gate, and
+    replicas can only verify what a replicated ledger sends them."""
+    import os
+    from controller.forgery import ENV_GATE
+    led = cfg.get('ledger') or {}
+    forge = (cfg.get('controller') or {}).get('debug_forge_trust')
+    if not led.get('verify') and not forge:
+        return
+    print("==> Ledger re-verification (Phase 6)")
+    if led.get('verify'):
+        if led.get('backend') != 'raft_remote':
+            bad("ledger.verify needs backend: raft_remote")
+        else:
+            ok("replicas re-verify every trust record against this config's trust: block")
+    if forge:
+        if os.environ.get(ENV_GATE) == '1':
+            ok(f"controller forges trust records: {forge}")
+        else:
+            warn(f"this arm makes the controller forge trust records ({forge.get('mode')}); "
+                 f"start it with {ENV_GATE}=1, e.g. sudo {ENV_GATE}=1 ARMS=... tools/run_replicates.sh")
+
+
 # --------------------------------------------------------------------------- #
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
@@ -372,6 +395,7 @@ def main() -> int:
     describe_run(cfg)
     check_ground_truth_is_recorded(cfg)
     check_attestation(cfg)
+    check_ledger_verification(cfg)
     check_resteer_attribution_is_live()
 
     print()

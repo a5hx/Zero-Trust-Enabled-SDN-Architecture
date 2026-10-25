@@ -137,6 +137,14 @@ class TrustCalculator:
 
         return score
 
+    def override_score(self, node_id: str, score: float) -> None:
+        """Replace a node's score without touching its EMA state. Used only by
+        the test-only dishonest controller (controller/forgery.py); nothing in
+        a normal run overrides a score."""
+        if node_id not in self._ema:
+            self._init_node(node_id)
+        self._scores[node_id] = score
+
     def get_score(self, node_id: str) -> float:
         """Return the current trust score for a node, or initial_score if unseen."""
         return self._scores.get(node_id, self.initial_score)

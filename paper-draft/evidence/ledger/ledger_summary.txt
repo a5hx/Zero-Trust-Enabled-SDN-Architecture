@@ -1,0 +1,38 @@
+LEDGER RE-VERIFICATION (Phase 6)
+==============================================================================
+lv_noverify: 5 run(s), replicas verify: no
+    trust records written per run    : 5662 [5653, 5672]  n=5
+    records in blocks per run        : 5656 [5645, 5667]  n=5
+    records unaccounted per run      : 6 [3, 9]  n=5  (max 9)
+    false rejections per run         : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    commit time per block            : median 9.5 ms, p95 12.7 ms  (2828 blocks)
+lv_honest: 5 run(s), replicas verify: yes
+    trust records written per run    : 5671 [5660, 5682]  n=5
+    records in blocks per run        : 5668 [5658, 5678]  n=5
+    records unaccounted per run      : 3 [1, 5]  n=5  (max 5)
+    false rejections per run         : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    commit time per block            : median 9.7 ms, p95 13.1 ms  (2834 blocks)
+lv_forge_score: 5 run(s), replicas verify: yes, controller forges [('srv3', 'score')]
+    trust records written per run    : 5670 [5664, 5676]  n=5
+    records in blocks per run        : 4566 [4519, 4613]  n=5
+    records unaccounted per run      : 4 [0, 8]  n=5  (max 8)
+    forged-server records rejected   : 5478/5482 [99.8%, 100.0%]  (pooled records)
+      per run                        : 1106/1106, 1098/1098, 1092/1092, 1045/1047, 1137/1139
+    srv3 route share before onset    : 13.24 [10.29, 16.19]  n=5 %
+    srv3 route share after onset     : 23.90 [23.04, 24.77]  n=5 %
+    record -> rejection reported     : median 0.22 s, p95 0.59 s
+    false rejections per run         : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    commit time per block            : median 9.5 ms, p95 12.6 ms  (2833 blocks)
+lv_forge_evidence: 5 run(s), replicas verify: yes, controller forges [('srv3', 'evidence')]
+    trust records written per run    : 4298 [4267, 4330]  n=5
+    records in blocks per run        : 4294 [4264, 4324]  n=5
+    records unaccounted per run      : 4 [1, 8]  n=5  (max 8)
+    forged-server records rejected   : 0/3787 [0.0%, 0.1%]  (pooled records)
+      per run                        : 0/745, 0/756, 0/754, 0/779, 0/753
+    srv3 route share before onset    : 12.53 [9.86, 15.21]  n=5 %
+    srv3 route share after onset     : 23.59 [22.87, 24.30]  n=5 %
+    false rejections per run         : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    commit time per block            : median 9.7 ms, p95 13.0 ms  (2147 blocks)
+    srv3 (misbehaves from its onset)
+        quarantined by the controller: 0/5 [0.0%, 43.4%]
+        blamed by the switch witness : 5/5 [56.6%, 100.0%]; median 11.1 s

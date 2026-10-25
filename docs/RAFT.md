@@ -203,6 +203,40 @@ leaves submitted = committed in `/ledger/status`.
 
 ---
 
+## Re-verification: the replicas check the controller's arithmetic (Phase 6)
+
+With `ledger.verify: true`, every replica is started with `--verify-config`
+(the run's config) and replays the trust formula from the evidence carried in
+each committed record (`blockchain/verifier.py`). For each record it checks
+that `trust_score_before` equals the score its own replay holds for that node,
+and that `trust_score_after` equals what its replay computes from the record's
+evidence. Records that fail are not appended; they come back to the
+controller and are published as `ledger_rejected` events.
+
+- **Deterministic.** Entries apply in log order on every replica, the floats
+  round-trip exactly through JSON, and the replay always advances on the
+  evidence, so every replica reaches the same verdict and appends the same
+  block. One forged score costs at most two records (its own, and the next
+  record's `before`), never a cascade.
+- **A batch with a different trust configuration** (the controller sends the
+  hash of its `trust:` block with every batch) is rejected whole and does not
+  advance the replay.
+- **A batch rejected whole** gets HTTP 422 from `/commit`;
+  `RemoteRaftBackend` raises `BatchRejected` and `AsyncCommitter` drops it from
+  the queue. Before this, a batch the cluster refused would have been retried
+  forever and blocked every later one.
+- **What it cannot catch:** forged *evidence*. A controller that reports a
+  timeout as a success writes a record whose arithmetic is honest. Only an
+  independent witness of the evidence (the switch witness, the clients) can
+  contradict it. And routing reads the controller's in-memory score, so a
+  rejection detects a forgery after the fact; it does not prevent it.
+- **Test-only forgery:** `controller.debug_forge_trust` (`controller/forgery.py`),
+  refused unless `ZTSDN_ALLOW_FORGERY=1`. Arms: `config/params_lv_*.yaml`;
+  prediction: `docs/predictions/ledger_2026-10-22.txt`; scorer:
+  `python3 -m evaluation.ledger_report`.
+
+---
+
 ## Known limitations
 
 - **Redirect lives in the client.** A follower's `commit()` (and

@@ -1,0 +1,204 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  lv_noverify : 5 run(s)
+      r01.jsonl  308.9 s  theta=0.30
+      r02.jsonl  307.8 s  theta=0.30
+      r03.jsonl  307.7 s  theta=0.30
+      r04.jsonl  307.8 s  theta=0.30
+      r05.jsonl  307.8 s  theta=0.30
+  lv_honest  : 5 run(s)
+      r01.jsonl  307.8 s  theta=0.30
+      r02.jsonl  307.8 s  theta=0.30
+      r03.jsonl  307.8 s  theta=0.30
+      r04.jsonl  307.8 s  theta=0.30
+      r05.jsonl  307.8 s  theta=0.30
+  lv_forge_score : 5 run(s)
+      r01.jsonl  307.8 s  theta=0.30
+      r02.jsonl  307.7 s  theta=0.30
+      r03.jsonl  307.8 s  theta=0.30
+      r04.jsonl  308.2 s  theta=0.30
+      r05.jsonl  308.8 s  theta=0.30
+  lv_forge_evidence : 5 run(s)
+      r01.jsonl  307.7 s  theta=0.30
+      r02.jsonl  307.6 s  theta=0.30
+      r03.jsonl  307.7 s  theta=0.30
+      r04.jsonl  307.7 s  theta=0.30
+      r05.jsonl  307.7 s  theta=0.30
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    lv_noverify 99.97%  [99.94, 100.00*]  sd 0.03  n=5
+    lv_honest  99.96%  [99.95, 99.98]  sd 0.01  n=5
+    lv_forge_score 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    lv_forge_evidence 82.58%  [82.06, 83.09]  sd 0.42  n=5
+throughput
+    lv_noverify 18.38 tps  [18.32, 18.44]  sd 0.05  n=5
+    lv_honest  18.42 tps  [18.38, 18.46]  sd 0.03  n=5
+    lv_forge_score 18.40 tps  [18.36, 18.45]  sd 0.04  n=5
+    lv_forge_evidence 11.54 tps  [11.38, 11.69]  sd 0.13  n=5
+mean latency (success)
+    lv_noverify 88.7 ms  [87.1, 90.3]  sd 1.3  n=5
+    lv_honest  86.6 ms  [84.9, 88.4]  sd 1.4  n=5
+    lv_forge_score 87.3 ms  [86.0, 88.5]  sd 1.0  n=5
+    lv_forge_evidence 89.5 ms  [87.6, 91.5]  sd 1.6  n=5
+p95 latency (success)
+    lv_noverify 125.9 ms  [122.8, 128.9]  sd 2.5  n=5
+    lv_honest  122.9 ms  [118.6, 127.2]  sd 3.5  n=5
+    lv_forge_score 123.6 ms  [120.5, 126.6]  sd 2.5  n=5
+    lv_forge_evidence 140.1 ms  [135.6, 144.7]  sd 3.6  n=5
+timeouts
+    lv_noverify 0.0  [0.0, 0.0]  sd 0.0  n=5
+    lv_honest  0.0  [0.0, 0.0]  sd 0.0  n=5
+    lv_forge_score 0.0  [0.0, 0.0]  sd 0.0  n=5
+    lv_forge_evidence 735.6  [719.2, 752.0]  sd 13.2  n=5
+honest-device availability
+    lv_noverify 99.97%  [99.94, 100.00*]  sd 0.03  n=5
+    lv_honest  99.96%  [99.95, 99.98]  sd 0.01  n=5
+    lv_forge_score 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    lv_forge_evidence 82.44%  [81.93, 82.96]  sd 0.41  n=5
+starved honest devices (<50%)
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    lv_noverify 0.992  [0.987, 0.997]  sd 0.004  n=5
+    lv_honest  0.992  [0.989, 0.995]  sd 0.003  n=5
+    lv_forge_score 0.922  [0.909, 0.935]  sd 0.010  n=5
+    lv_forge_evidence 0.987  [0.980, 0.995]  sd 0.006  n=5
+Jain, full roster
+    lv_noverify 0.992  [0.987, 0.997]  sd 0.004  n=5
+    lv_honest  0.992  [0.989, 0.995]  sd 0.003  n=5
+    lv_forge_score 0.922  [0.909, 0.935]  sd 0.010  n=5
+    lv_forge_evidence 0.932  [0.921, 0.943]  sd 0.009  n=5
+share of routes to attackers
+    lv_noverify 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00%  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 20.82%  [20.03, 21.62]  sd 0.64  n=5
+honest servers ever quarantined
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    lv_noverify 0.500  [0.500, 0.500]  sd 0.000  n=5
+    lv_honest  0.500  [0.500, 0.500]  sd 0.000  n=5
+    lv_forge_score 0.481  [0.430, 0.533]  sd 0.042  n=5
+    lv_forge_evidence 0.497  [0.490, 0.505]  sd 0.006  n=5
+attackers quarantined BEFORE onset
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    lv_noverify 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    lv_honest  100.00%  [100.00, 100.00]  sd 0.00  n=5
+    lv_forge_score 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    lv_forge_evidence 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    lv_noverify not measured
+    lv_honest  not measured
+    lv_forge_score not measured
+    lv_forge_evidence 0.00%  [0.00, 0.00]  sd 0.00  n=5
+attacks classified exactly (of 8)
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+attacks in the right family (of 8)
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest subjects mislabelled
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    lv_noverify 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    lv_honest  100.00%  [100.00, 100.00]  sd 0.00  n=5
+    lv_forge_score 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    lv_forge_evidence 97.92%  [97.92, 97.92]  sd 0.00  n=5
+honest devices: mean latency
+    lv_noverify 88.7 ms  [87.1, 90.3]  sd 1.3  n=5
+    lv_honest  86.6 ms  [84.9, 88.4]  sd 1.4  n=5
+    lv_forge_score 87.3 ms  [86.0, 88.5]  sd 1.0  n=5
+    lv_forge_evidence 89.5 ms  [87.6, 91.5]  sd 1.6  n=5
+honest devices: p95 latency
+    lv_noverify 125.9 ms  [122.8, 128.9]  sd 2.5  n=5
+    lv_honest  122.9 ms  [118.6, 127.2]  sd 3.5  n=5
+    lv_forge_score 123.6 ms  [120.5, 126.6]  sd 2.5  n=5
+    lv_forge_evidence 140.1 ms  [135.6, 144.7]  sd 3.6  n=5
+honest devices: task success
+    lv_noverify 99.97%  [99.94, 100.00*]  sd 0.03  n=5
+    lv_honest  99.96%  [99.95, 99.98]  sd 0.01  n=5
+    lv_forge_score 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    lv_forge_evidence 82.58%  [82.06, 83.09]  sd 0.42  n=5
+tasks served to flooding device(s)
+    lv_noverify 0.0  [0.0, 0.0]  sd 0.0  n=5
+    lv_honest  0.0  [0.0, 0.0]  sd 0.0  n=5
+    lv_forge_score 0.0  [0.0, 0.0]  sd 0.0  n=5
+    lv_forge_evidence 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest servers: seconds quarantined
+    lv_noverify 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    lv_honest  0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    lv_forge_score 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    lv_forge_evidence 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+honest quarantines per server-hour
+    lv_noverify 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_honest  0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_score 0.00  [0.00, 0.00]  sd 0.00  n=5
+    lv_forge_evidence 0.00  [0.00, 0.00]  sd 0.00  n=5
+quarantines of the throttled honest server
+    lv_noverify not measured
+    lv_honest  not measured
+    lv_forge_score not measured
+    lv_forge_evidence not measured
+  its time to release (median)
+    lv_noverify not measured
+    lv_honest  not measured
+    lv_forge_score not measured
+    lv_forge_evidence not measured
+run length
+    lv_noverify 308.0 s  [307.3, 308.6]  sd 0.5  n=5
+    lv_honest  307.8 s  [307.8, 307.8]  sd 0.0  n=5
+    lv_forge_score 308.1 s  [307.5, 308.6]  sd 0.4  n=5
+    lv_forge_evidence 307.7 s  [307.6, 307.7]  sd 0.0  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv3 (drop)
+    lv_forge_evidence score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.814  [0.768, 0.860]  sd 0.037  n=5
+               route share (post-onset): 23.56%  [22.82, 24.31]  sd 0.60  n=5
+                 minus fair 1/N    : +11.06%  [+10.32, +11.81]  sd +0.60  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    lv_forge_evidence isolated   0.0%   exact labels 0/8
+    lv_forge_evidence isolated   0.0%   exact labels 0/8
+    lv_forge_evidence isolated   0.0%   exact labels 0/8
+    lv_forge_evidence isolated   0.0%   exact labels 0/8
+    lv_forge_evidence isolated   0.0%   exact labels 0/8
+    Spearman rho: needs >= 4 runs with varying values
+

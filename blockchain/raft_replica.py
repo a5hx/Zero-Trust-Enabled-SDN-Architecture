@@ -16,14 +16,22 @@ Run:
 
 Control API:
     GET  /status             role, term, leader_id, commit_index, chain_length
-    POST /commit             body: [TrustUpdate rows]  or  {"updates": [rows]}
-                             200 -> {ok, block_index, block_hash, raft_term, block}
+    POST /commit             body: [TrustUpdate rows]  or  {"updates": [rows],
+                             "config_hash": ...}
+                             200 -> {ok, block_index, block_hash, raft_term, block,
+                                     rejected}  (rejected: records that failed
+                                     verification and are not in the block)
                              409 -> {ok: false, status}  (not leader / no majority
                                     in time -- retry, following status.leader_id)
+                             422 -> {ok: false, rejected}  (every record failed
+                                    verification -- do NOT retry)
     GET  /blocks?from=N      {blocks: [block dicts from index N], chain_length}
 
 With --data-dir, term, vote and log are kept on disk (blockchain.raft.FileStorage)
-so a killed replica rejoins with its log. With --auth-token-env, every request
+so a killed replica rejoins with its log. With --verify-config, the replica
+replays the trust arithmetic of every committed record against that config's
+`trust:` block and appends only the records that check out (Phase 6,
+blockchain/verifier.py). With --auth-token-env, every request
 must carry `Authorization: Bearer <token>` (the token is read from that
 environment variable, never from the command line, so it does not show in `ps`).
 """
@@ -40,6 +48,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 from blockchain.commit_backend import RaftBackend
+from blockchain.verifier import TrustReplay
 from blockchain.raft import FileStorage
 from blockchain.raft_transport import TcpTransport
 from contracts.trust_update import TrustUpdate
@@ -155,12 +164,19 @@ def _make_handler(backend: RaftBackend, auth_token: Optional[str] = None):
                 self._write_json(400, {'error': f'malformed TrustUpdate row: {exc}'})
                 return
 
-            block = backend.commit(updates)
-            if block is None:
+            config_hash = body.get('config_hash') if isinstance(body, dict) else None
+            result = backend.commit_ex(updates, config_hash=config_hash)
+            if result is None:
                 # Not the leader, or the commit timed out -- either way the
                 # caller should retry, following leader_id if present.
                 self._write_json(409, {'ok': False, 'status': backend.status()})
                 return
+            if result.block is None:
+                # Committed to the log, and every record failed verification
+                # on every replica. Retrying would get the same verdict.
+                self._write_json(422, {'ok': False, 'rejected': result.rejected})
+                return
+            block = result.block
             self._write_json(200, {
                 'ok': True,
                 'block_index': block.index,
@@ -169,6 +185,7 @@ def _make_handler(backend: RaftBackend, auth_token: Optional[str] = None):
                 # The full block, so a client can append it to its own ledger
                 # and re-validate it (RemoteRaftBackend's mirror).
                 'block': block.to_dict(),
+                'rejected': result.rejected,
             })
 
     return Handler
@@ -182,6 +199,7 @@ def run(
     commit_timeout_s: float = 2.0,
     data_dir: Optional[str] = None,
     auth_token: Optional[str] = None,
+    verify_config: Optional[str] = None,
 ) -> None:
     bind_addr = peers[node_id]
     peer_addrs = {nid: addr for nid, addr in peers.items() if nid != node_id}
@@ -189,6 +207,12 @@ def run(
     extra: Dict[str, Any] = {}
     if data_dir:
         extra['storage'] = FileStorage(os.path.join(data_dir, node_id))
+    if verify_config:
+        import yaml
+        with open(verify_config) as fh:
+            extra['verifier'] = TrustReplay(yaml.safe_load(fh).get('trust'))
+        logger.info("%s: verifying trust records against %s (config %s)",
+                    node_id, verify_config, extra['verifier'].hash[:12])
     transport = TcpTransport(node_id, bind_addr, peer_addrs)
     backend = RaftBackend(
         node_id, peers=list(peer_addrs), transport=transport,
@@ -228,6 +252,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                    help='keep term/vote/log on disk under DATA_DIR/<id> (survives restarts)')
     p.add_argument('--auth-token-env', default=None,
                    help='name of an environment variable holding the bearer token to require')
+    p.add_argument('--verify-config', default=None,
+                   help="re-verify every trust record against this config's trust: block")
     args = p.parse_args(argv)
 
     peers = _parse_peers(args.peers)
@@ -240,7 +266,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             p.error(f"--auth-token-env {args.auth_token_env}: variable is unset or empty")
 
     run(args.id, peers, args.http_host, args.http_port, args.commit_timeout_s,
-        data_dir=args.data_dir, auth_token=token)
+        data_dir=args.data_dir, auth_token=token, verify_config=args.verify_config)
 
 
 if __name__ == '__main__':
@@ -250,7 +276,8 @@ if __name__ == '__main__':
 # --------------------------------------------------------------------------- #
 # Local cluster launcher (used by run_demo.py --mode mininet)                  #
 # --------------------------------------------------------------------------- #
-def launch_local_cluster(ledger_cfg: Dict[str, Any], log_dir: str = 'logs') -> Dict[str, Any]:
+def launch_local_cluster(ledger_cfg: Dict[str, Any], log_dir: str = 'logs',
+                         config_path: Optional[str] = None) -> Dict[str, Any]:
     """Start every replica named in `ledger.launch_local` on this machine.
 
     Config shape (control-API addresses in ``replicas``, RAFT addresses in
@@ -263,6 +290,8 @@ def launch_local_cluster(ledger_cfg: Dict[str, Any], log_dir: str = 'logs') -> D
             raft_peers: {n1: 127.0.0.1:9001, n2: 127.0.0.1:9002, n3: 127.0.0.1:9003}
             data_dir: data/raft
             fresh: true        # wipe data_dir first: one chain per run
+          verify: true         # Phase 6: replicas re-verify every trust record
+                               # against config_path's trust: block
 
     On a real testbed, leave `launch_local` out and run one replica per machine
     (deploy/), pointing `replicas` at them. Returns {replica_id: Popen}.
@@ -272,6 +301,9 @@ def launch_local_cluster(ledger_cfg: Dict[str, Any], log_dir: str = 'logs') -> D
     import sys
 
     launch = ledger_cfg['launch_local']
+    if ledger_cfg.get('verify') and not config_path:
+        raise ValueError('ledger.verify needs the config path, so the replicas can '
+                         'read the same trust: block as the controller')
     control = {rid: addr for rid, addr in _parse_peers(
         ','.join(f'{k}={v}' for k, v in ledger_cfg['replicas'].items())).items()}
     raft_peers = launch['raft_peers']
@@ -291,6 +323,8 @@ def launch_local_cluster(ledger_cfg: Dict[str, Any], log_dir: str = 'logs') -> D
             cmd += ['--data-dir', data_dir]
         if ledger_cfg.get('auth_token_env'):
             cmd += ['--auth-token-env', ledger_cfg['auth_token_env']]
+        if ledger_cfg.get('verify'):
+            cmd += ['--verify-config', config_path]
         log = open(os.path.join(log_dir, f'raft_{rid}.log'), 'w')
         procs[rid] = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
     return procs
