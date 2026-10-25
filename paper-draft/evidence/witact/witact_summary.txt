@@ -1,0 +1,46 @@
+SWITCH WITNESS, ACTING
+==============================================================================
+wa_control: 5 run(s)
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+wa_badmouth_observe: 5 run(s)
+    iot12 (badmouths from its onset)
+        reports discounted per run   : 0 [0, 0]  n=5
+    iot3 (badmouths from its onset)
+        reports discounted per run   : 0 [0, 0]  n=5
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    lowest honest-server trust after onset: 0.361 [0.355, 0.366]  n=5
+wa_badmouth_act: 5 run(s)
+    iot12 (badmouths from its onset)
+        reports discounted per run   : 125 [123, 126]  n=5; first a median 11.9 s after onset
+    iot3 (badmouths from its onset)
+        reports discounted per run   : 124 [123, 126]  n=5; first a median 12.0 s after onset
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    lowest honest-server trust after onset: 0.409 [0.379, 0.440]  n=5
+wa_forge_observe: 5 run(s)
+    srv3 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 10.1 s
+        quarantined after onset      : 0/5 [0%, 43%]
+        ... with the witness signal  : 0/5 [0%, 43%]
+        share of time quarantined    : 0.0 [0.0, 0.0]  n=5 %
+        connections after onset      : 770 [766, 774]  n=5
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    lowest honest-server trust after onset: 0.731 [0.694, 0.767]  n=5
+wa_forge_act: 5 run(s)
+    srv3 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 10.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 11.0 s
+        ... with the witness signal  : 5/5 [57%, 100%]
+        share of time quarantined    : 84.3 [83.2, 85.4]  n=5 %
+        connections after onset      : 148 [139, 157]  n=5
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    lowest honest-server trust after onset: 0.704 [0.627, 0.781]  n=5

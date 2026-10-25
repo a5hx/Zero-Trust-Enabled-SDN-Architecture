@@ -1,0 +1,62 @@
+PREDICTION -- the witness hold, third run: trial reports stay with the trial
+Registered 2026-10-25, BEFORE any wh3_* run.
+
+Context: docs/predictions/withold2_2026-10-24_OUTCOME.md. The wh2 batch stopped
+at 8 of 25 runs (the machine went down). Those 8 runs showed that the trial-path
+fix works (54% of trials judged, against 8%; the grayhole srv1 was released
+twice), and they exposed a second defect. A trial's rules expire at
+hard_timeout = task_timeout_s = 4 s, just as the client gives up. The client's
+FIN then drew a VIP PacketIn. The controller routed that FIN as a new connection
+to an honest server, and the trial's timeout report, arriving 20 ms later, was
+charged to that server: 25 of 46 trials in wh2_forge_hold, 16 of 48 in
+wh2_drop_hold. Each charge takes an honest server to trust ~0.42 (lambda =
+0.85), and the witness never judged those trials.
+
+Fix (controller/trust_balancer.py, _handle_table_vip): only a SYN without ACK
+opens a connection. Any other VIP PacketIn is not routed: no dispatch, no
+rules, no packet-out, a 'route_ignored' event instead. Tested in
+tests/test_non_syn_packet_in.py on real os-ken packets. Trust-rail probation
+trials use the same rules, so the act arms change too, and all five arms are
+re-run.
+
+Arms: wh3_* = wh_* with only the recording path changed (pinned by
+tests/test_witness_hold_arms.py).
+
+Scored by evaluation/witness_act_report.py ('trial tails re-routed / charged
+elsewhere', 'non-SYN PacketIns not routed' -- added with the fix and tested on
+a synthetic recording) and evaluation/replicates.py.
+
+  L1  The fix works: in wh3_forge_hold and wh3_drop_hold, trial tails charged
+      to another server = 0 in every run (wh2: 25 and 16), and
+      'non-SYN PacketIns not routed' > 0 in every holding run.
+  L2  The trials are judged: >= 90% of witness trials routed in the two holding
+      arms are judged (wh2: 54%; batch 1: 8%). Only trials routed in the last
+      seconds of a run should go unjudged.
+  L3  wh3_forge_hold: srv3 held 5/5, released 0/5; quarantined >= 95% of its
+      post-onset time; honest task success >= 98.5% with an interval disjoint
+      above wh3_forge_act's. Expected near wh2's 99.0%, NOT batch 1's 99.40%:
+      batch 1 was flattered, because black-holed trials sent no report and
+      never counted as failures, and each trial against a real dropper costs
+      an honest client one task (~23 per run).
+  L4  wh3_drop_hold: srv1 (50% grayhole) released at least once in >= 3/5 runs
+      -- H5/K3 retested, the hold's registered weakness. srv6 (blackhole) held
+      5/5 and never released.
+  L5  wh3_control_hold: no honest server held, and no honest party blamed by
+      the witness, in 5/5 runs; honest task success >= 99.9% in >= 4/5 runs
+      (the trust rail's lambda = 0.85 sensitivity to two real simultaneous
+      failures can still cost one run, as in batch 1).
+  L6  Across all 25 runs, no honest server quarantined by the witness signal
+      (95 + 8 live runs so far without a false witness blame).
+
+Not predicted, reported as measured: 'route_ignored' counts in the non-holding
+arms (the guard should almost never fire outside trials -- ordinary
+connections were routed twice within 8 s 0-7 times per wh2 run, and some of
+those are SYN retransmits, which are still routed); the act arms against wh2
+and batch 1; srv1's hold/release cycles; the lowest honest trust (reported,
+not predicted -- a minimum measures one report, see witact OUTCOME, W4).
+
+Run (about 2 h 10 min):
+  sudo ZTSDN_ALLOW_FORGERY=1 ARMS="wh3_control_hold wh3_forge_act wh3_forge_hold wh3_drop_act wh3_drop_hold" tools/run_replicates.sh
+Score (no sudo):
+  python3 -m evaluation.witness_act_report data/runs --arms wh3_control_hold,wh3_forge_act,wh3_forge_hold,wh3_drop_act,wh3_drop_hold
+  python3 -m evaluation.replicates data/runs --arms wh3_control_hold,wh3_forge_act,wh3_forge_hold,wh3_drop_act,wh3_drop_hold --out-dir data/withold3_experiment_<date>

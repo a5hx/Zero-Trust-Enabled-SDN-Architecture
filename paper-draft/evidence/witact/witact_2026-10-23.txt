@@ -1,0 +1,77 @@
+PREDICTION -- the switch witness's verdicts act
+Registered 2026-10-23, BEFORE any wa_* run.
+
+What is being tested. Until now the switch witness only observed. With
+controller.witness.act (controller/switch_witness.py, parse_act):
+  servers  a server the witness blames raises a new anomaly-gate signal
+           (witness_blame, controller/flow_monitor.py), so it is quarantined,
+           and later released, exactly like any other gate verdict;
+  clients  a client the witness blames has its reports published but charged
+           to no server (attribution witness_discounted), as re-steered
+           reports already are. The witness still sees every raw report.
+Why now: in 45 live runs since its fixes (witfix_*, lv_*) the witness blamed
+no honest party; and in lv_forge_evidence it named a dropping server in
+11.1 s while the controller, reading forged records, never acted and honest
+task success fell to 82.6%.
+
+Arms (config/params_wa_*.yaml; pinned by tests/test_witness_act_arms.py).
+Each acting arm has an observe-only twin built from the same file, so the
+comparison is within this batch:
+  wa_control            witfix_control + act           (false actions, cost)
+  wa_badmouth_observe   witfix_badmouth, re-run         (iot3, iot12 badmouth from 30 s)
+  wa_badmouth_act       witfix_badmouth + act
+  wa_forge_observe      lv_forge_evidence, re-run       (srv3 drops from 60 s; the
+  wa_forge_act          lv_forge_evidence + act          controller forges its evidence)
+
+Basis.
+  * Tests (tests/test_witness_acts.py): a blamed server is quarantined on the
+    first poll (Ā = 0.85 after one flagged cycle, gate 0.5), even when every
+    one of its records says success; it recovers once the witness stops
+    blaming it; a blamed client's report is published uncharged and its
+    dispatch still closes. Removing either action fails its tests.
+  * Observe-only baselines (evaluation.witness_act_report):
+      lv_forge_evidence: srv3 blamed 5/5, median 11.1 s; never quarantined;
+        762 [744, 780] connections after onset; honest task success 82.58%
+        [82.06, 83.09] (replicates).
+      witfix_badmouth: both badmouthers blamed 5/5 in 12.0 s; lowest
+        honest-server trust after onset 0.357 [0.344, 0.370]
+        (witfix_control: 0.489 over the whole run).
+      witfix_control: honest task success 99.97% [99.94, 100].
+  * Expected cycle once acting: quarantined ~1 s after the witness blames
+    it; the witness keeps blaming it while its last connections stay in the
+    60 s window, then the verdict lapses, the gate releases it, the forged
+    trust draws traffic back, and about 10 failed connections (a few seconds
+    plus the 4 s client timeout and 2 s settle) re-blame it. Roughly 10 s
+    exposed per ~70 s cycle.
+
+  W1  wa_control: no honest server quarantined with the witness signal and no
+      honest client's report discounted, in >= 4/5 runs; honest task success
+      >= 99.9% in every run.
+  W2  wa_forge_act: srv3 quarantined after onset in 5/5 runs, with the
+      witness signal, median <= 20 s after onset; quarantined for >= 50% of
+      the post-onset time; handed <= 1/3 of the connections wa_forge_observe
+      hands it.
+  W3  wa_forge_act honest task success >= 95%, interval disjoint from
+      wa_forge_observe's; wa_forge_observe within 3 points of 82.6%.
+  W4  wa_badmouth_act: both badmouthers' reports discounted in 5/5 runs, the
+      first a median <= 20 s after onset; lowest honest-server trust after
+      onset >= 0.45, interval disjoint from wa_badmouth_observe's.
+  W5  wa_badmouth_observe reproduces witfix_badmouth: lowest honest-server
+      trust after onset within 0.05 of 0.357.
+  W6  Across all 25 runs, no honest server quarantined with the witness
+      signal; the witness blames no honest party in >= 23/25 runs.
+
+Not predicted, reported as measured: whether acting changes how fast the
+witness itself blames; srv3's number of quarantine cycles.
+
+What this does NOT show: an adversary that targets the witness. A lying
+switch (Phase 2) is excluded from server judging rather than acted on, and
+all clients of one switch lying together look like the switch lying -- both
+still observe-only in effect. The forged-evidence case assumes the forgery
+sits in the trust pipeline and not in the witness or the gate.
+
+Run (about 2 h 10 min; the forgery arms need the gate):
+  sudo ZTSDN_ALLOW_FORGERY=1 ARMS="wa_control wa_badmouth_observe wa_badmouth_act wa_forge_observe wa_forge_act" tools/run_replicates.sh
+Score (no sudo):
+  python3 -m evaluation.witness_act_report data/runs --arms wa_control,wa_badmouth_observe,wa_badmouth_act,wa_forge_observe,wa_forge_act
+  python3 -m evaluation.replicates data/runs --arms wa_control,wa_badmouth_observe,wa_badmouth_act,wa_forge_observe,wa_forge_act --out-dir data/witact_experiment_<date>
