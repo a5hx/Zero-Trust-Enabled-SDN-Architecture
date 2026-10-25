@@ -16,7 +16,7 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -354,6 +354,17 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # These flows carry a short hard_timeout (see _install_vip_pair) so the hole
     # closes on its own within about one task.
     PRIO_PROBATION = 460
+    # ...and the trial must get past the drop rules on EVERY switch it
+    # crosses, not only the client's ingress switch where the 460 rewrite
+    # pair lives: the drop rules are installed fleet-wide, so a rewritten
+    # trial packet died at the core and at the server's own switch, and the
+    # reply died at the server's switch. Found 2026-10-24: 327 of 369 witness
+    # trials were black-holed, and only clients behind the quarantined
+    # server's own switch could ever complete a trial -- trust-rail probation
+    # included (docs/predictions/withold_2026-10-23_OUTCOME.md). Between the
+    # drop rules and the rewrite pair, so on the ingress switch the rewrite
+    # still wins.
+    PRIO_TRIAL_PASSAGE = 455
     PRIO_HEALTH_CHECK = 450
     PRIO_QUARANTINE_DROP = 400
     PRIO_ARP_PUNT = 350
@@ -366,6 +377,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
     # Cookie space for client-throttle rules, distinct from the per-server VIP
     # cookies (0x5A...) so flow statistics never attribute them to a server.
     CLIENT_THROTTLE_COOKIE_BASE = 0x5C00000000000000
+    # Trial-passage rules (PRIO_TRIAL_PASSAGE): their own cookie space, so flow
+    # statistics and the switch witness never read them as a server's VIP rules.
+    TRIAL_PASSAGE_COOKIE_BASE = 0x5D00000000000000
     # Per-client meters live above the per-server ones (1..N).
     CLIENT_METER_BASE = 1000
     PRIO_MISS = 0
@@ -614,15 +628,23 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # Observe-only: it publishes `witness` verdicts and quarantines nobody.
         # Off unless controller.witness.enabled, so earlier configs are unchanged.
         from controller.switch_witness import (SwitchWitness, WitnessConfig, parse_act,
-                                               parse_switch_lies)
+                                               parse_hold, parse_switch_lies)
         wcfg = (self.cfg['controller'].get('witness') or {})
         self.witness: Any = (SwitchWitness(self.vip_ip, WitnessConfig.from_config(self.cfg['controller']))
                              if wcfg.get('enabled') else None)
         # Letting the verdicts act (controller.witness.act; parse_act says how).
         self._witness_act_servers, self._witness_act_clients = parse_act(wcfg)
         self._witness_verdict: Optional[Dict[str, Any]] = None
+        # The hold (controller.witness.act.hold, switch_witness.WitnessHold):
+        # trial connections routed to a held server, and each held server's
+        # run of consecutive trials the witness saw served.
+        self._witness_hold = parse_hold(wcfg)
+        self._witness_trials: Dict[Tuple[str, str], Tuple[str, float]] = {}
+        self._hold_streak: Dict[str, int] = {}
+        if self._witness_hold is not None:
+            self.state.witness_trial_interval_s = self._witness_hold.trial_interval_s
         if self._witness_act_servers:
-            self.flow_monitor.witness_verdicts = lambda: self._witness_verdict
+            self.flow_monitor.witness_verdicts = self._witness_gate_verdict
         # Phase 2c: an emulated misreporting switch, keyed by dpid.
         self._switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
         self._started_mono = time.monotonic()
@@ -781,9 +803,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
         n = 0
         while True:
             hub.sleep(self.monitor_interval_s)
-            self.witness.tick(time.monotonic())
+            judged = self.witness.tick(time.monotonic())
+            if self._witness_hold is not None:
+                self._advance_witness_holds(judged)
             v = self.witness.verdicts()
             self._witness_verdict = v
+            if self._witness_hold is not None:
+                for node in v['servers']:
+                    if self.state.hold_for_witness(node):
+                        self._hold_streak[node] = 0
+                        logger.warning("%s: HELD by the switch witness until it serves "
+                                       "%d trial(s) in a row", node, self._witness_hold.passes)
+                        self.bus.publish('witness_hold', node=node, action='held')
             blamed = (tuple(v['servers']), tuple(v['switches']), tuple(v['clients']))
             n += 1
             if blamed != last or n % 5 == 0:
@@ -834,6 +865,52 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 logger.warning("%s: attestation expired -- no fresh quote", node)
                 self.bus.publish('attestation', node=node, verdict='expired', detail='',
                                  measurement='', mismatched=[], verify_ms=0.0)
+
+    def _witness_gate_verdict(self) -> Optional[Dict[str, Any]]:
+        """What the anomaly gate acts on: the witness's verdict, plus every
+        server it holds (whose own verdict may have lapsed)."""
+        v = self._witness_verdict
+        held = self.state.witness_held() if self._witness_hold is not None else []
+        if v is None and not held:
+            return None
+        v = dict(v or {})
+        rate = dict(v.get('server_rate') or {})
+        for node in held:
+            rate.setdefault(node, 1.0)
+        v['servers'] = sorted(set(v.get('servers') or []) | set(held))
+        v['server_rate'] = rate
+        return v
+
+    def _advance_witness_holds(self, judged: List[Any]) -> None:
+        """Score held servers' trial connections as the witness judges them,
+        and release a server after `passes` served trials in a row."""
+        from controller.switch_witness import AGREE_FAILED, AGREE_SERVED
+        now = time.monotonic()
+        held = set(self.state.witness_held())
+        for j in judged:
+            trial = self._witness_trials.pop((j.client_ip, j.client_port), None)
+            if trial is None or trial[0] not in held or trial[0] != j.node:
+                continue
+            node = j.node
+            if j.pattern == AGREE_SERVED:
+                self._hold_streak[node] = self._hold_streak.get(node, 0) + 1
+            elif j.pattern == AGREE_FAILED:
+                self._hold_streak[node] = 0
+            self.bus.publish('witness_trial', node=node, pattern=j.pattern,
+                             streak=self._hold_streak.get(node, 0))
+        for node in sorted(held):
+            if self._hold_streak.get(node, 0) >= self._witness_hold.passes:
+                self.state.release_from_witness(node)
+                dropped = self.witness.forget_server(node)
+                self._hold_streak.pop(node, None)
+                logger.warning("%s: RELEASED by the switch witness after %d served trials",
+                               node, self._witness_hold.passes)
+                self.bus.publish('witness_hold', node=node, action='released',
+                                 forgotten=dropped)
+        # Trials the witness never judged (re-steered, unseen) are not kept forever.
+        for key, (_node, t) in list(self._witness_trials.items()):
+            if now - t > 3 * self.witness.cfg.give_up_s:
+                del self._witness_trials[key]
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -905,6 +982,24 @@ class TrustBalancerApp(app_manager.OSKenApp):
 
         self._check_flood(client_ip)
 
+        if not tcp_pkt.has_flags(tcp.TCP_SYN) or tcp_pkt.has_flags(tcp.TCP_ACK):
+            # Only a SYN opens a connection. Anything else is the tail of one
+            # whose rules have expired -- above all a trial's, whose
+            # hard_timeout equals the client's task timeout, so the client's
+            # FIN on giving up arrives just after its rules have gone. Routing
+            # it re-registered the dead connection on a fresh server, and the
+            # timeout report that followed 20 ms later was charged to that
+            # (honest) server instead of the trial's. Found 2026-10-25: 41 of
+            # 94 witness trials in the wh2 hold arms
+            # (docs/predictions/withold2_2026-10-24_OUTCOME.md). Drop it: the
+            # dispatch it belongs to keeps its report.
+            logger.info("Not routing non-SYN %s:%d (flags 0x%03x) -- tail of an "
+                        "expired connection", client_ip, client_port, tcp_pkt.bits)
+            self.bus.publish('route_ignored', client_ip=client_ip,
+                             client_port=client_port, tcp_flags=tcp_pkt.bits,
+                             dpid=dp.id, reason='not_syn')
+            return
+
         chosen, probation = self.state.choose_edge_node_ex()
         if chosen is None:
             logger.warning(
@@ -934,12 +1029,16 @@ class TrustBalancerApp(app_manager.OSKenApp):
         # dashboard can show not just who won but the EdgeScore of everyone who
         # lost, which is the whole point of the trust-aware routing claim.
         last = self.state.last_routing_decision() or {}
+        if last.get('witness_trial'):
+            # A held server's trial: the witness will judge this connection.
+            self._witness_trials[(client_ip, str(client_port))] = (chosen, time.monotonic())
         self.bus.publish(
             'route',
             client_ip=client_ip, client_port=client_port, chosen=chosen,
             edge_score=last.get('score'), ranked=last.get('ranked'),
             decision_ms=round(decision_ms, 2), dpid=dp.id,
             probation=probation,
+            **({'witness_trial': True} if last.get('witness_trial') else {}),
         )
 
     def _check_flood(self, client_ip: str) -> None:
@@ -1217,6 +1316,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
             cookie=cookie, idle_timeout=idle_timeout,
             hard_timeout=hard_timeout,
         )
+        if probation:
+            self._install_trial_passage(client_ip, client_port, node_id, hard_timeout)
 
         # Rendered as text here rather than in the browser: this is the exact
         # rewrite the advisor wants to see ("rules"), and building the string
@@ -1251,6 +1352,32 @@ class TrustBalancerApp(app_manager.OSKenApp):
                 },
             ],
         )
+
+    def _install_trial_passage(self, client_ip: str, client_port: int, node_id: str,
+                               hard_timeout: int) -> None:
+        """Let one trial connection through the quarantine's drop rules on
+        every switch, for as long as the trial's own rules live: its TCP
+        packets both ways (already rewritten to the server's real address
+        beyond the ingress switch), and ARP between the server and that client,
+        which the server may need before it can answer. See PRIO_TRIAL_PASSAGE."""
+        s_ip = self.inventory.server_ip(node_id)
+        cookie = self.TRIAL_PASSAGE_COOKIE_BASE | srv_index(node_id)
+        for dp in list(self._datapaths.values()):
+            parser = dp.ofproto_parser
+            for match in (
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                                ipv4_src=client_ip, tcp_src=client_port,
+                                ipv4_dst=s_ip, tcp_dst=self.node_port),
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP,
+                                ipv4_src=s_ip, tcp_src=self.node_port,
+                                ipv4_dst=client_ip, tcp_dst=client_port),
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP,
+                                arp_spa=s_ip, arp_tpa=client_ip),
+                parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP,
+                                arp_spa=client_ip, arp_tpa=s_ip),
+            ):
+                self._install_goto_l2(dp, self.TABLE_VIP, self.PRIO_TRIAL_PASSAGE, match, [],
+                                      cookie=cookie, hard_timeout=hard_timeout)
 
     def _resend_packet(self, dp, msg, in_port) -> None:
         """Resubmit the just-punted packet through the pipeline from table 0,

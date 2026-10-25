@@ -11,7 +11,15 @@ Per run, from the recording:
     the client (`attribution: witness_discounted`), split into badmouthers'
     and honest clients' (a false discount);
   * honest servers: every quarantine whose anomaly carried the witness signal
-    (a false action), and their lowest trust after the first onset.
+    (a false action), and their lowest trust after the first onset;
+  * the hold (controller.witness.act.hold): who was held and released, and
+    every trial connection the witness judged (`witness_hold`,
+    `witness_trial` events);
+  * trial tails: a trial connection routed AGAIN, to another server, within
+    TAIL_WINDOW_S -- its rules expired as the client gave up, and its FIN drew
+    a PacketIn -- and the client's report charged to that other server; and
+    the non-SYN PacketIns the controller declined to route (`route_ignored`),
+    which is how that defect was fixed.
 
 Times are relative to the first event, like every other scorer here.
 
@@ -33,6 +41,9 @@ from evaluation.replicates import quarantine_intervals, t_interval, wilson
 from evaluation.witness_report import WitnessRun, discover
 from evaluation.witness_report import score as witness_score
 
+TAIL_WINDOW_S = 8.0     # a trial's 4 s rules, plus the client's own timeout margin
+TAIL_REPORT_S = 1.0     # the report follows the stray re-route by ~20 ms
+
 
 @dataclass
 class ActRun:
@@ -51,6 +62,17 @@ class ActRun:
     trust_low: Dict[str, float] = field(default_factory=dict)   # after the first onset
     servers: List[str] = field(default_factory=list)
     end: float = 0.0
+    holds: Dict[str, List[float]] = field(default_factory=dict)
+    releases: Dict[str, List[float]] = field(default_factory=dict)
+    trials: Dict[str, List[str]] = field(default_factory=dict)
+    trial_routes: Dict[str, int] = field(default_factory=dict)
+    tails_rerouted: Dict[str, int] = field(default_factory=dict)   # trial node -> count
+    tails_charged: Dict[str, int] = field(default_factory=dict)    # trial node -> count
+    routes_ignored: int = 0
+
+    @property
+    def false_holds(self) -> List[str]:
+        return sorted(n for n in self.holds if n not in self.server_onset)
 
     @property
     def first_onset(self) -> Optional[float]:
@@ -98,6 +120,8 @@ class ActRun:
 def score(path: str, arm: str = '') -> ActRun:
     r = ActRun(arm=arm, run=Path(path).name, witness=witness_score(path, arm))
     t0 = None
+    last_route: Dict[tuple, tuple] = {}     # (ip, port) -> (t, node, was a trial)
+    tails: Dict[str, tuple] = {}            # device -> (t, trial node, node re-routed to)
     with open(path) as fh:
         for line in fh:
             try:
@@ -127,17 +151,38 @@ def score(path: str, arm: str = '') -> ActRun:
                 r.witness_anomaly.setdefault(ev['node'], []).append(t)
             elif kind == 'route' and ev.get('chosen'):
                 r.routes.append((t, ev['chosen']))
+                if ev.get('witness_trial'):
+                    r.trial_routes[ev['chosen']] = r.trial_routes.get(ev['chosen'], 0) + 1
+                key = (ev.get('client_ip'), ev.get('client_port'))
+                prev = last_route.get(key)
+                if prev and prev[2] and t - prev[0] < TAIL_WINDOW_S and ev['chosen'] != prev[1]:
+                    r.tails_rerouted[prev[1]] = r.tails_rerouted.get(prev[1], 0) + 1
+                    tails['iot' + str(key[0]).rsplit('.', 1)[-1]] = (t, prev[1], ev['chosen'])
+                last_route[key] = (t, ev['chosen'], bool(ev.get('witness_trial')))
+            elif kind == 'route_ignored':
+                r.routes_ignored += 1
             elif kind == 'report' and ev.get('attribution') == 'witness_discounted':
                 r.acting = True
                 d = ev.get('device')
                 r.discounted[d] = r.discounted.get(d, 0) + 1
                 r.first_discount.setdefault(d, t)
+            elif kind == 'witness_hold' and ev.get('node'):
+                bucket = r.holds if ev.get('action') == 'held' else r.releases
+                bucket.setdefault(ev['node'], []).append(t)
+            elif kind == 'witness_trial' and ev.get('node'):
+                r.trials.setdefault(ev['node'], []).append(ev.get('pattern'))
             elif kind == 'node_status':
                 on = r.first_onset
                 if on is not None and t >= on:
                     for n, v in (ev.get('nodes') or {}).items():
                         if n not in r.server_onset and v.get('trust') is not None:
                             r.trust_low[n] = min(r.trust_low.get(n, 1.0), float(v['trust']))
+            if (kind == 'report' and ev.get('device') in tails
+                    and t - tails[ev['device']][0] <= TAIL_REPORT_S
+                    and ev.get('node') == tails[ev['device']][2]):
+                _t, trial_node, _other = tails.pop(ev['device'])
+                if ev.get('charged', True) is not False:
+                    r.tails_charged[trial_node] = r.tails_charged.get(trial_node, 0) + 1
     return r
 
 
@@ -172,6 +217,17 @@ def report(results: Dict[str, List[ActRun]]) -> str:
             out.append(f'        ... with the witness signal  : {_prop(sum(r.contained_by_witness(node) for r in runs), n)}')
             out.append(f'        share of time quarantined    : {_ci([100 * (r.quarantined_share(node) or 0) for r in runs])} %')
             out.append(f'        connections after onset      : {_ci([r.exposure(node) for r in runs], "{:.0f}")}')
+            if any(r.holds or r.trials for r in runs):
+                out.append(f'        held by the witness          : {_prop(sum(node in r.holds for r in runs), n)}; '
+                           f'holds per run {_ci([len(r.holds.get(node, [])) for r in runs], "{:.1f}")}')
+                out.append(f'        released per run             : {_ci([len(r.releases.get(node, [])) for r in runs], "{:.1f}")}')
+                tr = [p for r in runs for p in r.trials.get(node, [])]
+                served = sum(1 for p in tr if p == 'agree_served')
+                routed = sum(r.trial_routes.get(node, 0) for r in runs)
+                out.append(f'        trials routed / judged       : {routed} / {len(tr)} ({served} served)')
+                out.append(f'        trial tails re-routed / charged elsewhere: '
+                           f'{sum(r.tails_rerouted.get(node, 0) for r in runs)} / '
+                           f'{sum(r.tails_charged.get(node, 0) for r in runs)}')
         for dev in sorted({d for r in runs for d in r.badmouthers}):
             k = [r.discounted.get(dev, 0) for r in runs]
             firsts = [r.first_discount[dev] - r.badmouthers[dev] for r in runs if dev in r.first_discount]
@@ -183,6 +239,11 @@ def report(results: Dict[str, List[ActRun]]) -> str:
         out.append(f'    honest servers hit by the witness signal: {_ci([len(r.false_witness_actions) for r in runs], "{:.1f}")}'
                    f'  (runs with any: {sum(1 for r in runs if r.false_witness_actions)}/{n})')
         out.append(f'    honest parties the witness blamed: {_ci([len(r.witness.false_parties) for r in runs], "{:.1f}")}')
+        if any(r.holds for r in runs) or any('hold' in r.arm for r in runs):
+            out.append(f'    honest servers held              : {_ci([len(r.false_holds) for r in runs], "{:.1f}")}'
+                       f'  (runs with any: {sum(1 for r in runs if r.false_holds)}/{n})')
+        if any(r.holds or r.trials for r in runs):
+            out.append(f'    non-SYN PacketIns not routed     : {sum(r.routes_ignored for r in runs)}')
         lows = [min(r.trust_low.values()) for r in runs if r.trust_low]
         if lows:
             out.append(f'    lowest honest-server trust after onset: {_ci(lows, "{:.3f}")}')

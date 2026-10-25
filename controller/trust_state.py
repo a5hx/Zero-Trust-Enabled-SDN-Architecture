@@ -330,6 +330,14 @@ class TrustState:
         # Probation ("half-open"): the last time each node was offered a trial
         # task while quarantined. See _probation_candidate_locked().
         self.probation_interval_s = probation_interval_s
+        # Servers held by the switch witness (controller.witness.act.hold):
+        # node -> when the hold began. A held server stays quarantined after
+        # the witness's own verdict lapses, and is offered one trial connection
+        # every witness_trial_interval_s; the WITNESS judges the trial, not
+        # this class's task records, which may be the thing that is wrong.
+        self._witness_held: Dict[str, float] = {}
+        self._last_witness_trial: Dict[str, float] = {}
+        self.witness_trial_interval_s: Optional[float] = None
         self._last_probation: Dict[str, float] = {}
 
         # Request arrival timestamps per CLIENT ip (not per edge node -- see
@@ -1197,6 +1205,40 @@ class TrustState:
                 best = nid
         return best
 
+    # ------------------------------------------------------------------ #
+    # Witness hold                                                        #
+    # ------------------------------------------------------------------ #
+    def hold_for_witness(self, node_id: str) -> bool:
+        """Start holding a server the witness blames. True if newly held."""
+        with self._lock:
+            if node_id in self._witness_held:
+                return False
+            self._witness_held[node_id] = self._now()
+            self._last_witness_trial[node_id] = self._now()   # first trial one interval on
+            return True
+
+    def release_from_witness(self, node_id: str) -> bool:
+        with self._lock:
+            self._last_witness_trial.pop(node_id, None)
+            return self._witness_held.pop(node_id, None) is not None
+
+    def witness_held(self) -> List[str]:
+        with self._lock:
+            return sorted(self._witness_held)
+
+    def _witness_trial_candidate_locked(self) -> Optional[str]:
+        """A held server due its trial connection, or None. Unlike a probation
+        trial this ignores Ā -- the gate signal is held high on purpose -- and
+        trust, which the controller's own records set: the trial exists because
+        those may be wrong, and the witness, not they, judges it."""
+        if self.witness_trial_interval_s is None:
+            return None
+        now = self._now()
+        due = [n for n in self._witness_held
+               if self._admitted_locked(n)
+               and now - self._last_witness_trial.get(n, 0.0) >= self.witness_trial_interval_s]
+        return min(due, key=lambda n: self._last_witness_trial.get(n, 0.0)) if due else None
+
     def _is_on_probation_locked(self, node_id: str) -> bool:
         return (
             self._anomaly.get(node_id, 0.0) < self._enforced_gate
@@ -1228,6 +1270,16 @@ class TrustState:
         path is inert — routing is then byte-for-byte what it was before.
         """
         with self._lock:
+            trial = self._witness_trial_candidate_locked()
+            if trial is not None:
+                self._last_witness_trial[trial] = self._now()
+                logger.info("%s: witness trial (held since %.1fs ago)", trial,
+                            self._now() - self._witness_held[trial])
+                self._routing_decisions.append({
+                    'timestamp': time.time(), 'chosen': trial, 'score': None,
+                    'ranked': [], 'probation': True, 'witness_trial': True,
+                })
+                return trial, True
             probe = self._probation_candidate_locked()
             if probe is not None:
                 self._last_probation[probe] = self._now()
@@ -1386,4 +1438,6 @@ class TrustState:
             if self._admission is not None:     # only when attestation is on
                 for nid, row in snap.items():
                     row['admitted'] = self._admitted_locked(nid)
+            for nid in self._witness_held:      # only when the witness holds anyone
+                snap[nid]['witness_held'] = True
             return snap

@@ -1,0 +1,74 @@
+SWITCH WITNESS, ACTING
+==============================================================================
+wh_control_hold: 5 run(s)
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    honest servers held              : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+wh_forge_act: 5 run(s)
+    srv3 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 11.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 12.0 s
+        ... with the witness signal  : 5/5 [57%, 100%]
+        share of time quarantined    : 83.1 [82.3, 83.8]  n=5 %
+        connections after onset      : 132 [123, 142]  n=5
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    lowest honest-server trust after onset: 0.640 [0.511, 0.769]  n=5
+wh_forge_hold: 5 run(s)
+    srv3 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 11.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 12.0 s
+        ... with the witness signal  : 5/5 [57%, 100%]
+        share of time quarantined    : 95.3 [95.0, 95.6]  n=5 %
+        connections after onset      : 65 [58, 72]  n=5
+        held by the witness          : 5/5 [57%, 100%]; holds per run 1.0 [1.0, 1.0]  n=5
+        released per run             : 0.0 [0.0, 0.0]  n=5
+        trials judged                : 8 (0 served)
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    honest servers held              : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    lowest honest-server trust after onset: 0.619 [0.444, 0.793]  n=5
+wh_drop_act: 5 run(s)
+    srv1 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 14.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 13.4 s
+        ... with the witness signal  : 2/5 [12%, 77%]
+        share of time quarantined    : 74.7 [62.4, 86.9]  n=5 %
+        connections after onset      : 57 [42, 71]  n=5
+    srv6 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 12.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 10.9 s
+        ... with the witness signal  : 0/5 [0%, 43%]
+        share of time quarantined    : 60.6 [57.7, 63.5]  n=5 %
+        connections after onset      : 30 [23, 38]  n=5
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    lowest honest-server trust after onset: 0.650 [0.509, 0.791]  n=5
+wh_drop_hold: 5 run(s)
+    srv1 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 12.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 11.3 s
+        ... with the witness signal  : 0/5 [0%, 43%]
+        share of time quarantined    : 95.9 [95.3, 96.5]  n=5 %
+        connections after onset      : 47 [44, 50]  n=5
+        held by the witness          : 5/5 [57%, 100%]; holds per run 1.0 [1.0, 1.0]  n=5
+        released per run             : 0.0 [0.0, 0.0]  n=5
+        trials judged                : 11 (7 served)
+    srv6 (misbehaves from its onset)
+        blamed by the witness        : 5/5 [57%, 100%]; median 11.1 s
+        quarantined after onset      : 5/5 [57%, 100%]; median 9.5 s
+        ... with the witness signal  : 1/5 [4%, 62%]
+        share of time quarantined    : 96.4 [95.4, 97.3]  n=5 %
+        connections after onset      : 45 [36, 54]  n=5
+        held by the witness          : 5/5 [57%, 100%]; holds per run 1.0 [1.0, 1.0]  n=5
+        released per run             : 0.0 [0.0, 0.0]  n=5
+        trials judged                : 10 (0 served)
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=5
+    honest servers held              : 0.0 [0.0, 0.0]  n=5  (runs with any: 0/5)
+    lowest honest-server trust after onset: 0.547 [0.330, 0.765]  n=5

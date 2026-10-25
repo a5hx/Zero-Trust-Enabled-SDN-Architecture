@@ -1,0 +1,79 @@
+SWITCH WITNESS, ACTING
+==============================================================================
+wh2_control_hold: 1 run(s)
+    honest clients' reports discounted: 0.0  n=1  (runs with any: 0/1)
+    honest servers hit by the witness signal: 0.0  n=1  (runs with any: 0/1)
+    honest parties the witness blamed: 0.0  n=1
+    honest servers held              : 0.0  n=1  (runs with any: 0/1)
+wh2_forge_act: 2 run(s)
+    srv3 (misbehaves from its onset)
+        blamed by the witness        : 2/2 [34%, 100%]; median 9.6 s
+        quarantined after onset      : 2/2 [34%, 100%]; median 10.2 s
+        ... with the witness signal  : 2/2 [34%, 100%]
+        share of time quarantined    : 84.6 [75.6, 93.5]  n=2 %
+        connections after onset      : 131 [118, 144]  n=2
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=2
+    lowest honest-server trust after onset: 0.631 [-0.854, 2.115]  n=2
+wh2_forge_hold: 2 run(s)
+    srv3 (misbehaves from its onset)
+        blamed by the witness        : 2/2 [34%, 100%]; median 10.4 s
+        quarantined after onset      : 2/2 [34%, 100%]; median 11.0 s
+        ... with the witness signal  : 2/2 [34%, 100%]
+        share of time quarantined    : 95.5 [94.5, 96.6]  n=2 %
+        connections after onset      : 68 [-41, 176]  n=2
+        held by the witness          : 2/2 [34%, 100%]; holds per run 1.0 [1.0, 1.0]  n=2
+        released per run             : 0.0 [0.0, 0.0]  n=2
+        trials routed / judged       : 46 / 21 (0 served)
+        trial tails re-routed / charged elsewhere: 35 / 25
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=2
+    honest servers held              : 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    non-SYN PacketIns not routed     : 0
+    lowest honest-server trust after onset: 0.419 [0.405, 0.434]  n=2
+wh2_drop_act: 2 run(s)
+    srv1 (misbehaves from its onset)
+        blamed by the witness        : 2/2 [34%, 100%]; median 14.0 s
+        quarantined after onset      : 2/2 [34%, 100%]; median 13.0 s
+        ... with the witness signal  : 1/2 [9%, 91%]
+        share of time quarantined    : 66.8 [43.2, 90.3]  n=2 %
+        connections after onset      : 53 [-61, 167]  n=2
+    srv6 (misbehaves from its onset)
+        blamed by the witness        : 2/2 [34%, 100%]; median 11.4 s
+        quarantined after onset      : 2/2 [34%, 100%]; median 10.0 s
+        ... with the witness signal  : 0/2 [0%, 66%]
+        share of time quarantined    : 58.5 [38.1, 78.9]  n=2 %
+        connections after onset      : 37 [12, 62]  n=2
+    honest clients' reports discounted: 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    honest servers hit by the witness signal: 0.0 [0.0, 0.0]  n=2  (runs with any: 0/2)
+    honest parties the witness blamed: 0.0 [0.0, 0.0]  n=2
+    lowest honest-server trust after onset: 0.633 [-0.664, 1.929]  n=2
+wh2_drop_hold: 1 run(s)
+    srv1 (misbehaves from its onset)
+        blamed by the witness        : 1/1 [21%, 100%]; median 10.6 s
+        quarantined after onset      : 1/1 [21%, 100%]; median 9.4 s
+        ... with the witness signal  : 0/1 [0%, 79%]
+        share of time quarantined    : 83.8  n=1 %
+        connections after onset      : 64  n=1
+        held by the witness          : 1/1 [21%, 100%]; holds per run 3.0  n=1
+        released per run             : 2.0  n=1
+        trials routed / judged       : 20 / 15 (10 served)
+        trial tails re-routed / charged elsewhere: 6 / 5
+    srv6 (misbehaves from its onset)
+        blamed by the witness        : 1/1 [21%, 100%]; median 25.6 s
+        quarantined after onset      : 1/1 [21%, 100%]; median 25.7 s
+        ... with the witness signal  : 1/1 [21%, 100%]
+        share of time quarantined    : 90.7  n=1 %
+        connections after onset      : 35  n=1
+        held by the witness          : 1/1 [21%, 100%]; holds per run 1.0  n=1
+        released per run             : 0.0  n=1
+        trials routed / judged       : 24 / 13 (0 served)
+        trial tails re-routed / charged elsewhere: 20 / 11
+    honest clients' reports discounted: 0.0  n=1  (runs with any: 0/1)
+    honest servers hit by the witness signal: 0.0  n=1  (runs with any: 0/1)
+    honest parties the witness blamed: 0.0  n=1
+    honest servers held              : 0.0  n=1  (runs with any: 0/1)
+    non-SYN PacketIns not routed     : 0
+    lowest honest-server trust after onset: 0.420  n=1
