@@ -281,6 +281,13 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     task_timeout = agents_cfg.get('task_timeout_s', 2.0)
 
     mal_by_node = {m['node']: m for m in cfg['simulation'].get('malicious_edge_nodes', [])}
+    # Phase 4 (security/attestation.py): a tampered server runs its agent from
+    # the modified image simulation.attester.prepare_run() built, and every
+    # server gets an attester sidecar when attestation is on.
+    from security.attestation import AttestationConfig
+    from simulation.attester import tampered_dir
+    tampered = set(cfg['simulation'].get('tampered_agents') or [])
+    attest_cfg = AttestationConfig.from_config(cfg.get('security'))
 
     for i in range(1, n_edge + 1):
         node_id = f'srv{i}'
@@ -309,8 +316,19 @@ def _launch_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
             f'--onoff-period-s {onoff_period} --onoff-duty {onoff_duty} '
             f'{_agent_extra_args(agents_cfg, mal, ctrl_cfg)}'
         )
-        cmd = core + f'> logs/{node_id}_agent.log 2>&1 &'
+        if node_id in tampered:
+            # A subshell, so the host shell's own directory does not change.
+            cmd = f'(cd {tampered_dir(node_id)} && exec {core}) > logs/{node_id}_agent.log 2>&1 &'
+        else:
+            cmd = core + f'> logs/{node_id}_agent.log 2>&1 &'
         srv.cmd(cmd)
+        if attest_cfg.enabled:
+            srv.cmd(
+                f'python3 -u -m simulation.attester --node-id {node_id} '
+                f'--controller {CX_IP} --controller-port {ctrl_cfg["api_port"]} '
+                f'--key-file {attest_cfg.key_dir}/{node_id}.key '
+                f'--interval-s {attest_cfg.reattest_s} '
+                f'> logs/{node_id}_attester.log 2>&1 &')
         logger.info(
             "Started node_agent on %s (malicious=%s, start_s=%.1f)",
             node_id, attack, start_s,
@@ -492,7 +510,10 @@ def _stop_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
     _pause_controller_monitor(cfg)
     n_edge = cfg['simulation']['num_edge_nodes']
     n_iot = cfg['simulation']['num_iot_devices']
+    attesting = bool(((cfg.get('security') or {}).get('attestation') or {}).get('enabled'))
     for i in range(1, n_edge + 1):
+        if attesting:                  # first, so it never reports a dead agent
+            net.get(f'srv{i}').cmd('pkill -f simulation.attester 2>/dev/null')
         net.get(f'srv{i}').cmd('pkill -f simulation.node_agent 2>/dev/null')
     for j in range(1, n_iot + 1):
         net.get(f'iot{j}').cmd('pkill -f simulation.iot_client 2>/dev/null')
@@ -564,6 +585,8 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         # running, and the switches are already up either way.
         from simulation import cpu_profiles
         cpu_profiles.setup(cfg)            # raises before launch if the host cannot
+        from simulation.attester import prepare_run
+        prepare_run(cfg)                   # attestation keys, tampered images
         _launch_trust_agents(net, cfg)
         throttle_stop = threading.Event()
         if cpu_profiles.capped_nodes(cfg):

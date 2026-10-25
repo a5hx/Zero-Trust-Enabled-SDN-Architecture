@@ -71,6 +71,8 @@ def argv_for(cmd):
     """Strip env assignments, `python3 -u -m module` and the shell
     redirection off a command."""
     body = cmd.split('>')[0].strip()
+    # A tampered agent (Phase 4) runs from its own image: `(cd DIR && exec python3 ...)`.
+    body = re.sub(r'^\(cd \S+ && exec (.*)\)$', r'\1', body)
     parts = shlex.split(body)
     while parts and '=' in parts[0] and not parts[0].startswith('-'):
         parts.pop(0)

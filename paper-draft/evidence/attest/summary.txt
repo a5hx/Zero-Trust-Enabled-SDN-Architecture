@@ -1,0 +1,269 @@
+REPLICATED LIVE RUNS -- between-run 95% intervals
+==============================================================================
+Unit of replication: one live run. Continuous: mean [95% t-CI] sd n.
+Yes/no outcomes: k/n [95% Wilson]. Times: over runs where it happened.
+'*' = CI end clipped to the metric's physical range.
+
+  att_off_clean : 5 run(s)
+      r01.jsonl  307.7 s  theta=0.30
+      r02.jsonl  307.8 s  theta=0.30
+      r03.jsonl  307.8 s  theta=0.30
+      r04.jsonl  307.8 s  theta=0.30
+      r05.jsonl  307.8 s  theta=0.30
+  att_on_clean : 5 run(s)
+      r01.jsonl  308.9 s  theta=0.30
+      r02.jsonl  308.9 s  theta=0.30
+      r03.jsonl  308.8 s  theta=0.30
+      r04.jsonl  308.9 s  theta=0.30
+      r05.jsonl  308.9 s  theta=0.30
+  att_off_tampered : 5 run(s)
+      r01.jsonl  308.8 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+  att_on_tampered : 5 run(s)
+      r01.jsonl  308.8 s  theta=0.30
+      r02.jsonl  307.8 s  theta=0.30
+      r03.jsonl  307.8 s  theta=0.30
+      r04.jsonl  307.7 s  theta=0.30
+      r05.jsonl  308.8 s  theta=0.30
+  att_on_runtime : 5 run(s)
+      r01.jsonl  308.0 s  theta=0.30  anomaly_rail_enforced=True
+      r02.jsonl  308.8 s  theta=0.30  anomaly_rail_enforced=True
+      r03.jsonl  308.9 s  theta=0.30  anomaly_rail_enforced=True
+      r04.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+      r05.jsonl  307.8 s  theta=0.30  anomaly_rail_enforced=True
+
+SERVICE AND FAIRNESS
+------------------------------------------------------------------------------
+PDR
+    att_off_clean 99.98%  [99.96, 100.00*]  sd 0.02  n=5
+    att_on_clean 99.99%  [99.98, 100.00*]  sd 0.01  n=5
+    att_off_tampered 99.52%  [99.36, 99.69]  sd 0.13  n=5
+    att_on_tampered 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    att_on_runtime 99.48%  [99.39, 99.57]  sd 0.07  n=5
+throughput
+    att_off_clean 18.40 tps  [18.38, 18.43]  sd 0.02  n=5
+    att_on_clean 18.30 tps  [18.27, 18.33]  sd 0.02  n=5
+    att_off_tampered 18.14 tps  [18.00, 18.29]  sd 0.11  n=5
+    att_on_tampered 18.39 tps  [18.33, 18.45]  sd 0.05  n=5
+    att_on_runtime 18.08 tps  [17.95, 18.22]  sd 0.11  n=5
+mean latency (success)
+    att_off_clean 88.5 ms  [87.2, 89.7]  sd 1.0  n=5
+    att_on_clean 90.6 ms  [88.8, 92.3]  sd 1.4  n=5
+    att_off_tampered 89.5 ms  [86.9, 92.1]  sd 2.1  n=5
+    att_on_tampered 87.9 ms  [85.5, 90.4]  sd 2.0  n=5
+    att_on_runtime 90.8 ms  [87.4, 94.2]  sd 2.8  n=5
+p95 latency (success)
+    att_off_clean 126.3 ms  [124.6, 128.0]  sd 1.4  n=5
+    att_on_clean 130.9 ms  [127.3, 134.5]  sd 2.9  n=5
+    att_off_tampered 127.8 ms  [120.0, 135.5]  sd 6.2  n=5
+    att_on_tampered 123.3 ms  [119.7, 126.8]  sd 2.9  n=5
+    att_on_runtime 129.4 ms  [121.4, 137.4]  sd 6.4  n=5
+timeouts
+    att_off_clean 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_on_clean 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_off_tampered 24.6  [16.4, 32.8]  sd 6.6  n=5
+    att_on_tampered 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_on_runtime 27.6  [22.8, 32.4]  sd 3.8  n=5
+honest-device availability
+    att_off_clean 99.98%  [99.96, 100.00*]  sd 0.02  n=5
+    att_on_clean 99.99%  [99.98, 100.00*]  sd 0.01  n=5
+    att_off_tampered 99.52%  [99.35, 99.68]  sd 0.13  n=5
+    att_on_tampered 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    att_on_runtime 99.47%  [99.39, 99.56]  sd 0.07  n=5
+starved honest devices (<50%)
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+Jain, honest servers
+    att_off_clean 0.996  [0.994, 0.998]  sd 0.002  n=5
+    att_on_clean 0.996  [0.994, 0.997]  sd 0.001  n=5
+    att_off_tampered 0.997  [0.995, 0.999]  sd 0.002  n=5
+    att_on_tampered 0.994  [0.990, 0.998]  sd 0.003  n=5
+    att_on_runtime 0.995  [0.991, 1.000]  sd 0.003  n=5
+Jain, full roster
+    att_off_clean 0.996  [0.994, 0.998]  sd 0.002  n=5
+    att_on_clean 0.996  [0.994, 0.997]  sd 0.001  n=5
+    att_off_tampered 0.902  [0.897, 0.906]  sd 0.004  n=5
+    att_on_tampered 0.869  [0.866, 0.873]  sd 0.003  n=5
+    att_on_runtime 0.904  [0.898, 0.909]  sd 0.004  n=5
+share of routes to attackers
+    att_off_clean 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 1.73%  [1.45, 2.02]  sd 0.23  n=5
+    att_on_tampered 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 1.96%  [1.84, 2.09]  sd 0.10  n=5
+honest servers ever quarantined
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+lowest T of any honest server
+    att_off_clean 0.500  [0.498, 0.501]  sd 0.001  n=5
+    att_on_clean 0.500  [0.498, 0.501]  sd 0.001  n=5
+    att_off_tampered 0.485  [0.445, 0.525]  sd 0.032  n=5
+    att_on_tampered 0.463  [0.385, 0.542]  sd 0.063  n=5
+    att_on_runtime 0.500  [0.500, 0.500]  sd 0.000  n=5
+attackers quarantined BEFORE onset
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest-node availability (eligible time)
+    att_off_clean 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    att_on_clean 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    att_off_tampered 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    att_on_tampered 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    att_on_runtime 100.00%  [100.00, 100.00]  sd 0.00  n=5
+mean attacker time isolated
+    att_off_clean not measured
+    att_on_clean not measured
+    att_off_tampered 42.25%  [32.58, 51.93]  sd 7.79  n=5
+    att_on_tampered 0.00%  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 43.89%  [39.68, 48.09]  sd 3.39  n=5
+attacks classified exactly (of 8)
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.80  [0.24, 1.36]  sd 0.45  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.60  [0.00*, 1.28]  sd 0.55  n=5
+attacks in the right family (of 8)
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 1.00  [1.00, 1.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 1.00  [1.00, 1.00]  sd 0.00  n=5
+honest subjects mislabelled
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+classification accuracy, all subjects
+    att_off_clean 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    att_on_clean 100.00%  [100.00, 100.00]  sd 0.00  n=5
+    att_off_tampered 99.58%  [98.43, 100.00*]  sd 0.93  n=5
+    att_on_tampered 97.92%  [97.92, 97.92]  sd 0.00  n=5
+    att_on_runtime 99.17%  [97.75, 100.00*]  sd 1.14  n=5
+honest devices: mean latency
+    att_off_clean 88.5 ms  [87.2, 89.7]  sd 1.0  n=5
+    att_on_clean 90.6 ms  [88.8, 92.3]  sd 1.4  n=5
+    att_off_tampered 89.5 ms  [86.9, 92.1]  sd 2.1  n=5
+    att_on_tampered 87.9 ms  [85.5, 90.4]  sd 2.0  n=5
+    att_on_runtime 90.8 ms  [87.4, 94.2]  sd 2.8  n=5
+honest devices: p95 latency
+    att_off_clean 126.3 ms  [124.6, 128.0]  sd 1.4  n=5
+    att_on_clean 130.9 ms  [127.3, 134.5]  sd 2.9  n=5
+    att_off_tampered 127.8 ms  [120.0, 135.5]  sd 6.2  n=5
+    att_on_tampered 123.3 ms  [119.7, 126.8]  sd 2.9  n=5
+    att_on_runtime 129.4 ms  [121.4, 137.4]  sd 6.4  n=5
+honest devices: task success
+    att_off_clean 99.98%  [99.96, 100.00*]  sd 0.02  n=5
+    att_on_clean 99.99%  [99.98, 100.00*]  sd 0.01  n=5
+    att_off_tampered 99.52%  [99.36, 99.69]  sd 0.13  n=5
+    att_on_tampered 99.98%  [99.95, 100.00*]  sd 0.02  n=5
+    att_on_runtime 99.48%  [99.39, 99.57]  sd 0.07  n=5
+tasks served to flooding device(s)
+    att_off_clean 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_on_clean 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_off_tampered 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_on_tampered 0.0  [0.0, 0.0]  sd 0.0  n=5
+    att_on_runtime 0.0  [0.0, 0.0]  sd 0.0  n=5
+client throttles applied
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest devices ever throttled
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+honest servers: seconds quarantined
+    att_off_clean 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    att_on_clean 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    att_off_tampered 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    att_on_tampered 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+    att_on_runtime 0.0 s  [0.0, 0.0]  sd 0.0  n=5
+honest quarantines per server-hour
+    att_off_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_clean 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_off_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_tampered 0.00  [0.00, 0.00]  sd 0.00  n=5
+    att_on_runtime 0.00  [0.00, 0.00]  sd 0.00  n=5
+quarantines of the throttled honest server
+    att_off_clean not measured
+    att_on_clean not measured
+    att_off_tampered not measured
+    att_on_tampered not measured
+    att_on_runtime not measured
+  its time to release (median)
+    att_off_clean not measured
+    att_on_clean not measured
+    att_off_tampered not measured
+    att_on_tampered not measured
+    att_on_runtime not measured
+run length
+    att_off_clean 307.8 s  [307.7, 307.8]  sd 0.0  n=5
+    att_on_clean 308.9 s  [308.8, 308.9]  sd 0.0  n=5
+    att_off_tampered 308.0 s  [307.4, 308.5]  sd 0.4  n=5
+    att_on_tampered 308.2 s  [307.5, 308.9]  sd 0.6  n=5
+    att_on_runtime 308.3 s  [307.6, 308.9]  sd 0.5  n=5
+
+PER ATTACKER  (each run scored against its own recorded theta; --theta 0.3 only where none is recorded)
+------------------------------------------------------------------------------
+srv6 (drop)
+    att_off_tampered score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+               route share (post-onset): 0.61%  [0.42, 0.80]  sd 0.15  n=5
+                 minus fair 1/N    : -11.89%  [-12.08, -11.70]  sd +0.15  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 10.9 s, range 8.8-32.3 s; mean 14.9 [2.6, 27.1]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+    att_on_tampered score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.500  [0.500, 0.500]  sd 0.000  n=5
+               route share (post-onset): 0.00%  [0.00, 0.00]  sd 0.00  n=5
+                 minus fair 1/N    : -12.50%  [-12.50, -12.50]  sd +0.00  n=5
+               quarantined         : 0/5  [0%, 43%]
+                 containment       : never (0/5)
+    att_on_runtime score crossed theta : 0/5  [0%, 43%]
+                 time to cross     : never (0/5)
+               min T after onset   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+               route share (post-onset): 0.71%  [0.60, 0.82]  sd 0.09  n=5
+                 minus fair 1/N    : -11.79%  [-11.90, -11.68]  sd +0.09  n=5
+               quarantined         : 5/5  [57%, 100%]
+                 containment       : 5/5 runs; median 9.9 s, range 8.9-10.5 s; mean 9.7 [8.9, 10.5]
+                 rail that fired   : gate 5/5
+                 T at quarantine   : 0.355  [0.355, 0.355]  sd 0.000  n=5
+
+CONTAINMENT vs ATTRIBUTION  (acting arms, one point per run)
+------------------------------------------------------------------------------
+    att_on_tampered isolated   0.0%   exact labels 0/8
+    att_on_tampered isolated   0.0%   exact labels 0/8
+    att_on_tampered isolated   0.0%   exact labels 0/8
+    att_on_tampered isolated   0.0%   exact labels 0/8
+    att_on_tampered isolated   0.0%   exact labels 0/8
+    att_off_tampered isolated  30.7%   exact labels 1/8
+    att_off_tampered isolated  40.2%   exact labels 1/8
+    att_on_runtime isolated  40.5%   exact labels 1/8
+    att_off_tampered isolated  42.0%   exact labels 0/8
+    att_on_runtime isolated  42.6%   exact labels 1/8
+    att_on_runtime isolated  42.7%   exact labels 0/8
+    att_on_runtime isolated  44.2%   exact labels 0/8
+    att_off_tampered isolated  47.3%   exact labels 1/8
+    att_on_runtime isolated  49.5%   exact labels 1/8
+    att_off_tampered isolated  51.1%   exact labels 1/8
+    Spearman rho(isolation, exact labels) = +0.535, p = 0.040, n = 15
+    A trade predicts rho < 0. With n this small, only a clearly negative rho with p < 0.05 supports it; anything else does not.
+

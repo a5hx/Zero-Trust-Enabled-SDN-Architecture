@@ -611,6 +611,19 @@ class TrustBalancerApp(app_manager.OSKenApp):
         self._switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
         self._started_mono = time.monotonic()
 
+        # Phase 4: admit a server only while it holds a fresh, good attestation
+        # quote (security/attestation.py). Off unless security.attestation.enabled.
+        from security.attestation import AttestationConfig, AttestationVerifier, reference_components
+        acfg = AttestationConfig.from_config(self.cfg.get('security'))
+        self.attestation: Any = None
+        if acfg.enabled:
+            self.attestation = AttestationVerifier(
+                acfg, reference_components(acfg),
+                expected_ips={nid: self.inventory.server_ip(nid) for nid in self.state.node_ids})
+            self.state.set_admission(self.attestation.is_admitted)
+            logger.info("Attestation on: reference measurement %s, re-attest every %.0fs",
+                        sorted(self.attestation.allowed)[0][:16], acfg.reattest_s)
+
         self._http_server = None  # set in start(), from northbound_api.py
 
     def start(self):
@@ -628,6 +641,8 @@ class TrustBalancerApp(app_manager.OSKenApp):
             hub.spawn(self.flow_stats.run)
         if self.witness is not None:
             hub.spawn(self._witness_loop)
+        if self.attestation is not None:
+            hub.spawn(self._attestation_loop)
 
         if self.dashboard_enabled:
             from controller.flow_stats import FlowStatsPoller
@@ -760,6 +775,48 @@ class TrustBalancerApp(app_manager.OSKenApp):
                     logger.warning("witness: servers=%s switches=%s clients=%s",
                                    v['servers'], v['switches'], v['clients'])
                 last = blamed
+
+    # ------------------------------------------------------------------ #
+    # Attestation (Phase 4)                                                #
+    # ------------------------------------------------------------------ #
+    def handle_attest_challenge(self, node_id: str) -> Optional[bytes]:
+        """A nonce for a roster server, or None for anyone else."""
+        if self.attestation is None or node_id not in self.state.node_ids:
+            return None
+        return self.attestation.issue_challenge(node_id)
+
+    def handle_attest_verify(self, body: Dict[str, Any], source_ip: str) -> Any:
+        """Judge one quote (or the attester's report that it could not
+        measure), publish the verdict, and return it."""
+        node = body['node_id']
+        t0 = time.monotonic()
+        was = self.attestation.is_admitted(node)
+        if 'unmeasurable' in body:
+            v = self.attestation.report_unmeasurable(node, str(body['unmeasurable']))
+        else:
+            try:
+                sig = bytes.fromhex(str(body['signature']))
+            except ValueError:
+                sig = b''                      # judged as a bad signature
+            v = self.attestation.verify(node, body['components'], str(body['measurement']),
+                                        sig, source_ip)
+        self.bus.publish('attestation', node=node, verdict=v.verdict, detail=v.detail,
+                         measurement=v.measurement[:16], mismatched=v.mismatched,
+                         verify_ms=round(1000 * (time.monotonic() - t0), 3))
+        if not v.ok:
+            logger.warning("%s: attestation REFUSED (%s) %s", node, v.verdict, v.detail)
+        elif not was:
+            logger.info("%s: attested and admitted", node)
+        return v
+
+    def _attestation_loop(self) -> None:
+        """Expire admissions that were not renewed in time."""
+        while True:
+            hub.sleep(self.monitor_interval_s)
+            for node in self.attestation.sweep():
+                logger.warning("%s: attestation expired -- no fresh quote", node)
+                self.bus.publish('attestation', node=node, verdict='expired', detail='',
+                                 measurement='', mismatched=[], verify_ms=0.0)
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -1762,6 +1819,7 @@ class TrustBalancerApp(app_manager.OSKenApp):
         from simulation.cpu_profiles import parse_profiles, parse_throttles
         hw_profiles = parse_profiles(self.cfg)
         hw_throttles = parse_throttles(self.cfg)
+        tampered = set((self.cfg.get('simulation') or {}).get('tampered_agents') or [])
         from controller.switch_witness import parse_switch_lies
         switch_lies = {lie.dpid: lie for lie in parse_switch_lies(self.cfg)}
         for i in range(1, n_edge + 1):
@@ -1800,6 +1858,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
                    for t in hw_throttles if t.node == f'srv{i}']
             if thr:
                 nodes[-1]['throttle'] = thr
+            # Phase 4 ground truth: this server runs a tampered agent image.
+            if f'srv{i}' in tampered:
+                nodes[-1]['tampered'] = True
             links.append({'a': f's{i}', 'b': f'srv{i}', 'kind': 'server_link'})
             links.append({'a': 's0', 'b': f's{i}', 'kind': 'core_link'})
 

@@ -1,0 +1,71 @@
+PREDICTION -- Phase 4: admission by attestation, alongside behaviour
+Registered 2026-10-21, BEFORE any att_* run.
+
+What is being tested. A server is offered work only while it holds a fresh,
+good attestation quote: an attester sidecar on the server measures the agent
+process from outside (interpreter, simulation/__init__.py,
+simulation/node_agent.py, resolved through /proc/<pid>/cwd), signs
+(node, nonce, measurement) with the node's Ed25519 key, and the controller
+checks it against the reference build (security/attestation.py). Re-attest
+every 30 s; one good quote admits for 75 s; any refusal revokes at once.
+The claim under test is complementarity: attestation stops code that was
+changed on disk before it serves anything; it cannot see genuine code
+compromised at run time, which behaviour (the gate) still has to catch.
+
+Arms (config/params_att_*.yaml; pinned by tests/test_attest_arms.py). All are
+params_witfix_control.yaml (witness on, observe-only) plus:
+  att_off_clean     nothing                                    (cost baseline)
+  att_on_clean      attestation on
+  att_off_tampered  srv6 runs a tampered image, drops from 30 s; attestation off
+  att_on_tampered   the same, attestation on
+  att_on_runtime    srv6 runs the GENUINE image, drops from 30 s; attestation on
+The tampered image is the released agent plus one appended comment line, so
+srv6 behaves the same in the tampered and the runtime arms; only what is on
+disk differs.
+
+Basis.
+  * Rehearsal with real processes (2026-10-21, no Mininet): genuine agent
+    admitted 0.12 s after launch; tampered agent refused every round with
+    'not_in_allowlist', naming only simulation/node_agent.py; verification
+    0.2-0.5 ms per quote; an attester round ~8 ms; a killed agent was refused
+    as 'unmeasurable' at the next round and lost admission.
+  * witfix_drop (same base, srv6 drop from 30 s, attestation off): srv6
+    quarantined 5/5, median 10.6 s after onset (range 9.4-13.4 s), handed
+    25 [19, 31] connections between onset and quarantine
+    (evaluation.attestation_report on data/runs/witfix_drop).
+  * witfix_control: ~5,650 connections per run; first route 3-8 s after the
+    first event; honest-device mean latency 93.6 ms [89.0, 98.3].
+
+  A1  att_on_clean: all 8 servers admitted in 5/5 runs, the last within 3 s of
+      the first; connections denied before the whole fleet is in < 56 per run
+      (1% of a run's connections), and none after.
+  A2  No genuine server is refused or loses admission at any time in any of
+      the 15 attestation-on runs (att_on_clean, the 7 genuine servers of
+      att_on_tampered, all 8 servers of att_on_runtime before and after
+      srv6's onset).
+  A3  att_on_tampered: srv6 refused in 5/5 runs, every refusal
+      'not_in_allowlist' naming only simulation/node_agent.py; srv6 is never
+      admitted and is routed 0 connections in every run.
+  A4  att_off_tampered: behaviour alone. srv6 quarantined after onset in 5/5,
+      median <= 20 s; it is handed > 0 connections between onset and
+      quarantine in every run.
+  A5  att_on_runtime: srv6 passes attestation in 5/5 runs and is never refused
+      (the compromise is invisible to the measurement); it is quarantined by
+      behaviour in 5/5, and its containment time and connections-before-
+      containment intervals overlap att_off_tampered's.
+  A6  Cost: att_on_clean honest-device mean latency interval overlaps
+      att_off_clean's; median verification time per quote < 5 ms.
+
+Not predicted, reported as measured: whether att_on_tampered serves honest
+devices measurably better than att_off_tampered. The expected difference
+(~25 connections of ~5,650 per run) may sit inside run-to-run noise.
+
+What this does NOT show, whatever the outcome: a hardware root of trust. The
+key and the measurement live in a process on the same host as the agent, all
+running as root; the separation is a design boundary, not an enforced one.
+
+Run (about 2 h 10 min):
+  sudo ARMS="att_off_clean att_on_clean att_off_tampered att_on_tampered att_on_runtime" tools/run_replicates.sh
+Score (no sudo):
+  python3 -m evaluation.attestation_report data/runs --arms att_off_clean,att_on_clean,att_off_tampered,att_on_tampered,att_on_runtime
+  python3 -m evaluation.replicates data/runs --arms att_off_clean,att_on_clean,att_off_tampered,att_on_tampered,att_on_runtime --out-dir data/attest_experiment_<date>

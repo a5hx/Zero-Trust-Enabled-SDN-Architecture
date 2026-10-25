@@ -165,6 +165,10 @@ class TrustState:
         if cpu_claim not in ('raw', 'verified'):
             raise ValueError(f"edge_score.cpu_claim must be 'raw' or 'verified', not {cpu_claim!r}")
         self.cpu_claim = cpu_claim
+        # Phase 4: who may be offered work at all (security/attestation.py).
+        # None -- every config before it -- admits every node, so routing is
+        # unchanged; set_admission() installs the attestation verifier's check.
+        self._admission: Optional[Callable[[str], bool]] = None
         self._lock = threading.RLock()
         self.node_ids = list(node_ids)
         self.trust_calc = trust_calculator or TrustCalculator()
@@ -1124,6 +1128,16 @@ class TrustState:
         only one of the two may be called per cycle."""
         return self.poll_quarantine_transitions()[0]
 
+    def set_admission(self, admitted: Optional[Callable[[str], bool]]) -> None:
+        """Install the admission check: a node it rejects is never chosen, not
+        even for a probation trial. Admission is checked before trust, so a
+        server that failed attestation cannot earn its way in by behaving."""
+        with self._lock:
+            self._admission = admitted
+
+    def _admitted_locked(self, node_id: str) -> bool:
+        return self._admission is None or self._admission(node_id)
+
     def _probation_candidate_locked(self) -> Optional[str]:
         """The node most deserving of a trial task right now, or None.
 
@@ -1148,7 +1162,7 @@ class TrustState:
         best: Optional[str] = None
         best_trust = -1.0
         for nid in self.node_ids:
-            if not self._is_on_probation_locked(nid):
+            if not self._is_on_probation_locked(nid) or not self._admitted_locked(nid):
                 # Either the anomaly rail has it flagged (never probed) or it is
                 # not quarantined at all (the normal path already has it).
                 continue
@@ -1218,6 +1232,7 @@ class TrustState:
                     anomaly=self._anomaly.get(nid, 0.0),
                 )
                 for nid in self.node_ids
+                if self._admitted_locked(nid)
             ]
             weights = self.optimizer.active_weights()
             chosen, score, ranked = select_edge_node(
@@ -1328,7 +1343,7 @@ class TrustState:
     # ------------------------------------------------------------------ #
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
-            return {
+            snap = {
                 nid: {
                     'trust': round(self.trust_calc.get_score(nid), 4),
                     'claimed_cpu': round(self._claimed_cpu.get(nid, 0.5), 4),
@@ -1346,3 +1361,7 @@ class TrustState:
                 }
                 for nid in self.node_ids
             }
+            if self._admission is not None:     # only when attestation is on
+                for nid, row in snap.items():
+                    row['admitted'] = self._admitted_locked(nid)
+            return snap

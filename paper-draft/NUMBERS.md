@@ -48,15 +48,15 @@ T=0.220.
 > carry Ā ≈ 1.0 beside T < θ) — fixed 2026-09-29.
 
 **Table IV (containment).** `contain_s` medians and ranges.
-**Table 8 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
-**§VII-J (detection).** `attacks classified exactly` / `right family` /
+**Table 9 (service).** The `SERVICE AND FAIRNESS` block, means with 95% t-CIs.
+**§VII-K (detection).** `attacks classified exactly` / `right family` /
 `honest subjects mislabelled` / `classification accuracy` rows.
 
 Statistical treatment: continuous → mean + two-sided 95% Student-t over runs;
 yes/no → k/n + Wilson interval (5/5 = [57%,100%], 0/5 = [0%,43%]); times only
 over runs where the event happened.
 
-## §VII-K — non-functional requirements
+## §VII-L — non-functional requirements
 
 ```bash
 for r in data/runs/treat/*.jsonl; do python3 -m evaluation.nfr_report "$r"; done
@@ -67,7 +67,7 @@ re-dispatch mean 12.9–23.5 ms (max 32.8, n=19–30); ledger overhead
 0.045–0.052 % over 625–661 blocks. Raft 4.3–4.8 ms is the **standalone**
 3-replica cluster, not the controller.
 
-## §VII-L — simulation (labelled as such in the paper)
+## §VII-M — simulation (labelled as such in the paper)
 
 ```bash
 python3 -m evaluation.baseline --runs 30 --csv paper-draft/evidence/baseline_600runs.csv
@@ -116,7 +116,7 @@ Honest dips (`per_run.csv`, `honest_min_trust` < 0.45): scoreonly_t040 r02
 
 The prediction registered before the sweep: `data/theta_sweep_prediction_2026-09-29.txt`.
 
-## §VII-I — data-plane response to a flooding client (Table 9)
+## §VII-J — data-plane response to a flooding client (Table 10)
 
 `tools/regenerate.sh` scores `flood_off` r01–r05 and `flood_on` r02–r05 →
 `evidence/flood/summary_primary.txt`. flood_on r01 is excluded because the host
@@ -128,7 +128,7 @@ success` 98.91 vs 98.79 % (overlap), `tasks served to flooding device(s)` 8951 �
 first 316 s: honest mean **93.0** ms, p95 **141.3** ms (scored 2026-10-18, recorded
 in `data/flood_experiment_2026-10-18/summary_trimmed_on_r01.txt`).
 
-## §VII-K — replicated ledger with a leader kill
+## §VII-L — replicated ledger with a leader kill
 
 `evidence/raft/failover_report.json` (written by `tools/raft_failover_check.py`
 during the run) + `data/raft_failover_2026-10-19/events_raft.jsonl`: leader n3
@@ -252,12 +252,41 @@ fleet); each fails with its fix turned off.
 containment 40.0–69.3 %, exact labels 7/8 in nine runs and 6/8 in one,
 **Spearman ρ = −0.522, p = 0.122, n = 10**. Not supported; claim withdrawn.
 
+## §VII-H and Table 8 — attestation beside behaviour (added 2026-10-22)
+
+25 live runs at `840c58f`, scored against `evidence/attest/attest_2026-10-21.txt`
+(committed and pushed before the runs); outcome in `evidence/attest/attest_2026-10-21_OUTCOME.md`.
+
+```bash
+python3 -m evaluation.attestation_report data/runs \
+    --arms att_off_clean,att_on_clean,att_off_tampered,att_on_tampered,att_on_runtime
+python3 -m evaluation.replicates data/runs \
+    --arms att_off_clean,att_on_clean,att_off_tampered,att_on_tampered,att_on_runtime --out-dir paper-draft/evidence/attest
+```
+
+| Table 8 row | Source | att_off_tampered | att_on_tampered | att_on_runtime |
+|---|---|---|---|---|
+| Admitted | `attestation_summary.txt`, `ever admitted` / `passed attestation` | — | 0/5 | 5/5 |
+| Connections | `connections before contained` (attestation_report) | 17 [8, 25] | 0 | 20 [15, 24] |
+| Contained | `summary.txt` PER ATTACKER `containment` | 10.9 (8.8–32.3) | never | 9.9 (8.9–10.5) |
+| Honest timeouts | `summary.txt` `timeouts` | 24.6 [16.4, 32.8] | 0.0 | 27.6 [22.8, 32.4] |
+| Honest success | `summary.txt` `honest devices: task success` | 99.52 [99.36, 99.69] | 99.98 [99.95, 100] | 99.48 [99.39, 99.57] |
+
+- Per-run connections before containment (att_off_tampered): 25, 17, 6, 18, 17.
+- Cost (`att_on_clean`): fleet admitted by 4.1 [3.9, 4.2] s; 0–3 denied per run; verify
+  median 0.20 ms; honest latency 90.6 [88.8, 92.3] vs 88.5 [87.2, 89.7] ms (`att_off_clean`).
+- 42 post-onset quotes from srv6 in `att_on_runtime`, 0 inside a quarantine, 48.6% of that
+  time quarantined: `attestation_summary.txt`, line `quotes after onset`
+  (`AttestRun.quotes_vs_quarantine`).
+- Staggered admission: `att_on_tampered` r01, srv4 first admitted, 56 ms alone, 28 of the
+  first 40 routes, trust 0.354 (`node_status` at 5.6 s).
+
 ## Test suite
 
 ```bash
 python3 -m pytest tests/ base_model/tests/ -q
 ```
-**1,320 passed, 11 skipped** on `feature/witness` (2026-10-21).
+**1,375 passed, 11 skipped** on `feature/attestation` (2026-10-22).
 
 ## Figures
 
