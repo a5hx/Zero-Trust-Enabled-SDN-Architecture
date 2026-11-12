@@ -176,6 +176,77 @@ def test_only_the_latest_topology_is_pinned(tmp_path):
     assert topos[0]['graph']['run'] == 2
 
 
+def _flood_ring(bus, n=50):
+    for i in range(n):
+        bus.publish('flow_stats', i=i)
+
+
+def test_security_state_survives_eviction_for_a_late_viewer(tmp_path):
+    """A remote viewer opening the dashboard a minute in must still learn who
+    was refused at admission, who is held and who is quarantined -- each of
+    which was said once, long before the history ring's 500 events."""
+    bus = EventBus(record_path=None, history_maxlen=5)
+    bus.publish('topology', graph={'nodes': []})
+    bus.publish('auth_denied', device_id='iot40', source_ip='10.0.0.40', kind='bad_response')
+    bus.publish('auth_denied', device_id='iot1', source_ip='10.0.0.38', kind='ip_pin')
+    bus.publish('witness_hold', node='srv6', action='held')
+    bus.publish('quarantine', node='srv6')
+    bus.publish('identity_unclaimed', devices=['iot38'])
+    _flood_ring(bus)
+
+    hist = bus.history()
+    assert hist[0]['type'] == 'topology'
+    pinned = [(e['type'], e.get('device_id') or e.get('node')) for e in hist[1:-5]]
+    assert pinned == [('auth_denied', 'iot40'), ('auth_denied', 'iot1'),
+                      ('witness_hold', 'srv6'), ('quarantine', 'srv6'),
+                      ('identity_unclaimed', None)]
+
+
+def test_the_last_transition_per_subject_wins(tmp_path):
+    """quarantine -> recovered -> quarantine must backfill as quarantined, and
+    held -> released as released: newest of each, replayed in seq order."""
+    bus = EventBus(record_path=None, history_maxlen=3)
+    bus.publish('topology', graph={'nodes': []})
+    bus.publish('quarantine', node='srv3')
+    bus.publish('recovered', node='srv3')
+    bus.publish('quarantine', node='srv3')
+    bus.publish('witness_hold', node='srv6', action='held')
+    bus.publish('witness_hold', node='srv6', action='released')
+    _flood_ring(bus)
+
+    pinned = [e for e in bus.history() if e['type'] != 'flow_stats']
+    srv3 = [e['type'] for e in pinned if e.get('node') == 'srv3']
+    assert srv3 == ['recovered', 'quarantine']
+    holds = [e['action'] for e in pinned if e['type'] == 'witness_hold']
+    assert holds == ['released']
+
+
+def test_pinned_state_is_not_duplicated_while_in_the_ring(tmp_path):
+    bus = EventBus(record_path=None, history_maxlen=50)
+    bus.publish('topology', graph={'nodes': []})
+    bus.publish('quarantine', node='srv3')
+    assert [e['type'] for e in bus.history()] == ['topology', 'quarantine']
+
+
+def test_a_new_run_drops_the_previous_runs_pinned_state(tmp_path):
+    bus = EventBus(record_path=None, history_maxlen=2)
+    bus.publish('topology', graph={'run': 1})
+    bus.publish('quarantine', node='srv3')
+    _flood_ring(bus, 5)
+    bus.publish('topology', graph={'run': 2})
+    _flood_ring(bus, 5)
+    assert [e['type'] for e in bus.history()] == ['topology', 'flow_stats', 'flow_stats']
+
+
+def test_high_rate_types_are_never_pinned(tmp_path):
+    """route/report/flow_stats are the bulk of the stream; pinning them would
+    turn the bounded backfill into an unbounded one."""
+    from controller.event_bus import _STICKY_KEYED, _STICKY_TYPES
+    for t in ('route', 'report', 'flow_stats', 'port_stats', 'node_status', 'flow_install',
+              'block', 'anomaly', 'route_ignored', 'witness_trial'):
+        assert t not in _STICKY_KEYED and t not in _STICKY_TYPES
+
+
 def test_events_are_recorded_as_replayable_jsonl(tmp_path):
     path = tmp_path / 'events.jsonl'
     bus = EventBus(record_path=str(path))

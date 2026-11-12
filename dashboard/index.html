@@ -297,8 +297,6 @@
   }
   td { padding: 5px 8px; border-bottom: 1px solid #21262d; vertical-align: top; }
   tr.vip td { background: rgba(88,166,255,.05); }
-  tr.flash td { background: rgba(63,185,80,.16); }
-  tr.dying td { background: rgba(248,81,73,.16); text-decoration: line-through; opacity: .6; }
   .m { color: var(--accent); }
   .a { color: var(--good); }
   .num { text-align: right; color: var(--muted); white-space: nowrap; }
@@ -310,7 +308,7 @@
   #nodestruct td .na { color: #4d5560; }
 
   /* ---------- log ---------- */
-  #log { max-height: 260px; overflow: auto; font-size: 11px; }
+  #log, #alerts { max-height: 260px; overflow: auto; font-size: 11px; }
   .ev { padding: 3px 14px; border-bottom: 1px solid #1b2028; display: flex; gap: 8px; }
   .ev .t { color: #6e7681; flex: none; }
   .ev.route .k { color: var(--accent); }
@@ -360,6 +358,55 @@
   .legend b { font-weight: 500; color: var(--text); }
   .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
 
+  /* ---------- witness / security panels ----------
+     Two panels side by side under the main grid. Every row in them is drawn
+     from an event the controller published; a feature that is off publishes
+     nothing, and the panel says "not running" rather than an empty table that
+     reads as "all clear". */
+  .grid2 {
+    display: grid; gap: 12px; padding: 0 12px 12px;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  }
+  @media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } }
+  .sec { margin-bottom: 12px; }
+  .sec:last-child { margin-bottom: 0; }
+  .sec > h3 {
+    margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .kv { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--muted); }
+  .kv b { color: var(--text); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font-size: 10px; padding: 1px 7px; border-radius: 4px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.bad { color: var(--bad); border-color: var(--bad); background: #2d1214; }
+  .chip.good { color: var(--good); border-color: rgba(63,185,80,.55); background: #10241a; }
+  .chip.warn { color: var(--warn); border-color: rgba(210,153,34,.6); background: #2a2210; }
+  .chip.muted { color: var(--muted); }
+  .streak { display: inline-flex; gap: 2px; vertical-align: middle; margin-left: 4px; }
+  .streak i { width: 8px; height: 8px; border-radius: 2px; background: #21262d; border: 1px solid var(--border); }
+  .streak i.on { background: var(--good); border-color: var(--good); }
+  .streak i.fail { background: var(--bad); border-color: var(--bad); }
+  .mini { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .mini td { padding: 3px 6px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  .mini td.k { color: var(--muted); white-space: nowrap; width: 1%; }
+  .offnote { font-size: 11px; color: var(--muted); font-style: italic; }
+  .tag.warn { color: var(--warn); border-color: var(--warn); background: #2a2210; }
+  .tag.good { color: var(--good); border-color: var(--good); background: #10241a; }
+  .ev.witness .k, .ev.witness_hold .k, .ev.witness_trial .k { color: var(--vip); }
+  .ev.witness_hold { background: rgba(188,140,255,.08); }
+  .ev.attestation .k, .ev.auth_denied .k, .ev.ledger_rejected .k { color: var(--bad); }
+  .ev.flood .k, .ev.client_throttled .k { color: var(--warn); }
+  .ev.flood { background: rgba(210,153,34,.08); }
+  .ev.classification .k { color: var(--warn); }
+  .ev.recovered .k { color: var(--good); }
+  .raft { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+          margin: -2px 0 10px; font-size: 11px; color: var(--muted); }
+  .raft b { color: var(--text); font-weight: 600; }
+
   /* Link across to the generated offline report. */
   a.pagelink {
     color: var(--muted); text-decoration: none; font-size: 12px;
@@ -379,6 +426,7 @@
   <span class="pill" id="selection" title="How the winner is chosen among eligible nodes. p2c = power-of-two-choices (starvation-resistant); argmax = winner-take-all. Quarantine still runs first either way.">routing —</span>
   <span class="pill" id="throughput" title="Total measured link throughput across all switch ports (OFPPortStats, real counters)">links —</span>
   <span class="pill" id="dropped" title="Total packets dropped by quarantine drop rules (priority 400, action=drop)">dropped —</span>
+  <span class="pill" id="throttledPill" style="display:none" title="Clients whose new connections are currently metered or dropped by the flood throttle (client_throttled events; each throttle carries its own hard timeout)">throttled —</span>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></span>
   <a class="pagelink" href="/analysis" title="Offline analysis: baselines, significance, scalability, and where the system loses">analysis →</a>
 </header>
@@ -436,9 +484,37 @@
     </div>
 
     <div class="panel">
-      <h2>Events</h2>
+      <h2>Events <span class="note" id="logNote"></span>
+        <span class="spacer"></span>
+        <button class="tamper" id="logToggle" title="Alerts: quarantines, witness, attestation, admission, flood, classification and ledger refusals only -- the routine route/report/rule traffic hidden">alerts only</button>
+      </h2>
       <div id="log"></div>
+      <div id="alerts" style="display:none"><div class="empty">no alerts yet</div></div>
     </div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h2>Switch witness
+      <span class="note">— the switches' own byte counters judged against what
+        clients reported; who the disagreements point at</span>
+    </h2>
+    <div class="body" id="witness"><div class="empty">waiting for the witness…</div></div>
+  </div>
+  <div class="panel">
+    <h2>Security
+      <span class="note">— admission, attestation and the attack labels the
+        classifier has committed to</span>
+    </h2>
+    <div class="body" id="security"><div class="empty">waiting for controller…</div></div>
+  </div>
+  <div class="panel" id="ctrlPanel" style="display:none">
+    <h2>Controllers
+      <span class="note">— the primary's view of each server beside a second,
+        read-only controller judging it from the switches' counters alone</span>
+    </h2>
+    <div class="body" id="controllers"></div>
   </div>
 </div>
 
@@ -451,6 +527,7 @@
     </h2>
     <div class="body">
       <div id="ledgerHead" class="ledgerHead"></div>
+      <div id="ledgerCluster" class="raft"></div>
       <div id="chain" class="chain">
         <div class="empty">waiting for the first block to commit…</div>
       </div>
@@ -505,6 +582,18 @@
 <script>
 'use strict';
 
+// A thrown error in an async boot step otherwise fails silently: the page
+// just sits at "connecting…" with nothing to say why. On a projector, with
+// nobody holding a devtools console open, the header pill is where it shows.
+function showPageError(msg) {
+  const d = document.getElementById('connDot'), t = document.getElementById('connText');
+  if (d) d.className = 'dot down';
+  if (t) { t.textContent = 'page error: ' + String(msg).slice(0, 140); t.title = String(msg); }
+}
+window.addEventListener('error', e => showPageError(e.message));
+window.addEventListener('unhandledrejection', e =>
+  showPageError(e.reason && (e.reason.stack || e.reason.message) || e.reason));
+
 // ---------------------------------------------------------------- state ----
 const S = {
   topo: null,
@@ -513,10 +602,12 @@ const S = {
   status: {},         // srvN -> latest snapshot from `node_status`
   quarantined: new Set(),
   flows: [],          // latest flow table
-  flowsByKey: new Map(),
-  recentInstall: new Set(),
-  recentDelete: new Set(),
   lastRoute: {},      // srvN -> {client, score}
+  // Which rail isolated each quarantined node, read off its `quarantine`
+  // event (trust under the isolation line, Ā over the gate, or both) and the
+  // witness hold. Cleared on `recovered`.
+  qRail: {},
+  clock: 0,           // newest event ts seen -- the replay-safe "now"
   seenSwitches: new Set(),
   dots: [],           // in-flight animated packets
   spawnAcc: new Map(),// path key -> fractional dot accumulator
@@ -1164,8 +1255,12 @@ function renderTrust() {
       <div class="srv">
         <div class="srvHead">
           <span class="srvName">${id}</span>
-          ${q ? '<span class="tag bad">QUARANTINED</span>'
+          ${q ? `<span class="tag bad">QUARANTINED${S.qRail[id] ? ' · ' + S.qRail[id] : ''}</span>`
               : `<span class="tag">EdgeScore ${escore.toFixed(2)}</span>`}
+          ${s.probation ? '<span class="tag warn" title="Quarantined on the trust rail only, Ā under the gate: offered trial tasks to earn its way out">probation</span>' : ''}
+          ${s.witness_held ? '<span class="tag bad" title="Held by the switch witness until it serves its trials in a row">held by witness</span>' : ''}
+          ${s.admitted === true ? '<span class="tag good" title="Attestation: a fresh, matching quote is on file">admitted</span>' : ''}
+          ${s.admitted === false ? '<span class="tag bad" title="Attestation is on and this server holds no valid admission: it gets no traffic">not admitted</span>' : ''}
           ${lying && !q ? '<span class="tag bad">CPU LIE</span>' : ''}
           ${!q && last ? '<span class="tag win">serving</span>' : ''}
         </div>
@@ -1225,14 +1320,8 @@ function renderRules() {
   renderDropped();
 
   const rows = S.flows.map(f => {
-    const key = `${f.dpid}|${f.table}|${f.priority}|${f.match}`;
     const isDrop = (f.actions || '').includes('drop');
-    const cls = [
-      f.is_vip ? 'vip' : '',
-      isDrop ? 'drop' : '',
-      S.recentInstall.has(key) ? 'flash' : '',
-      S.recentDelete.has(key) ? 'dying' : '',
-    ].filter(Boolean).join(' ');
+    const cls = [f.is_vip ? 'vip' : '', isDrop ? 'drop' : ''].filter(Boolean).join(' ');
     return `
       <tr class="${cls}">
         <td class="mono">s${f.dpid - 1}</td>
@@ -1256,6 +1345,416 @@ function renderRules() {
     </table>`;
 }
 
+// ---------------------------------------------- witness & security ----
+// Both panels are folded from events alone. Neither polls an endpoint, so
+// they render identically live and under dashboard/replay.py, which serves
+// none of the controller's state routes.
+//
+// "Off" must not look like "clean". A run without the witness publishes no
+// `witness` event at all, and an empty blame list would read as "nobody
+// misbehaved". So each section stays in a waiting state until its first
+// event, and after FEATURE_GRACE_S of run time with none it says the feature
+// is not running in this run.
+const FEATURE_GRACE_S = 20;
+
+// Plain words for the codes on the wire. Unknown codes are printed raw.
+const AUTH_KIND = {
+  bad_response: 'wrong key (bad challenge response)',
+  ip_pin: 'right key, wrong source address (spoof)',
+  no_challenge: 'no challenge issued',
+  nonce_expired: 'challenge expired',
+};
+const TRIAL_LABEL = {
+  agree_served: 'served (switch and client agree)',
+  agree_failed: 'failed (switch and client agree)',
+  client_fail_served: 'client says failed, switch saw a response',
+  client_ok_unserved: 'client says served, switch saw no response',
+  unseen: 'not seen by the switches',
+};
+
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"]/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+function runAge() { return S.t0 !== undefined ? S.clock - S.t0 : 0; }
+function atRun(ts) { return S.t0 !== undefined ? `${(ts - S.t0).toFixed(0)}s` : '—'; }
+
+const WIT = {
+  verdict: null,      // latest `witness` payload
+  lastBlamed: null,   // JSON of (servers, switches, clients), for change-only logging
+  held: {},           // node -> {since, streak, trials: [pattern...]}
+  released: [],       // {node, ts, trials}
+  trialsJudged: 0,
+};
+
+function witnessIngest(ev) {
+  switch (ev.type) {
+    case 'witness': {
+      WIT.verdict = ev;
+      const key = JSON.stringify([ev.servers, ev.switches, ev.clients]);
+      // The first verdict is logged only if it blames someone.
+      ev._changed = WIT.lastBlamed === null
+        ? [ev.servers, ev.switches, ev.clients].some(a => (a || []).length)
+        : key !== WIT.lastBlamed;
+      WIT.lastBlamed = key;
+      break;
+    }
+    case 'witness_hold':
+      if (ev.action === 'held') {
+        WIT.held[ev.node] = { since: ev.ts, streak: 0, trials: [] };
+        S.qRail[ev.node] = 'witness';
+      } else {
+        const h = WIT.held[ev.node];
+        WIT.released.push({ node: ev.node, ts: ev.ts, trials: h ? h.trials.length : null });
+        if (WIT.released.length > 8) WIT.released.shift();
+        delete WIT.held[ev.node];
+      }
+      break;
+    case 'witness_trial': {
+      WIT.trialsJudged++;
+      const h = WIT.held[ev.node] || (WIT.held[ev.node] = { since: ev.ts, streak: 0, trials: [] });
+      h.streak = ev.streak;
+      h.trials.push(ev.pattern);
+      if (h.trials.length > 12) h.trials.shift();
+      break;
+    }
+  }
+}
+
+function rateChips(names, rates, blamed, label) {
+  const ids = Array.from(new Set([...(names || []), ...Object.keys(rates || {})])).sort(natKeyCmp);
+  if (!ids.length) return '<span class="chip muted">too few judged connections yet</span>';
+  return ids.map(id => {
+    const r = rates && rates[id];
+    const bad = (blamed || []).map(String).includes(String(id));
+    return `<span class="chip${bad ? ' bad' : ''}">${label(id)}${r != null ? ' ' + (r * 100).toFixed(0) + '%' : ''}</span>`;
+  }).join('');
+}
+function natKeyCmp(a, b) {
+  const ka = natKey(String(a)), kb = natKey(String(b));
+  return ka[0] < kb[0] ? -1 : ka[0] > kb[0] ? 1 : ka[1] - kb[1];
+}
+
+function renderWitness() {
+  const box = document.getElementById('witness');
+  if (!box) return;
+  const v = WIT.verdict;
+  if (!v) {
+    box.innerHTML = runAge() > FEATURE_GRACE_S
+      ? '<div class="offnote">The switch witness is not running in this run (no witness events).</div>'
+      : '<div class="empty">waiting for the witness…</div>';
+    return;
+  }
+  const swLabel = d => `s${Number(d) - 1}`;
+  const held = Object.entries(WIT.held).sort((a, b) => natKeyCmp(a[0], b[0]));
+  // What the anomaly gate acts on: the verdict's servers plus every server
+  // the witness holds, whose own verdict lapses once it stops getting traffic
+  // (trust_balancer._witness_gate_verdict). Showing only the verdict would say
+  // "nobody" while a held server is failing its trials.
+  const heldOnly = held.map(h => h[0]).filter(n => !(v.servers || []).includes(n));
+  const blamed = heldOnly.length || ['servers', 'switches', 'clients'].some(k => (v[k] || []).length);
+
+  box.innerHTML = `
+    <div class="sec kv">
+      <span><b>${v.judged}</b> connections judged</span>
+      <span><b>${v.voided}</b> voided (re-steered)</span>
+      <span><b>${v.unseen}</b> unseen</span>
+      <span>verdict at ${atRun(v.ts)}</span>
+    </div>
+    <div class="sec">
+      <h3>Blamed now</h3>
+      <div class="chips">${blamed
+        ? [...(v.servers || []).map(n => `<span class="chip bad">server ${n}</span>`),
+           ...heldOnly.map(n => `<span class="chip bad" title="held: judged on its trial connections only">server ${n} · held</span>`),
+           ...(v.switches || []).map(d => `<span class="chip bad">switch ${swLabel(d)}</span>`),
+           ...(v.clients || []).map(c => `<span class="chip bad">client ${c}</span>`)].join('')
+        : '<span class="chip good">nobody — switches and clients agree</span>'}</div>
+    </div>
+    <div class="sec">
+      <h3>Server failure rate <span style="text-transform:none;letter-spacing:0;font-weight:400">— both parties agree the task failed</span></h3>
+      <div class="chips">${rateChips(v.servers, v.server_rate, v.servers, id => id)}</div>
+    </div>
+    <div class="sec">
+      <h3>Switch &amp; client dispute rate</h3>
+      <div class="chips">${rateChips(v.switches, v.switch_rate, v.switches, swLabel)}</div>
+      <div class="chips" style="margin-top:5px">${
+        Object.keys(v.client_rate || {}).length
+          ? Object.entries(v.client_rate).filter(([d, r]) => r > 0 || (v.clients || []).includes(d))
+              .sort((a, b) => natKeyCmp(a[0], b[0]))
+              .map(([d, r]) => `<span class="chip${(v.clients || []).includes(d) ? ' bad' : ''}">${d} ${(r * 100).toFixed(0)}%</span>`)
+              .join('') || '<span class="chip muted">no client disputes</span>'
+          : '<span class="chip muted">too few judged connections yet</span>'}</div>
+    </div>
+    <div class="sec">
+      <h3>Held by the witness</h3>
+      ${held.length ? `<table class="mini">${held.map(([n, h]) => `
+        <tr><td class="k"><b style="color:var(--text)">${n}</b></td>
+          <td>held since ${atRun(h.since)} · streak <b>${h.streak}</b>
+            <span class="streak">${h.trials.map(p =>
+              `<i class="${p === 'agree_served' ? 'on' : (p === 'agree_failed' ? 'fail' : '')}" title="${esc(TRIAL_LABEL[p] || p)}"></i>`).join('')}</span>
+            · ${h.trials.length} trial(s) judged</td></tr>`).join('')}</table>`
+        : `<div class="offnote">${WIT.released.length || WIT.trialsJudged ? 'nobody held now' : 'nobody held (or the hold is off in this run)'}</div>`}
+      ${WIT.released.length ? `<div class="kv" style="margin-top:6px">released: ${
+        WIT.released.map(r => `<span><b>${r.node}</b> at ${atRun(r.ts)}${r.trials != null ? ` after ${r.trials} trial(s)` : ''}</span>`).join('')}</div>` : ''}
+    </div>`;
+}
+
+const SEC = {
+  attest: {},         // node -> {verdict, detail, mismatched, ts, n}
+  attestSeen: false,
+  denials: [],        // newest last: {device_id, source_ip, kind, reason, ts}
+  admitted: 0,        // baseline arm's auth_admitted count
+  unclaimed: null,    // identity_unclaimed payload
+  labels: {},         // subject -> {kind, attack_type, confidence, rationale, ts}
+  throttled: {},      // client_ip -> {until, mode_applied, offence, rate_pps, ts}
+  floods: {},         // client_ip -> latest flood payload
+  ledgerRejected: [], // newest last
+  routeIgnored: 0,
+};
+
+function securityIngest(ev) {
+  switch (ev.type) {
+    case 'attestation': {
+      SEC.attestSeen = true;
+      const prev = SEC.attest[ev.node];
+      ev._renewal = !!prev && prev.verdict === ev.verdict;
+      SEC.attest[ev.node] = {
+        verdict: ev.verdict, detail: ev.detail, mismatched: ev.mismatched || [],
+        ts: ev.ts, n: (prev ? prev.n : 0) + 1,
+      };
+      break;
+    }
+    case 'auth_denied':
+      SEC.denials.push(ev);
+      if (SEC.denials.length > 20) SEC.denials.shift();
+      break;
+    case 'auth_admitted': SEC.admitted++; break;
+    case 'identity_unclaimed': SEC.unclaimed = ev; break;
+    case 'classification':
+      if (ev.attack_type) {
+        SEC.labels[ev.subject] = {
+          kind: ev.kind, attack_type: ev.attack_type, confidence: ev.confidence,
+          rationale: ev.rationale, ts: ev.ts,
+        };
+      } else {
+        delete SEC.labels[ev.subject];
+      }
+      break;
+    case 'flood': SEC.floods[ev.client_ip] = ev; break;
+    case 'client_throttled':
+      SEC.throttled[ev.client_ip] = {
+        until: ev.until, mode_applied: ev.mode_applied, offence: ev.offence,
+        rate_pps: ev.rate_pps, ts: ev.ts,
+      };
+      break;
+    case 'ledger_rejected':
+      SEC.ledgerRejected.push(ev);
+      if (SEC.ledgerRejected.length > 20) SEC.ledgerRejected.shift();
+      break;
+    case 'route_ignored': SEC.routeIgnored++; break;
+  }
+}
+
+// Throttles carry their own hard timeout on the switch, so "active" is judged
+// against the newest event time rather than the wall clock: under replay the
+// wall clock is days past every `until`.
+function activeThrottles() {
+  return Object.entries(SEC.throttled).filter(([, t]) => t.until > S.clock);
+}
+
+function renderThrottlePill() {
+  const pill = document.getElementById('throttledPill');
+  if (!pill) return;
+  const any = Object.keys(SEC.throttled).length || Object.keys(SEC.floods).length;
+  if (!any) return;
+  pill.style.display = '';
+  const n = activeThrottles().length;
+  pill.innerHTML = `throttled <b style="color:${n ? 'var(--warn)' : 'var(--text)'}">${n}</b> client(s)`;
+}
+
+function renderLogNote() {
+  const note = document.getElementById('logNote');
+  if (note && SEC.routeIgnored) {
+    note.textContent = `— ${SEC.routeIgnored} non-SYN tail(s) of expired connections not routed (route_ignored, counted, not listed)`;
+  }
+}
+
+function renderSecurity() {
+  const box = document.getElementById('security');
+  if (!box) return;
+  const servers = S.topo ? S.topo.nodes.filter(n => n.kind === 'server').map(n => n.id) : Object.keys(S.status);
+  // Attestation is on exactly when node_status carries `admitted`.
+  const anyStatus = Object.values(S.status);
+  const attestOn = SEC.attestSeen || anyStatus.some(s => s.admitted !== undefined);
+
+  const attestRows = attestOn
+    ? `<table class="mini">${servers.sort(natKeyCmp).map(id => {
+        const a = SEC.attest[id];
+        const adm = S.status[id] ? S.status[id].admitted : undefined;
+        const chip = adm === true ? '<span class="chip good">admitted</span>'
+                   : adm === false ? '<span class="chip bad">not admitted</span>'
+                   : '<span class="chip muted">—</span>';
+        const det = a ? `${esc(a.verdict)}${a.mismatched.length ? ' — mismatched <b>' + a.mismatched.map(esc).join(', ') + '</b>' : ''}`
+                      + `${a.detail ? ' — ' + esc(a.detail) : ''} · ${a.n} quote(s), last at ${atRun(a.ts)}`
+                      : 'no quote received';
+        return `<tr><td class="k"><b style="color:var(--text)">${id}</b></td><td>${chip}</td><td>${det}</td></tr>`;
+      }).join('')}</table>`
+    : `<div class="offnote">${runAge() > FEATURE_GRACE_S ? 'Attestation is off in this run.' : 'waiting…'}</div>`;
+
+  const den = SEC.denials.slice().reverse();
+  const denRows = den.length
+    ? `<table class="mini">${den.map(d => `<tr><td class="k">${atRun(d.ts)}</td>
+        <td><b style="color:var(--text)">${esc(d.device_id)}</b> from ${esc(d.source_ip)}</td>
+        <td><span class="chip ${d.kind === 'ip_pin' ? 'bad' : 'warn'}">${esc(AUTH_KIND[d.kind] || d.kind)}</span></td></tr>`).join('')}</table>`
+    : '<div class="offnote">no device refused so far</div>';
+
+  const labels = Object.entries(SEC.labels).sort((a, b) =>
+    (a[1].kind === b[1].kind ? natKeyCmp(a[0], b[0]) : (a[1].kind === 'node' ? -1 : 1)));
+  const labRows = labels.length
+    ? `<table class="mini">${labels.map(([sub, l]) => `<tr>
+        <td class="k"><b style="color:var(--text)">${esc(sub)}</b></td>
+        <td><span class="chip bad">${esc(l.attack_type)}</span></td>
+        <td title="${esc(l.rationale)}">confidence ${l.confidence != null ? l.confidence.toFixed(2) : '?'} · at ${atRun(l.ts)}</td></tr>`).join('')}</table>`
+    : '<div class="offnote">no attack labelled yet</div>';
+
+  const thr = Object.entries(SEC.throttled).sort((a, b) => natKeyCmp(a[0], b[0]));
+  const floodIps = Object.keys(SEC.floods);
+  const thrRows = (thr.length || floodIps.length)
+    ? `<div class="chips">${Array.from(new Set([...floodIps, ...thr.map(t => t[0])])).sort(natKeyCmp).map(ip => {
+        const t = SEC.throttled[ip];
+        const live = t && t.until > S.clock;
+        const f = SEC.floods[ip];
+        return `<span class="chip ${live ? 'warn' : 'muted'}" title="${f ? esc(f.rate_hz + ' req/s, ' + f.ratio + '× expected') : ''}">${ip}${
+          t ? ` · ${live ? 'throttled' : 'was throttled'} (${t.mode_applied}, offence ${t.offence})` : ' · flood tell, not throttled'}</span>`;
+      }).join('')}</div>`
+    : '<div class="offnote">no flood tell so far</div>';
+
+  const un = SEC.unclaimed;
+  const rej = SEC.ledgerRejected.slice().reverse();
+  box.innerHTML = `
+    <div class="sec"><h3>Server attestation</h3>${attestRows}</div>
+    <div class="sec"><h3>Admission refusals</h3>${denRows}
+      ${un ? `<div class="kv" style="margin-top:6px"><span>roster audit at ${un.after_s}s:
+        <b>${(un.devices || []).length}</b> provisioned identity(s) never authenticated —
+        ${(un.devices || []).map(esc).join(', ')}</span></div>` : ''}
+      ${SEC.admitted ? `<div class="kv" style="margin-top:6px"><span><b>${SEC.admitted}</b> admitted without verification (baseline arm)</span></div>` : ''}
+    </div>
+    <div class="sec"><h3>Attack labels</h3>${labRows}</div>
+    <div class="sec"><h3>Flood throttle</h3>${thrRows}</div>
+    ${rej.length ? `<div class="sec"><h3>Trust records refused by the ledger replicas</h3>
+      <table class="mini">${rej.map(r => `<tr><td class="k">${atRun(r.ts)}</td>
+        <td><b style="color:var(--text)">${esc(r.node)}</b> by ${esc(r.replica)}</td>
+        <td>${esc(r.reason)}</td></tr>`).join('')}</table></div>` : ''}`;
+}
+
+// ---------------------------------------------------------- controllers ----
+// The auditor (controller/auditor.py) is a second controller attached to the
+// same switches as an OpenFlow SLAVE: it can read their counters and cannot
+// write a rule. It judges each server on "forward bytes, no full response"
+// only -- it sees no client report and nothing the primary says -- so where
+// the two disagree, one of them is wrong about the data plane, and the
+// auditor's evidence is the switches'. Live only: its status is polled from
+// the URL /api/topology gives; a replay has no auditor to ask.
+const AUD = { url: null, status: null, err: null, lastOk: null, timer: null };
+
+function startAuditorPolling() {
+  const url = S.topo && S.topo.auditor_url;
+  const panel = document.getElementById('ctrlPanel');
+  if (!url) { if (panel) panel.style.display = 'none'; return; }
+  if (panel) panel.style.display = '';
+  AUD.url = url;
+  if (S.replay || AUD.timer !== null) { renderControllers(); return; }
+  pollAuditor();
+  AUD.timer = setInterval(pollAuditor, 2000);
+}
+
+async function pollAuditor() {
+  try {
+    const r = await fetch(AUD.url, { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    AUD.status = await r.json();
+    AUD.err = null;
+    AUD.lastOk = Date.now();
+  } catch (e) {
+    AUD.err = String(e && e.message || e);
+  }
+  renderControllers();
+}
+
+// One server's two views, and whether they contradict each other. Only one
+// combination is an alarm: the switches show a server not serving while the
+// primary still routes to it. The reverse (primary quarantined, switches show
+// it serving) is the primary being stricter -- a slow sybil still answers --
+// and the auditor judges drops only.
+function controllerAgreement(primaryQ, verdict) {
+  if (verdict === 'dropping') {
+    return primaryQ ? ['agree', 'good'] : ['DISAGREE — primary still routes to it', 'bad'];
+  }
+  if (verdict === 'serving') return primaryQ ? ['primary stricter', 'muted'] : ['agree', 'good'];
+  return ['—', 'muted'];
+}
+
+function renderControllers() {
+  const box = document.getElementById('controllers');
+  if (!box || !AUD.url) return;
+  if (S.replay) {
+    box.innerHTML = `<div class="offnote">Auditor: n/a in replay. It records its own
+      verdicts (controller.auditor.record_path); this page polls it live only.</div>`;
+    return;
+  }
+  const st = AUD.status;
+  if (!st) {
+    box.innerHTML = `<div class="offnote">${AUD.err
+      ? `auditor unreachable at ${esc(AUD.url)} — ${esc(AUD.err)}` : 'asking the auditor…'}</div>`;
+    return;
+  }
+  const stale = AUD.err ? ` <span style="color:var(--warn)">— unreachable now (${esc(AUD.err)}), last answer ${
+    Math.round((Date.now() - AUD.lastOk) / 1000)}s ago</span>` : '';
+  const nSw = Object.keys(st.switches || {}).length;
+  const servers = Object.keys(st.nodes || {}).sort(natKeyCmp);
+  const rows = servers.map(id => {
+    const a = st.nodes[id];
+    const p = S.status[id];
+    const q = p ? !!p.quarantined : S.quarantined.has(id);
+    const [agree, cls] = controllerAgreement(q, a.verdict);
+    const pv = !p ? '<span class="chip muted">—</span>'
+      : q ? `<span class="chip bad">quarantined${S.qRail[id] ? ' · ' + esc(S.qRail[id]) : ''}</span>`
+          : `<span class="chip">routing · T ${p.trust.toFixed(2)}</span>`;
+    const av = a.verdict === 'dropping'
+      ? `<span class="chip bad">not serving · ${(a.rate * 100).toFixed(0)}% unanswered</span>`
+      : a.verdict === 'serving'
+        ? `<span class="chip good">serving · ${(a.rate * 100).toFixed(0)}% unanswered</span>`
+        : `<span class="chip muted">${esc(a.verdict)}${a.window ? ' (' + a.window + ' judged)' : ''}</span>`;
+    return `<tr><td class="k"><b style="color:var(--text)">${id}</b></td><td>${pv}</td><td>${av}</td>
+      <td><span class="chip ${cls}">${agree}</span></td></tr>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="sec kv">
+      <span>auditor: <b>${st.switches_slave}</b>/${nSw} switch(es) confirmed it read-only (OpenFlow SLAVE)</span>
+      <span><b>${st.packet_ins_ignored}</b> PacketIn(s) ignored</span>
+      <span><b>${st.judged}</b> connections judged, ${st.voided} voided</span>
+      ${st.rewrite_mismatch ? `<span style="color:var(--bad)"><b>${st.rewrite_mismatch}</b> rewrite(s) whose ip and mac name different servers</span>` : ''}
+      ${stale}
+    </div>
+    <table class="mini">
+      <tr><td class="k"></td><td class="k">primary controller</td><td class="k">auditor (switch counters only)</td><td class="k"></td></tr>
+      ${rows}
+    </table>`;
+}
+
+let _secTimer = null;
+function scheduleSecurityRender() {
+  if (_secTimer !== null) return;
+  _secTimer = setTimeout(() => {
+    _secTimer = null;
+    renderWitness();
+    renderSecurity();
+    renderControllers();
+    renderThrottlePill();
+    renderLogNote();
+  }, 400);
+}
+
 // ------------------------------------------------------------------ log ----
 function log(ev) {
   const box = document.getElementById('log');
@@ -1269,10 +1768,16 @@ function log(ev) {
              `decided in ${ev.decision_ms} ms)`;
       break;
     case 'route_denied': desc = `${ev.client_ip}:${ev.client_port} DENIED — ${ev.reason}`; break;
-    case 'quarantine':
-      desc = `<b>${ev.node}</b> isolated — trust ${ev.trust} (&lt; ${ev.isolation_threshold}) ` +
-             `or Ā ${ev.anomaly} (≥ ${ev.anomaly_gate})`;
+    case 'quarantine': {
+      // Name the rail that fired, not both conditions as an "or": a gate
+      // quarantine of a node with trust 0.79 printed as "trust 0.79 (< 0.3)".
+      const why = [];
+      if (ev.trust < ev.isolation_threshold) why.push(`trust ${ev.trust} &lt; ${ev.isolation_threshold}`);
+      if (ev.anomaly >= ev.anomaly_gate) why.push(`Ā ${ev.anomaly} ≥ gate ${ev.anomaly_gate}`);
+      desc = `<b>${ev.node}</b> isolated — ${why.join(' and ') || `trust ${ev.trust}, Ā ${ev.anomaly}`}`
+           + (S.qRail[ev.node] === 'witness' ? ' (held by the witness)' : '');
       break;
+    }
     case 'recovered':
       desc = `<b>${ev.node}</b> released — trust ${ev.trust} (≥ ${ev.isolation_threshold}) ` +
              `and Ā ${ev.anomaly} (&lt; ${ev.anomaly_gate})`;
@@ -1291,25 +1796,208 @@ function log(ev) {
       desc = `weights → [${(ev.next_weights || []).map(x => x.toFixed(2)).join(', ')}] · ` +
              `reward ${ev.reward != null ? ev.reward.toFixed(3) : '?'} (${ev.outcomes} outcomes)`;
       break;
+    case 'reroute':
+      desc = `${ev.client_ip}:${ev.client_port} re-steered <b>${ev.from_node}</b> → `
+           + `<b>${ev.to_node}</b> (${ev.resteer_ms} ms after collapse)`;
+      break;
+    case 'topology': desc = `topology: ${(ev.graph && ev.graph.nodes || []).length} nodes`; break;
+    case 'topology_links': desc = `link parameters reported by the harness`; break;
+    case 'arm': desc = `arm <b>${ev.arm}</b> (${ev.strategy})`; break;
+    case 'auth_admitted':
+      desc = `${ev.device_id} admitted from ${ev.source_ip}`
+           + (ev.source_matches_identity === false ? ' — <b>source does not match identity</b>' : '');
+      break;
+    case 'auth_denied':
+      desc = `<b>${ev.device_id}</b> from ${ev.source_ip} REFUSED — `
+           + `${AUTH_KIND[ev.kind] || ev.kind || 'denied'}`;
+      break;
+    case 'identity_unclaimed':
+      desc = `${(ev.devices || []).length} provisioned identity(s) never authenticated `
+           + `after ${ev.after_s}s: ${(ev.devices || []).join(', ')}`;
+      break;
+    case 'attestation':
+      // Re-quotes repeat the standing verdict every renewal period; only a
+      // change of verdict is logged.
+      if (ev._renewal) return;
+      desc = `<b>${ev.node}</b> ${ev.verdict}`
+           + (ev.mismatched && ev.mismatched.length ? ` — mismatched ${ev.mismatched.join(', ')}` : '')
+           + (ev.detail ? ` — ${esc(ev.detail)}` : '');
+      break;
+    case 'classification':
+      desc = ev.attack_type
+        ? `<b>${ev.subject}</b> classified <b>${ev.attack_type}</b> `
+          + `(confidence ${ev.confidence != null ? ev.confidence.toFixed(2) : '?'})`
+        : `<b>${ev.subject}</b> — classifier withdrew its label`;
+      break;
+    case 'flood':
+      desc = `<b>${ev.client_ip}</b> flooding — ${ev.rate_hz} req/s, `
+           + `${ev.ratio != null ? ev.ratio + '×' : '?×'} the expected ${ev.expected_rate_hz} req/s`;
+      break;
+    case 'client_throttled':
+      desc = `<b>${ev.client_ip}</b> throttled for ${ev.duration_s}s (offence ${ev.offence}, `
+           + `${ev.mode_applied}${ev.mode_applied === 'drop' ? '' : ' at ' + ev.rate_pps + ' conn/s'})`;
+      break;
+    case 'witness':
+      // Restated every few polls; logged only when who is blamed changes.
+      if (!ev._changed) return;
+      desc = ['servers', 'switches', 'clients']
+        .map(k => `${k}: ${(ev[k] || []).length ? '<b>' + ev[k].join(', ') + '</b>' : 'none'}`)
+        .join(' · ') + ` (${ev.judged} judged)`;
+      break;
+    case 'witness_hold':
+      desc = ev.action === 'held'
+        ? `<b>${ev.node}</b> HELD by the witness until it serves its trials`
+        : `<b>${ev.node}</b> released by the witness after its trials`
+          + (ev.forgotten != null ? ` (${ev.forgotten} judged connection(s) forgotten)` : '');
+      break;
+    case 'witness_trial':
+      desc = `trial on <b>${ev.node}</b>: ${TRIAL_LABEL[ev.pattern] || ev.pattern}, streak ${ev.streak}`;
+      break;
+    case 'ledger_rejected':
+      desc = `replica ${ev.replica} refused the trust record for <b>${ev.node}</b> — ${esc(ev.reason)}`;
+      break;
     default: return;
   }
 
+  const html = `<span class="t">${time}</span><span class="k">${ev.type}</span><span class="d">${desc}</span>`;
   const div = document.createElement('div');
   div.className = 'ev ' + ev.type;
-  div.innerHTML = `<span class="t">${time}</span><span class="k">${ev.type}</span><span class="d">${desc}</span>`;
+  div.innerHTML = html;
   box.prepend(div);
   while (box.children.length > 200) box.lastChild.remove();
+
+  // Alerts get their own list with its own cap, so forty clients' routine
+  // traffic cannot push a quarantine off the bottom a second after it lands.
+  // `anomaly` restates itself every monitor cycle while a tell holds, so in
+  // this list it appears once per node per ANOMALY_ALERT_GAP_S.
+  let alert = !ROUTINE_TYPES.has(ev.type);
+  if (ev.type === 'anomaly') {
+    const last = _lastAnomalyAlert[ev.node];
+    alert = last === undefined || ev.ts - last >= ANOMALY_ALERT_GAP_S;
+    if (alert) _lastAnomalyAlert[ev.node] = ev.ts;
+  }
+  if (alert) {
+    const ab = document.getElementById('alerts');
+    if (!_alertsSeen) { ab.innerHTML = ''; _alertsSeen = true; }
+    const a = document.createElement('div');
+    a.className = 'ev ' + ev.type;
+    a.innerHTML = html;
+    ab.prepend(a);
+    while (ab.children.length > 200) ab.lastChild.remove();
+  }
 }
 
+const ROUTINE_TYPES = new Set([
+  'route', 'report', 'flow_install', 'flow_delete', 'block', 'optimizer',
+  'switch_up', 'topology', 'topology_links', 'auth_admitted', 'witness_trial',
+]);
+let _alertsSeen = false;
+const ANOMALY_ALERT_GAP_S = 15;
+const _lastAnomalyAlert = {};
+let _alertsOnly = false;
+function toggleAlerts() {
+  _alertsOnly = !_alertsOnly;
+  document.getElementById('log').style.display = _alertsOnly ? 'none' : '';
+  document.getElementById('alerts').style.display = _alertsOnly ? '' : 'none';
+  document.getElementById('logToggle').textContent = _alertsOnly ? 'all events' : 'alerts only';
+}
+document.getElementById('logToggle').onclick = toggleAlerts;
+
 // --------------------------------------------------------------- events ----
+// Rebuild the map from a `topology` event and forget per-run state. Called
+// for the recording's own first event (harmless: nothing has accumulated yet)
+// and on every loop of a looped replay.
+function resetForTopology(graph, ts) {
+  // Merged, as topology_links is: the boot-time /api/topology payload may
+  // carry fields (vip, weights, thresholds) the recorded graph also has.
+  S.topo = Object.assign({}, S.topo || {}, graph);
+  S.nodes = {};
+  S.topo.nodes.forEach(n => S.nodes[n.id] = n);
+  S.pos = layout(S.topo);
+  S.status = {};
+  S.quarantined = new Set();
+  S.qRail = {};
+  S.lastRoute = {};
+  S.routeCounts = {};
+  S.routeTotal = 0;
+  S.t0 = ts;
+  S.clock = ts;
+  WIT.verdict = null; WIT.lastBlamed = null; WIT.held = {}; WIT.released = []; WIT.trialsJudged = 0;
+  SEC.attest = {}; SEC.attestSeen = false; SEC.denials = []; SEC.admitted = 0;
+  SEC.unclaimed = null; SEC.labels = {}; SEC.throttled = {}; SEC.floods = {};
+  SEC.ledgerRejected = []; SEC.routeIgnored = 0;
+  // Block indices restart with the run; a looped replay would otherwise
+  // append block #1 after the last pass's tail and report a broken link. The
+  // controller's own verdict and chain length are kept -- they describe the
+  // live ledger, not this pass over the stream.
+  LEDGER.blocks = []; LEDGER.pending = 0; LEDGER.rejected = 0; LEDGER.tampered = null;
+  scheduleLedgerRender();
+  drawTopology();
+  renderNodeStructure();
+  renderTrust();
+  renderBalance();
+  startAuditorPolling();
+  scheduleSecurityRender();
+}
+
 function handle(ev) {
   // Time-series binning runs on every event, before the per-panel switch --
   // it consumes several types the panels below ignore ('report' in
   // particular, which is where PDR and task delay come from).
   chartIngest(ev);
   scheduleChartRender();
+  if (typeof ev.ts === 'number') {
+    if (S.t0 === undefined) S.t0 = ev.ts;
+    if (ev.ts > S.clock) S.clock = ev.ts;
+  }
 
   switch (ev.type) {
+    // First event of every recording, and re-sent when a replay loops. Redraw
+    // from it and drop everything learned from the previous pass: a looped
+    // replay otherwise keeps the last pass's quarantines, holds and labels on
+    // screen over a run in which none of them has happened yet.
+    case 'topology':
+      if (ev.graph && ev.graph.nodes) {
+        resetForTopology(ev.graph, ev.ts);
+      }
+      break;
+
+    case 'witness':
+    case 'witness_hold':
+    case 'witness_trial':
+      witnessIngest(ev);
+      if (ev.type === 'witness_hold') renderTrust();
+      scheduleSecurityRender();
+      break;
+
+    case 'attestation':
+    case 'auth_denied':
+    case 'auth_admitted':
+    case 'identity_unclaimed':
+    case 'classification':
+    case 'flood':
+    case 'client_throttled':
+    case 'ledger_rejected':
+      securityIngest(ev);
+      scheduleSecurityRender();
+      break;
+
+    // Dozens per run, all the same story (a FIN after a trial's rules
+    // expired). Counted in the Events header, never listed.
+    case 'route_ignored':
+      securityIngest(ev);
+      scheduleSecurityRender();
+      return;
+
+    case 'recovered':
+      S.quarantined.delete(ev.node);
+      delete S.qRail[ev.node];
+      paintNodes();
+      rebuildPaths(S.flows);
+      renderTrust();
+      renderBalance();
+      break;
+
     case 'switch_up':
       S.seenSwitches.add(ev.dpid);
       paintNodes();
@@ -1359,6 +2047,9 @@ function handle(ev) {
       renderTrust();
       renderBalance();   // quarantine state feeds the starved/served labels
       paintNodes();
+      // Once per monitor cycle: re-judges the "feature not running" grace
+      // period and expires throttles, neither of which has an event of its own.
+      scheduleSecurityRender();
       return;   // too frequent to log
 
     case 'route': {
@@ -1387,12 +2078,20 @@ function handle(ev) {
       renderThroughput();
       return;   // too frequent to log
 
-    case 'quarantine':
+    case 'quarantine': {
+      // Which rail fired. A held node is the witness's doing even when its
+      // trust is also low, so the hold label is not overwritten.
+      const rails = [];
+      if (ev.trust < ev.isolation_threshold) rails.push('trust rail');
+      if (ev.anomaly >= ev.anomaly_gate && ev.anomaly_rail_enforced !== false) rails.push('anomaly gate');
+      if (S.qRail[ev.node] !== 'witness') S.qRail[ev.node] = rails.join(' + ') || 'gate';
       S.quarantined.add(ev.node);
+      renderTrust();
       paintNodes();
       rebuildPaths(S.flows);
       renderBalance();
       break;
+    }
 
     case 'flow_delete':
       // Drop this node's VIP rules from the panel immediately rather than
@@ -2211,6 +2910,8 @@ const LEDGER = {
   maxPerBlock: null,   // config value from /ledger/verify; null on replay
   observedMax: 0,      // largest block seen, the replay fallback for the above
   tampered: null,      // index of the block this page corrupted, or null
+  status: null,        // latest GET /ledger/status; null = not asked (replay) or unreachable
+  statusErr: false,    // the last poll failed
 };
 const MAX_BLOCKS = 40;         // keep a bounded tail; a run commits hundreds
 const SHOW_BLOCKS = 10;
@@ -2282,6 +2983,7 @@ function renderLedger() {
         ? `<span class="vpill ok">✓ controller: chain valid</span>`
         : `<span class="vpill bad">✗ controller: chain invalid</span>`);
 
+  renderLedgerBackend();
   head.innerHTML = `<span>${total}</span>${browserPill}${ctrlPill}`
     + (LEDGER.rejected ? `<span style="color:var(--bad)">${LEDGER.rejected} rejected</span>` : '')
     + `<span>SHA-256 recomputed in this page from the block header</span>`;
@@ -2367,6 +3069,61 @@ function renderLedger() {
 
   const btn = document.getElementById('tamperBtn');
   if (btn) btn.onclick = toggleTamper;
+}
+
+// Which ledger is live, from GET /ledger/status.
+//
+// The replicated view is drawn ONLY when the controller itself reports
+// `backend: 'raft_remote'`. A run on the single local ledger must never show
+// a cluster view on this panel: that would claim consensus
+// that is not running (tests/test_dashboard_ledger.py pins this -- every
+// consensus word on the panel lives in the function below). Under replay
+// the endpoint is not asked at all, and the strip says so.
+function renderLedgerBackend() {
+  const box = document.getElementById('ledgerCluster');
+  if (!box) return;
+  const st = LEDGER.status;
+  if (S.replay) {
+    box.innerHTML = '<span>ledger backend: n/a in replay</span>';
+  } else if (!st) {
+    box.innerHTML = LEDGER.statusErr ? '<span>ledger backend: status unavailable</span>' : '';
+  } else if (st.backend === 'raft_remote') {
+    box.innerHTML = raftClusterHtml(st);
+  } else {
+    box.innerHTML = `<span>ledger backend: <b>${esc(st.backend)}</b> — one copy, in the controller process</span>`;
+  }
+}
+
+function raftClusterHtml(st) {
+  const reps = Object.entries(st.replicas || {}).sort((a, b) => natKeyCmp(a[0], b[0]));
+  const lastTerm = LEDGER.blocks.length ? LEDGER.blocks[LEDGER.blocks.length - 1].raft_term : null;
+  const lastProposer = LEDGER.blocks.length ? LEDGER.blocks[LEDGER.blocks.length - 1].proposer_id : null;
+  const chips = reps.map(([rid, addr]) => {
+    const lead = rid === st.leader_hint;
+    return `<span class="chip${lead ? ' good' : ''}" title="${esc(addr)}">${esc(rid)}${lead ? ' · leader' : ''}</span>`;
+  }).join('');
+  return `<span>Raft cluster, <b>${reps.length}</b> replicas:</span><span class="chips">${chips}</span>`
+    + (st.leader_hint ? '' : '<span style="color:var(--warn)">no leader known — commits queue until one is elected</span>')
+    + (lastTerm != null ? `<span>term <b>${lastTerm}</b> on the newest block${lastProposer ? ' (' + esc(lastProposer) + ')' : ''}</span>` : '')
+    + `<span>queue <b>${st.queue_depth != null ? st.queue_depth : '?'}</b></span>`
+    + `<span>retries <b>${st.retries != null ? st.retries : 0}</b></span>`
+    + `<span>mirror ${st.mirror_chain_length != null ? st.mirror_chain_length : '?'} blocks`
+      + `${st.mirror_resyncs ? ', ' + st.mirror_resyncs + ' resync(s)' : ''}</span>`
+    + (st.verifying
+        ? `<span>replicas re-verify every record: <b style="color:${st.rejected_records ? 'var(--bad)' : 'var(--text)'}">${st.rejected_records || 0}</b> record(s), ${st.rejected_batches || 0} batch(es) refused</span>`
+        : '<span>replicas do not re-verify records</span>')
+    + (st.last_error ? `<span style="color:var(--warn)" title="${esc(st.last_error)}">last error: ${esc(String(st.last_error).slice(0, 60))}</span>` : '');
+}
+
+async function pollLedgerStatus() {
+  try {
+    const r = await fetch('/ledger/status');
+    LEDGER.status = r.ok ? await r.json() : null;
+    LEDGER.statusErr = !r.ok;
+  } catch (e) {
+    LEDGER.statusErr = true;     // keep the last good status on screen
+  }
+  renderLedgerBackend();
 }
 
 // Edit a block IN THIS PAGE'S COPY and let the verification cascade.
@@ -2667,6 +3424,7 @@ async function boot() {
   drawTopology();
   renderNodeStructure();
 
+  startAuditorPolling();
   document.getElementById('vip').textContent = `VIP ${S.topo.vip}`;
   S.weights = S.topo.weights;
   updateFormula();
@@ -2718,6 +3476,12 @@ async function boot() {
         renderLedger();
       }
     } catch (e) { /* controller may not expose the ledger */ }
+    // Backend and, when replicated, cluster health. Every 2 s so a replica
+    // going away (and the leader moving) shows while the demo is running.
+    pollLedgerStatus();
+    setInterval(pollLedgerStatus, 2000);
+  } else {
+    renderLedgerBackend();
   }
 
   const es = new EventSource('/api/events');

@@ -52,6 +52,33 @@ _HISTORY_MAXLEN = 500
 # rather than erroring.
 _STICKY_TYPES = ('topology',)
 
+# State-bearing events pinned per SUBJECT: the newest event of each type for
+# each value of the named field (None = one per type). Same failure as the
+# roster above, one panel down: a viewer who opens the dashboard a minute into
+# a run -- every remote laptop at a review demo -- would otherwise never learn
+# that iot40 was refused at admission, that srv6 is held by the witness or
+# that srv3 is quarantined, because each of those was said once, long ago.
+#
+# Replaying the newest of each is enough to rebuild current state because the
+# backfill is ordered by seq: for a node that was quarantined, recovered and
+# quarantined again, the newest `recovered` sorts before the newest
+# `quarantine`, so the last transition wins -- as it did live.
+_STICKY_KEYED = {
+    'topology_links': None,
+    'arm': None,
+    'witness': None,
+    'identity_unclaimed': None,
+    'quarantine': 'node',
+    'recovered': 'node',
+    'witness_hold': 'node',
+    'attestation': 'node',
+    'classification': 'subject',
+    'auth_denied': 'device_id',
+    'flood': 'client_ip',
+    'client_throttled': 'client_ip',
+    'ledger_rejected': 'node',
+}
+
 # Per-subscriber queue depth. At ~20 events/sec (12 IoT clients at 1Hz plus
 # flow-stats and node-status polls) this is several seconds of slack before a
 # stalled reader starts losing events.
@@ -69,7 +96,7 @@ class EventBus:
     ) -> None:
         self._lock = threading.Lock()
         self._history: Deque[Dict[str, Any]] = deque(maxlen=history_maxlen)
-        self._sticky: Dict[str, Dict[str, Any]] = {}
+        self._sticky: Dict[Any, Dict[str, Any]] = {}
         self._subscribers: List[queue.Queue] = []
         self._subscriber_maxsize = subscriber_maxsize
         self._seq = 0
@@ -114,7 +141,14 @@ class EventBus:
             event['seq'] = self._seq
             self._history.append(event)
             if event_type in _STICKY_TYPES:
+                if event_type == 'topology':
+                    # A new run: the previous run's per-subject state is not
+                    # this run's and must not be backfilled into it.
+                    self._sticky = {}
                 self._sticky[event_type] = event
+            elif event_type in _STICKY_KEYED:
+                field = _STICKY_KEYED[event_type]
+                self._sticky[(event_type, None if field is None else str(fields.get(field)))] = event
             subscribers = list(self._subscribers)
 
         for q in subscribers:

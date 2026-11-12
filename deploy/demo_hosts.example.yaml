@@ -1,0 +1,38 @@
+# deploy/demo_hosts.example.yaml -- every address in the multi-laptop review
+# demo, in one place. Copy to deploy/demo_hosts.yaml (gitignored: hotspot
+# addresses change every session) and fill in each laptop's address on the
+# phone hotspot:
+#   Windows:  ipconfig            (the Wi-Fi adapter's IPv4 address)
+#   macOS:    ipconfig getifaddr en0
+#   Linux:    ip -br addr
+#
+# Then, on laptop A (inside WSL):
+#   python3 tools/demo_hosts.py              # writes deploy/demo/
+#   python3 tools/demo_hosts.py --check      # every role reachable, a leader elected
+#
+# Roles:
+#   controller   laptop A: the WSL laptop running Mininet + the primary
+#                controller. Its address here is the WINDOWS host's hotspot
+#                address (what other laptops reach through portproxy_A.ps1).
+#   n1, n2, n3   ledger replicas, one per laptop. `os` picks the launch
+#                script: windows -> .ps1, linux/mac -> .sh
+#   auditor      optional: the read-only second controller (macOS laptop).
+
+controller:
+  host: 192.168.43.10
+
+replicas:
+  n1: {host: 192.168.43.11, os: windows}
+  n2: {host: 192.168.43.12, os: windows}
+  n3: {host: 192.168.43.13, os: linux}
+
+# auditor: {host: 192.168.43.14, os: mac}
+
+# Defaults; any replica entry may override http_port / raft_port (only needed
+# when two replicas share a machine, e.g. a rehearsal on one laptop).
+ports:
+  replica_http: 9101
+  replica_raft: 9001
+  dashboard: 8081
+  auditor_ofp: 6654
+  auditor_http: 8083

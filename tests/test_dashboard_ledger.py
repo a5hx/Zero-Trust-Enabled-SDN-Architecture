@@ -14,8 +14,9 @@ independent check is the point -- so what is pinned is that they AGREE, over
 real blocks including the genesis one, whose integral float timestamp is the
 case a naive JSON.stringify gets wrong.
 
-`quickjs` is optional; where it is missing these tests skip rather than fail,
-the same way the Mininet-dependent tests do.
+`quickjs` is optional; where it is missing the same evaluation runs on node
+(tests/dashboard_js.NodeContext), and only where both are missing do these
+tests skip, the same way the Mininet-dependent tests do.
 """
 
 import hashlib
@@ -53,7 +54,7 @@ def js_context():
     try:
         import quickjs
     except ImportError:                      # pragma: no cover - env dependent
-        raise unittest.SkipTest('quickjs not installed; cannot execute page JS')
+        quickjs = None
 
     src = source()
     m = re.search(r"<script>\n'use strict';\n(.*)</script>", src, re.S)
@@ -82,7 +83,7 @@ def js_context():
       getElementById: function(id){ return __els[id] || (__els[id] = __mk(id)); },
       createElement: function(){ return __mk('_new'); },
       body: { appendChild: function(){} } };
-    var window = { innerWidth: 1600 };
+    var window = { innerWidth: 1600, addEventListener: function(){} };
     var location = { search: '', port: '8081' };
     function URLSearchParams(){ return { has: function(){ return false; } }; }
     function fetch(){ return new Promise(function(){}); }
@@ -92,7 +93,13 @@ def js_context():
     var console = { error: function(){}, log: function(){} };
     var performance = { now: function(){ return 0; } };
     """
-    ctx = quickjs.Context()
+    if quickjs is not None:
+        ctx = quickjs.Context()
+    else:
+        # node is the more common interpreter; NodeContext skips if it is
+        # missing too.
+        from tests.dashboard_js import NodeContext
+        ctx = NodeContext()
     ctx.eval(shim)
     ctx.eval(m.group(1))
     return ctx
@@ -358,19 +365,44 @@ class TestLedgerPanelStructure(unittest.TestCase):
         self.assertIn('controller: chain valid', src)
         self.assertIn('browser:', src)
 
-    def test_no_raft_consensus_is_claimed_on_the_live_panel(self):
-        """docs/RAFT.md: "Nothing in the running controller uses this yet."
+    def test_raft_wording_appears_only_when_the_backend_is_replicated(self):
+        """Raft is wired now (ledger.backend: raft_remote), but it is opt-in:
+        the default run is still TimingCommitBackend(LocalLedgerBackend()) --
+        one copy, raft_term pinned to 0. A leader/term/quorum display on such
+        a run would assert consensus that is not running.
 
-        The live path is TimingCommitBackend(LocalLedgerBackend()) -- single
-        replica, raft_term pinned to 0. A leader/term/quorum display next to
-        live charts would assert consensus that is not running.
+        So every consensus word on the panel must live inside
+        raftClusterHtml(), and that function must be reached only from the
+        branch where GET /ledger/status itself reported 'raft_remote'.
         """
         src = source()
         panel = src[src.index('// ---------------------------------------------------------- trust ledger'):
                     src.index('// -------------------------------------------------------- scaling panel')]
-        for claim in ('leader', 'quorum', 'election', 'follower', 'candidate'):
-            self.assertNotIn(claim, panel.lower(),
-                             f'ledger panel references RAFT concept {claim!r}')
+        raft_fn = panel[panel.index('function raftClusterHtml('):
+                        panel.index('async function pollLedgerStatus(')]
+        outside = panel.replace(raft_fn, '')
+        for claim in ('leader', 'quorum', 'election', 'follower', 'candidate', 'raft cluster'):
+            self.assertNotIn(claim, outside.lower(),
+                             f'ledger panel references RAFT concept {claim!r} outside '
+                             f'the raft_remote branch')
+        self.assertIn('leader', raft_fn)       # the branch does say it
+
+        # The one call site is guarded by the backend the controller reported.
+        calls = [m.start() for m in re.finditer(r'(?<!function )raftClusterHtml\(', src)]
+        self.assertEqual(len(calls), 1)
+        guard = src[max(0, calls[0] - 120):calls[0]]
+        self.assertIn("st.backend === 'raft_remote'", guard)
+
+    def test_replay_never_polls_the_ledger_status(self):
+        """replay.py's throwaway TrustState would answer /ledger/status with
+        `{backend: 'local', chain_length: 1}` -- a claim about an empty
+        ledger, not the recording's. The strip says n/a instead."""
+        src = source()
+        boot = src[src.index("// The controller's own verdict"):
+                   src.index("const es = new EventSource")]
+        guarded = boot[boot.index('if (!S.replay)'):boot.index('} else {')]
+        self.assertIn('pollLedgerStatus()', guarded)
+        self.assertIn('n/a in replay', src)
 
     def test_the_tamper_demo_cannot_touch_the_real_ledger(self):
         """A demo that mutated real state to prove immutability would refute

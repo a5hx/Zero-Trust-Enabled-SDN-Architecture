@@ -310,6 +310,18 @@ def _device_roster(cfg: Dict[str, Any]) -> Dict[str, str]:
     # hardware. Still {} when neither names any device.
     return Inventory.from_config(cfg).roster()
 
+def auditor_status_url(cfg: Dict[str, Any]) -> Optional[str]:
+    """The auditor's GET /auditor/status URL as a dashboard viewer must reach
+    it, or None when no auditor is configured. `status_url` overrides; else it
+    is built from `address` and `http_port`."""
+    block = (cfg.get('controller') or {}).get('auditor') or {}
+    if block.get('status_url'):
+        return str(block['status_url'])
+    if not block.get('address'):
+        return None
+    return f"http://{block['address']}:{int(block.get('http_port', 8083))}/auditor/status"
+
+
 # Overridable so tests / alternate demo scales can point at a different file
 # without editing code.
 _CONFIG_ENV_VAR = 'ZTSDN_CONFIG'
@@ -2098,6 +2110,10 @@ class TrustBalancerApp(app_manager.OSKenApp):
             # Phase 6: whether the replicas re-verify trust records.
             **({'ledger_verify': True}
                if (self.cfg.get('ledger') or {}).get('verify') else {}),
+            # The read-only second controller (controller/auditor.py), only
+            # when configured: where the dashboard polls its verdicts.
+            **({'auditor_url': auditor_status_url(self.cfg)}
+               if auditor_status_url(self.cfg) else {}),
         }
 
     def record_link_params(self, links: List[Dict[str, Any]]) -> int:

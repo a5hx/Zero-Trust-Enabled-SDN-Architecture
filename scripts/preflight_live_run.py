@@ -96,7 +96,12 @@ def check_disk(events_path: str) -> None:
 def check_ports(cfg: dict) -> None:
     print("==> Ports")
     api_port = int(cfg['controller']['api_port'])
-    for port, what in ((6653, 'OpenFlow'), (api_port, 'northbound API + dashboard')):
+    checks = [(6653, 'OpenFlow'), (api_port, 'northbound API + dashboard')]
+    aud = (cfg['controller'].get('auditor') or {})
+    if aud.get('address') and aud.get('launch_local'):
+        checks += [(int(aud.get('ofp_port', 6654)), 'auditor OpenFlow'),
+                   (int(aud.get('http_port', 8083)), 'auditor status API')]
+    for port, what in checks:
         with socket.socket() as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:

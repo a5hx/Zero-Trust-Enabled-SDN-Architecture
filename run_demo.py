@@ -456,6 +456,26 @@ def _archive_previous_recording(events_path: str,
     return dst
 
 
+def _auditor_record_path(cfg: Dict[str, Any]) -> str:
+    block = (cfg.get('controller') or {}).get('auditor') or {}
+    return block.get('record_path', 'data/events_auditor.jsonl')
+
+
+def _start_local_auditor(cfg: Dict[str, Any], env: Dict[str, str]):
+    """Start controller/auditor.py beside the primary when the config asks
+    (`controller.auditor.launch_local: true`, with `address` set so the
+    switches are given it). Returns the Popen, or None."""
+    block = (cfg.get('controller') or {}).get('auditor') or {}
+    if not (block.get('launch_local') and block.get('address')):
+        return None
+    cmd = [sys.executable, '-m', 'controller.osken_manager',
+           '--ofp-port', str(int(block.get('ofp_port', 6654))), 'controller.auditor']
+    logger.info("Starting the read-only auditor controller on OpenFlow port %s...",
+                block.get('ofp_port', 6654))
+    log = open(Path('logs') / 'auditor.log', 'w')
+    return subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+
+
 def run_mininet(config_path: str, duration: Optional[int]) -> None:
     """Real `--mode mininet` entry point (Project Plan Step 3).
 
@@ -530,6 +550,11 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
 
     env = dict(os.environ)
     env['ZTSDN_CONFIG'] = config_path
+    # The read-only auditor (controller/auditor.py), when the config runs it on
+    # this machine. Started first so it is listening when the switches come up;
+    # it is not waited for -- OVS keeps retrying it, and the primary is
+    # unaffected either way.
+    auditor_proc = _start_local_auditor(cfg, env)
     logger.info("Starting the trust-aware controller (config=%s)...", config_path)
     controller_log = open(Path('logs') / 'controller.log', 'w')
     controller_proc = subprocess.Popen(
@@ -562,6 +587,12 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
             controller_proc.kill()
             controller_proc.wait()
         controller_log.close()
+        if auditor_proc is not None:
+            auditor_proc.terminate()
+            try:
+                auditor_proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                auditor_proc.kill()
         # Replicas stop after the controller, so its last queued commits can land.
         for p in raft_procs.values():
             p.terminate()
@@ -573,6 +604,8 @@ def run_mininet(config_path: str, duration: Optional[int]) -> None:
         # Mininet forced this whole run to be root; the artefacts it leaves
         # behind must not be, or the next non-sudo command trips over them.
         owned = [Path(events_path), Path('logs')]
+        if auditor_proc is not None:
+            owned.append(Path(_auditor_record_path(cfg)))
         data_dir = (ledger_cfg.get('launch_local') or {}).get('data_dir')
         if raft_procs and data_dir:
             owned.append(Path(data_dir))

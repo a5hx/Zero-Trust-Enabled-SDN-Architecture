@@ -25,3 +25,9 @@ ppt/tools/
 
 # Personal all-in-one project narrative (not for the repository)
 docs/everything.md
+
+# Review-demo addresses and everything generated from them (hotspot IPs that
+# change per session, and a ledger bearer token). tools/demo_hosts.py
+# regenerates deploy/demo/ from deploy/demo_hosts.yaml.
+deploy/demo_hosts.yaml
+deploy/demo/

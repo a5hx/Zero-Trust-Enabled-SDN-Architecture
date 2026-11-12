@@ -519,6 +519,18 @@ def _stop_trust_agents(net: Any, cfg: Dict[str, Any]) -> None:
         net.get(f'iot{j}').cmd('pkill -f simulation.iot_client 2>/dev/null')
 
 
+def _auditor_controller(cfg: dict):
+    """(ip, port) of the read-only auditor controller (controller/auditor.py),
+    or None. Only when `controller.auditor.address` is set: every existing
+    config, and the baseline arm (base_model/run_base.py), gets exactly the
+    one controller it always had."""
+    block = ((cfg.get('controller') or {}).get('auditor') or {})
+    addr = block.get('address')
+    if not addr:
+        return None
+    return str(addr), int(block.get('ofp_port', 6654))
+
+
 def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
     """Launch the Mininet network with a remote os-ken controller.
 
@@ -566,6 +578,15 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         switch=OVSSwitch,
         link=TCLink,
     )
+    auditor = _auditor_controller(cfg)
+    if auditor is not None:
+        # Built first so the primary is c0, as without an auditor; then every
+        # switch is started with both controllers. OVS keeps retrying an
+        # auditor that is not up yet, and the primary is unaffected by it.
+        net.build()
+        net.addController('c_audit', controller=RemoteController,
+                          ip=auditor[0], port=auditor[1])
+        logger.info("Second (auditor) controller at %s:%d", *auditor)
     net.start()
     logger.info("Mininet network started")
 
