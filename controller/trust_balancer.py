@@ -23,7 +23,8 @@ import yaml
 from contracts.trust_update import TrustUpdate
 from trust_engine.trust_calculator import TrustCalculator
 from blockchain.block import build_block
-from blockchain.commit_backend import build_commit_backend
+from blockchain.commit_backend import build_commit_backend, find_remote
+from controller.fencing import Fence, FencingConfig, role_name
 from blockchain.ledger import Ledger
 
 from os_ken.base import app_manager
@@ -484,6 +485,18 @@ class TrustBalancerApp(app_manager.OSKenApp):
             # against this trust block, and report what they refuse.
             on_rejected=self._on_ledger_rejected, trust_cfg=cfg.get('trust'),
         )
+        # Multi-controller fencing (controller/fencing.py, docs/MULTI_CONTROLLER.md).
+        # Off by default: no generation is claimed, no role request is sent,
+        # and every switch keeps this controller as EQUAL, as before.
+        self.fencing_cfg = FencingConfig.from_config(cfg.get('controller'))
+        self.fence: Optional[Fence] = None
+        # Switches connected but not yet confirmed MASTER: nothing is
+        # installed on them, and they are not in self._datapaths, until then.
+        self._pending_switches: Dict[int, Any] = {}
+        self._fence_announced = False
+        if self.fencing_cfg.enabled:
+            self.fence = self._claim_generation()
+
         # Phase 6, test-only: refused unless ZTSDN_ALLOW_FORGERY=1.
         from controller.forgery import TrustForgery
         self._forgery = TrustForgery.from_config(cfg.get('controller'))
@@ -743,6 +756,99 @@ class TrustBalancerApp(app_manager.OSKenApp):
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         dp = ev.msg.datapath
+        if self.fence is not None:
+            # Fencing: claim MASTER under our generation and install nothing
+            # until the switch confirms. Every connection starts EQUAL, which
+            # can write and which a newer MASTER would not demote, so writing
+            # before the confirmation would defeat the fence.
+            ofproto, parser = dp.ofproto, dp.ofproto_parser
+            self._pending_switches[dp.id] = dp
+            self.fence.requested(dp.id)
+            dp.send_msg(parser.OFPRoleRequest(dp, ofproto.OFPCR_ROLE_MASTER,
+                                              self.fence.generation))
+            self.bus.publish('controller_role', dpid=dp.id, role='pending',
+                             generation=self.fence.generation)
+            return
+        self._setup_switch(dp)
+
+    # -- multi-controller fencing (controller/fencing.py) -------------------- #
+    def _claim_generation(self) -> Fence:
+        """Claim the next controller generation from the ledger cluster.
+
+        Refuses to start, rather than run unfenced, when the cluster cannot
+        be reached or another controller already holds a newer generation:
+        asking for fencing and silently running without it is the one
+        outcome not allowed."""
+        remote = find_remote(self._commit_backend)
+        if remote is None:
+            raise ValueError('controller.fencing needs ledger.backend: raft_remote -- the '
+                             'generation is issued by the ledger cluster')
+        cid = self.fencing_cfg.controller_id
+        result = remote.claim_generation(cid)
+        if result is None:
+            raise RuntimeError(f'controller.fencing: could not claim a generation '
+                               f'({remote.last_error})')
+        if not result.granted:
+            raise RuntimeError(f'controller.fencing: generation {result.generation} is held '
+                               f'by {result.holder!r}; not starting as a second primary')
+        logger.info("Fencing: %s holds controller generation %d", cid, result.generation)
+        self.bus.publish('controller_generation', controller_id=cid,
+                         generation=result.generation)
+        return Fence(result.generation)
+
+    @set_ev_cls(ofp_event.EventOFPRoleReply, [CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    def role_reply_handler(self, ev):
+        if self.fence is None:
+            return
+        msg = ev.msg
+        dp = msg.datapath
+        writable = self.fence.on_role_reply(dp.id, role_name(dp.ofproto, msg.role),
+                                            msg.generation_id)
+        self.bus.publish('controller_role', dpid=dp.id, role=self.fence.roles.get(dp.id),
+                         generation=self.fence.generation,
+                         switch_generation=msg.generation_id)
+        pending = self._pending_switches.pop(dp.id, None)
+        if writable and pending is not None:
+            self._setup_switch(pending)
+        elif self.fence.fenced:
+            self._on_fenced()
+
+    @set_ev_cls(ofp_event.EventOFPErrorMsg, [CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    def fencing_error_handler(self, ev):
+        """Only the two errors that mean "a newer controller holds this
+        switch" are acted on; every other error is left as it was."""
+        if self.fence is None:
+            return
+        msg = ev.msg
+        dp = msg.datapath
+        ofp = dp.ofproto
+        if msg.type == ofp.OFPET_ROLE_REQUEST_FAILED:
+            self.fence.on_role_failed(dp.id, msg.code == ofp.OFPRRFC_STALE, msg.code)
+            self._pending_switches.pop(dp.id, None)
+        elif msg.type == ofp.OFPET_BAD_REQUEST and msg.code == ofp.OFPBRC_IS_SLAVE:
+            self.fence.on_is_slave_error(dp.id)
+        else:
+            return
+        self.bus.publish('controller_role', dpid=dp.id, role=self.fence.roles.get(dp.id),
+                         generation=self.fence.generation, error_code=msg.code)
+        self._on_fenced()
+
+    def _on_fenced(self) -> None:
+        """A newer controller holds the switches: stop writing everywhere.
+        Clearing _datapaths in place stops every loop that installs or
+        deletes rules (they share this dict); packet_in_handler checks the
+        fence itself. The replicas refuse this generation's ledger batches
+        on their own."""
+        self._datapaths.clear()
+        self._pending_switches.clear()
+        if not self._fence_announced:
+            self._fence_announced = True
+            logger.warning("FENCED: %s -- this controller no longer writes to any switch",
+                           self.fence.fenced_reason)
+            self.bus.publish('controller_fenced', generation=self.fence.generation,
+                             reason=self.fence.fenced_reason)
+
+    def _setup_switch(self, dp) -> None:
         ofproto = dp.ofproto
         parser = dp.ofproto_parser
 
@@ -955,6 +1061,9 @@ class TrustBalancerApp(app_manager.OSKenApp):
     def packet_in_handler(self, ev):
         msg = ev.msg
         dp = msg.datapath
+        if self.fence is not None and not self.fence.may_write(dp.id):
+            # Not (or no longer) MASTER here: routing would install rules.
+            return
         in_port = msg.match['in_port']
 
         pkt = packet.Packet(msg.data)

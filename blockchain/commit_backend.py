@@ -175,9 +175,54 @@ class CommitResult:
     rejected: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
+# --------------------------------------------------------------------------- #
+# Controller generation register (multi-controller fencing)                    #
+# --------------------------------------------------------------------------- #
+#: Log-entry kind of a controller's claim on the next generation. Every other
+#: entry is a trust batch (no 'kind' key), so logs written before this
+#: existed apply exactly as they did.
+CONTROLLER_CLAIM = 'controller_claim'
+
+#: Rejection reasons for a trust batch from the wrong controller generation.
+STALE_GENERATION = 'stale_generation'      # an older generation: a fenced controller
+UNKNOWN_GENERATION = 'unknown_generation'  # never issued by this cluster
+NO_GENERATION = 'no_generation'            # unfenced batch after a generation was issued
+
+
+@dataclasses.dataclass(frozen=True)
+class ClaimResult:
+    """The cluster's answer to one claim: whether it was granted, and the
+    register as it stands after the claim was applied."""
+    granted: bool
+    generation: int
+    holder: Optional[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+def _claim_payload(controller_id: str, expect: int, timestamp: float) -> Dict[str, Any]:
+    """A claim is compare-and-set on the register: granted only if the
+    generation is still `expect` when the entry applies. Two controllers that
+    read the same generation and both claim are ordered by the log, and only
+    the first wins -- on every replica, because apply is deterministic."""
+    return {'kind': CONTROLLER_CLAIM, 'controller_id': str(controller_id),
+            'expect': int(expect), 'timestamp': timestamp}
+
+
+def _generation_rejections(updates: Sequence[TrustUpdate], reason: str) -> List[Dict[str, Any]]:
+    """One rejection per record, in blockchain/verifier.py's Rejection shape,
+    so every consumer of `rejected` (RemoteRaftBackend, the controller's
+    'ledger_rejected' events) handles them unchanged."""
+    return [{'position': i, 'node': u.edge_node_id, 'reason': reason,
+             'recorded_before': u.trust_score_before, 'recorded_after': u.trust_score_after,
+             'expected_before': None, 'expected_after': None, 'timestamp': u.timestamp}
+            for i, u in enumerate(updates)]
+
+
 def _entry_payload(
     updates: List[TrustUpdate], proposer_id: str, raft_term: int, timestamp: float,
-    config_hash: Optional[str] = None,
+    config_hash: Optional[str] = None, generation: Optional[int] = None,
 ) -> Dict[str, Any]:
     """What actually replicates for one commit: *content* only -- never a
     position in the chain.
@@ -216,6 +261,10 @@ def _entry_payload(
         # Phase 6: the trust formula the controller computed under, so a
         # verifying replica can refuse to judge it by a different one.
         payload['config_hash'] = config_hash
+    if generation is not None:
+        # The fencing token: the controller generation this batch was written
+        # under. Checked against the register when the entry applies.
+        payload['generation'] = int(generation)
     return payload
 
 
@@ -292,6 +341,11 @@ class RaftBackend:
         # batch_key -> block index, rebuilt from the log on every replica as
         # entries apply, so a retried batch never becomes a second block.
         self._applied_batches: Dict[str, int] = {}
+        # The controller generation register (CONTROLLER_CLAIM entries), also
+        # rebuilt from the log as entries apply. Generation 0 = never claimed:
+        # every batch is accepted exactly as before fencing existed.
+        self._generation = 0
+        self._generation_holder: Optional[str] = None
         self.node = RaftNode(
             node_id=node_id, peers=peers, transport=transport,
             apply_fn=self._on_apply, **raft_node_kwargs,
@@ -323,8 +377,46 @@ class RaftBackend:
         result = self.commit_ex(updates)
         return result.block if result is not None else None
 
+    def claim_generation(self, controller_id: str, expect: int) -> Optional[ClaimResult]:
+        """Claim the next controller generation: granted (generation becomes
+        expect + 1, held by `controller_id`) only if the register still reads
+        `expect` when the claim applies. None means "not decided, retry" (not
+        leader, timed out) -- the same contract as commit_ex.
+
+        A retry of a granted claim (same controller, same expect) is answered
+        "granted" again, not refused as stale: the caller never saw the first
+        reply, and the register says it won."""
+        with self._commit_lock:
+            with self._lock:
+                if not self.node.is_leader:
+                    return None
+                if self._generation == expect + 1 and self._generation_holder == controller_id:
+                    return ClaimResult(True, self._generation, self._generation_holder)
+                index = self.node.client_append(
+                    _claim_payload(controller_id, expect, time.time()), now=self._clock())
+                if index is None:
+                    return None
+                if index in self._results:
+                    return self._results.pop(index)
+                event = threading.Event()
+                self._waiters[index] = event
+            if not event.wait(timeout=self._commit_timeout_s):
+                with self._lock:
+                    self._waiters.pop(index, None)
+                logger.warning("%s: generation claim timed out (log index %d)",
+                               self.node.node_id, index)
+                return None
+            with self._lock:
+                return self._results.pop(index, None)
+
+    def controller_state(self) -> Dict[str, Any]:
+        """The register as this replica has applied it (GET /controller)."""
+        with self._lock:
+            return {'generation': self._generation, 'holder': self._generation_holder}
+
     def commit_ex(self, updates: List[TrustUpdate],
-                  config_hash: Optional[str] = None) -> Optional[CommitResult]:
+                  config_hash: Optional[str] = None,
+                  generation: Optional[int] = None) -> Optional[CommitResult]:
         """commit(), also reporting what a verifying cluster rejected. None
         means "not committed, retry" (not leader, timed out); a CommitResult
         with no block means every record was rejected -- do not retry."""
@@ -347,7 +439,7 @@ class RaftBackend:
                 payload = _entry_payload(
                     updates=list(updates), proposer_id=self._proposer_id,
                     raft_term=self.node.current_term, timestamp=time.time(),
-                    config_hash=config_hash,
+                    config_hash=config_hash, generation=generation,
                 )
                 index = self.node.client_append(payload, now=self._clock())
                 if index is None:
@@ -381,8 +473,11 @@ class RaftBackend:
         why that is the part that must be decided locally, per replica, at
         apply time.
         """
-        result: Optional[CommitResult] = None
-        if entry.payload is not None:
+        result: Any = None
+        if entry.payload is not None and entry.payload.get('kind') == CONTROLLER_CLAIM:
+            with self._lock:
+                result = self._apply_claim(entry.payload)
+        elif entry.payload is not None:
             try:
                 updates = [TrustUpdate(**u) for u in entry.payload['trust_updates']]
             except (KeyError, TypeError) as exc:
@@ -417,9 +512,53 @@ class RaftBackend:
         if event is not None:
             event.set()
 
+    def _apply_claim(self, payload: Dict[str, Any]) -> ClaimResult:
+        """Compare-and-set on the generation register. Lock held. A claim
+        that reads a generation someone else already moved past is refused;
+        the register is unchanged and the caller learns who holds it."""
+        cid, expect = payload.get('controller_id'), payload.get('expect')
+        if isinstance(expect, int) and self._generation == expect:
+            self._generation = expect + 1
+            self._generation_holder = cid
+            logger.info("%s: controller generation %d granted to %s",
+                        self.node.node_id, self._generation, cid)
+            return ClaimResult(True, self._generation, cid)
+        if self._generation_holder == cid and isinstance(expect, int) \
+                and self._generation == expect + 1:
+            # The same claim committed twice (a retry raced its first copy).
+            return ClaimResult(True, self._generation, cid)
+        return ClaimResult(False, self._generation, self._generation_holder)
+
+    def _generation_check(self, entry: LogEntry) -> Optional[str]:
+        """Why a batch must be refused for its controller generation, or None.
+        Lock held. Nothing is checked until a generation has been claimed, so
+        an unfenced deployment behaves exactly as before."""
+        if self._generation == 0:
+            return None
+        gen = entry.payload.get('generation')
+        if gen is None:
+            return NO_GENERATION
+        if not isinstance(gen, int) or gen > self._generation:
+            return UNKNOWN_GENERATION
+        if gen < self._generation:
+            return STALE_GENERATION
+        return None
+
     def _apply_batch(self, key: str, updates: List[TrustUpdate],
                      entry: LogEntry) -> Optional[CommitResult]:
         """Verify (if configured) and append one new batch. Lock held."""
+        fenced = self._generation_check(entry)
+        if fenced is not None:
+            # Checked before the verifier, so a fenced controller's batch never
+            # advances the replay state the current controller is judged by.
+            # Not cached under the batch key: the refusal is about the
+            # generation, not the content, and the same records sent under
+            # the current generation must still be judged on their merits.
+            rejected = _generation_rejections(updates, fenced)
+            logger.warning("%s: log index %d -- batch of %d record(s) refused: %s "
+                           "(register at generation %d)", self.node.node_id, entry.index,
+                           len(updates), fenced, self._generation)
+            return CommitResult(None, rejected)
         keep, rejected = updates, []
         if self._verifier is not None:
             found = self._verifier.check(updates, entry.payload.get('config_hash'))
@@ -488,6 +627,8 @@ class RaftBackend:
                 'verifying': self._verifier is not None,
                 'records_checked': self._verifier.checked if self._verifier else 0,
                 'records_rejected': self._verifier.rejected if self._verifier else 0,
+                'controller_generation': self._generation,
+                'controller_holder': self._generation_holder,
             }
 
 
@@ -570,6 +711,10 @@ class RemoteRaftBackend:
         self._leader: Optional[str] = None
         self.last_error: Optional[str] = None
         self.resyncs = 0
+        #: Multi-controller fencing: the generation this controller claimed
+        #: (claim_generation), sent with every batch. None -- every
+        #: deployment without controller.fencing -- sends no generation.
+        self.generation: Optional[int] = None
 
     # -- HTTP --------------------------------------------------------------- #
     def _request(self, rid: str, method: str, path: str,
@@ -661,6 +806,8 @@ class RemoteRaftBackend:
         body: Dict[str, Any] = {'updates': [u.to_dict() for u in updates]}
         if self._config_hash is not None:
             body['config_hash'] = self._config_hash
+        if self.generation is not None:
+            body['generation'] = self.generation
         deadline = time.monotonic() + self._deadline
         queue = self._candidates()
         followed: set = set()
@@ -703,6 +850,70 @@ class RemoteRaftBackend:
                     queue.insert(0, hint)
                 continue
             self.last_error = f'{rid}: HTTP {status}'
+        return None
+
+    # -- controller generation (multi-controller fencing) -------------------- #
+    def _leader_call(self, method: str, path: str,
+                     body: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+        """One request answered by the leader, following 409 hints until the
+        deadline. Returns the 200 body, or None."""
+        deadline = time.monotonic() + self._deadline
+        while time.monotonic() < deadline:
+            queue, followed = self._candidates(), set()
+            while queue and time.monotonic() < deadline:
+                rid = queue.pop(0)
+                try:
+                    status, payload = self._request(rid, method, path, body)
+                except (OSError, http.client.HTTPException, ValueError) as exc:
+                    self.last_error = f'{rid}: {exc}'
+                    if self._leader == rid:
+                        self._leader = None
+                    continue
+                if status == 200:
+                    self._leader = rid
+                    return payload
+                hint = (payload.get('status') or {}).get('leader_id') if status == 409 else None
+                self.last_error = f'{rid}: HTTP {status} (leader hint {hint})'
+                if hint in self._replicas and hint != rid and hint not in followed:
+                    followed.add(hint)
+                    if hint in queue:
+                        queue.remove(hint)
+                    queue.insert(0, hint)
+            time.sleep(0.2)        # e.g. mid-election: no leader yet
+        return None
+
+    def current_generation(self) -> Optional[Dict[str, Any]]:
+        """{'generation', 'holder'} as the leader has applied it, or None."""
+        return self._leader_call('GET', '/controller')
+
+    def claim_generation(self, controller_id: str, takeover: bool = False,
+                         attempts: int = 3) -> Optional[ClaimResult]:
+        """Read the register from the leader, then claim the next generation.
+        Granted -> `self.generation` is set and every later batch carries it.
+
+        Without `takeover`, a generation held by ANOTHER controller is left
+        alone (refused without claiming): a primary starting up must not
+        fence a primary that is running. It claims only when nothing is held
+        yet or the holder is itself (its own restart). A takeover claims over
+        whoever holds it. None: the cluster could not be reached."""
+        for _ in range(max(1, attempts)):
+            state = self.current_generation()
+            if state is None:
+                return None
+            holder = state.get('holder')
+            if not takeover and holder not in (None, controller_id):
+                return ClaimResult(False, int(state.get('generation', 0)), holder)
+            reply = self._leader_call('POST', '/controller/claim', {
+                'controller_id': controller_id, 'expect': int(state.get('generation', 0))})
+            if reply is None:
+                return None
+            result = ClaimResult(bool(reply.get('granted')), int(reply.get('generation', 0)),
+                                 reply.get('holder'))
+            if result.granted:
+                self.generation = result.generation
+                return result
+            if result.holder != controller_id:
+                return result
         return None
 
     def _report_rejections(self, rid: str, rejected: List[Dict[str, Any]]) -> None:
@@ -939,6 +1150,19 @@ def _status_of(backend: Any) -> Dict[str, Any]:
         backend = getattr(backend, '_inner', None)
         seen += 1
     return {}
+
+
+def find_remote(backend: Any) -> Optional[RemoteRaftBackend]:
+    """The RemoteRaftBackend inside build_commit_backend's wrappers
+    (AsyncCommitter -> TimingCommitBackend -> RemoteRaftBackend), or None for
+    a local ledger. Multi-controller fencing needs it to claim a generation."""
+    seen = 0
+    while backend is not None and seen < 8:
+        if isinstance(backend, RemoteRaftBackend):
+            return backend
+        backend = getattr(backend, '_inner', None)
+        seen += 1
+    return None
 
 
 def build_commit_backend(

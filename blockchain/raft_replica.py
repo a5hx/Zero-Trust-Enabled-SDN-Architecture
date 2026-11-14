@@ -26,6 +26,16 @@ Control API:
                              422 -> {ok: false, rejected}  (every record failed
                                     verification -- do NOT retry)
     GET  /blocks?from=N      {blocks: [block dicts from index N], chain_length}
+    GET  /controller         {generation, holder}: the controller generation
+                             register (multi-controller fencing), leader only
+                             (409 + status elsewhere), so a read is never stale
+    POST /controller/claim   body: {controller_id, expect}
+                             200 -> {granted, generation, holder}
+                             409 -> {ok: false, status}  (not leader / timeout)
+
+    A commit body may carry "generation": once any controller has claimed
+    one, a batch from any other generation is refused whole (422, reason
+    stale_generation / unknown_generation / no_generation).
 
 With --data-dir, term, vote and log are kept on disk (blockchain.raft.FileStorage)
 so a killed replica rejoins with its log. With --verify-config, the replica
@@ -138,13 +148,21 @@ def _make_handler(backend: RaftBackend, auth_token: Optional[str] = None):
                     'blocks': [b.to_dict() for b in blocks],
                     'chain_length': backend.chain_length(),
                 })
+            elif url.path == '/controller':
+                # Leader only: a follower may not have applied the latest
+                # claim yet, and a controller acting on a stale generation is
+                # exactly what this register exists to prevent.
+                if not backend.node.is_leader:
+                    self._write_json(409, {'ok': False, 'status': backend.status()})
+                    return
+                self._write_json(200, backend.controller_state())
             else:
                 self._write_json(404, {'error': 'not found'})
 
         def do_POST(self) -> None:
             if not self._authorized():
                 return
-            if self.path != '/commit':
+            if self.path not in ('/commit', '/controller/claim'):
                 self._write_json(404, {'error': 'not found'})
                 return
             length = int(self.headers.get('Content-Length', 0) or 0)
@@ -153,6 +171,9 @@ def _make_handler(backend: RaftBackend, auth_token: Optional[str] = None):
                 body = json.loads(raw) if raw else []
             except json.JSONDecodeError:
                 self._write_json(400, {'error': 'malformed JSON body'})
+                return
+            if self.path == '/controller/claim':
+                self._claim(body)
                 return
             # Two body shapes: the demos' bare list of rows, and the
             # controller's {"updates": [...]} object.
@@ -165,7 +186,12 @@ def _make_handler(backend: RaftBackend, auth_token: Optional[str] = None):
                 return
 
             config_hash = body.get('config_hash') if isinstance(body, dict) else None
-            result = backend.commit_ex(updates, config_hash=config_hash)
+            generation = body.get('generation') if isinstance(body, dict) else None
+            if generation is not None and (isinstance(generation, bool)
+                                           or not isinstance(generation, int)):
+                self._write_json(400, {'error': 'generation must be an integer'})
+                return
+            result = backend.commit_ex(updates, config_hash=config_hash, generation=generation)
             if result is None:
                 # Not the leader, or the commit timed out -- either way the
                 # caller should retry, following leader_id if present.
@@ -187,6 +213,19 @@ def _make_handler(backend: RaftBackend, auth_token: Optional[str] = None):
                 'block': block.to_dict(),
                 'rejected': result.rejected,
             })
+
+        def _claim(self, body: Any) -> None:
+            cid = body.get('controller_id') if isinstance(body, dict) else None
+            expect = body.get('expect') if isinstance(body, dict) else None
+            if not isinstance(cid, str) or not cid or isinstance(expect, bool) \
+                    or not isinstance(expect, int) or expect < 0:
+                self._write_json(400, {'error': 'need {"controller_id": str, "expect": int >= 0}'})
+                return
+            result = backend.claim_generation(cid, expect)
+            if result is None:
+                self._write_json(409, {'ok': False, 'status': backend.status()})
+                return
+            self._write_json(200, result.to_dict())
 
     return Handler
 

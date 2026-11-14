@@ -309,6 +309,20 @@ def auditor_block(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return dict((cfg.get('controller') or {}).get('auditor') or {})
 
 
+def _generation_reader(cfg: Dict[str, Any]) -> Any:
+    """A RemoteRaftBackend used only to read the controller generation (it
+    never commits). Fencing needs ledger.backend: raft_remote."""
+    from blockchain.commit_backend import RemoteRaftBackend, parse_replicas
+    ledger = cfg.get('ledger') or {}
+    if ledger.get('backend') != 'raft_remote':
+        raise ValueError('controller.fencing needs ledger.backend: raft_remote')
+    token_env = ledger.get('auth_token_env')
+    token = os.environ.get(token_env) or None if token_env else None
+    return RemoteRaftBackend(parse_replicas(ledger['replicas']), auth_token=token,
+                             request_timeout_s=float(ledger.get('request_timeout_s', 3.0)),
+                             deadline_s=float(ledger.get('commit_deadline_s', 5.0)))
+
+
 if _OSKEN:
     class AuditorApp(app_manager.OSKenApp):
         """Read-only second controller. See the module docstring."""
@@ -339,6 +353,13 @@ if _OSKEN:
             self.polls = 0
             self.started = time.time()
             self._last_flagged: Optional[Tuple[str, ...]] = None
+            # With controller.fencing on, a switch refuses a SLAVE request
+            # whose generation_id is older than the primary's MASTER claim
+            # (OFPRRFC_STALE), so the auditor asks under the cluster's
+            # current generation, and asks again after a refusal.
+            self._fencing = bool(((ctrl.get('fencing') or {}).get('enabled')))
+            self._generation_reader = _generation_reader(self.cfg) if self._fencing else None
+            self.generation = self._read_generation()
             self.bus.publish('auditor_start', requested_role='slave', vip=self.audit.vip_ip,
                              servers=sorted(self.audit.servers),
                              config={k: getattr(self.audit.cfg, k)
@@ -359,12 +380,26 @@ if _OSKEN:
                 self._datapaths.pop(dp.id, None)
                 self.roles.pop(dp.id, None)
 
+        def _read_generation(self) -> int:
+            """The cluster's current controller generation, or the last one
+            known (0 before any). Without fencing nothing is ever claimed and
+            0 is always accepted."""
+            if self._generation_reader is None:
+                return getattr(self, 'generation', 0)
+            state = self._generation_reader.current_generation()
+            if state is None:
+                logger.warning('auditor: ledger cluster unreachable; keeping generation %s',
+                               getattr(self, 'generation', 0))
+                return getattr(self, 'generation', 0)
+            return int(state.get('generation', 0))
+
         def request_slave(self, dp: Any) -> None:
-            """Ask to be read-only. generation_id 0: a SLAVE request carries one,
-            and this auditor never competes for MASTER, so any value works
-            until a master election exists (the post-review takeover)."""
+            """Ask to be read-only, under the current controller generation:
+            a SLAVE request carries one too, and the switch refuses a stale
+            one. This auditor never competes for MASTER."""
             ofp = dp.ofproto
-            dp.send_msg(dp.ofproto_parser.OFPRoleRequest(dp, ofp.OFPCR_ROLE_SLAVE, 0))
+            dp.send_msg(dp.ofproto_parser.OFPRoleRequest(dp, ofp.OFPCR_ROLE_SLAVE,
+                                                         self.generation))
 
         @set_ev_cls(ofp_event.EventOFPRoleReply, MAIN_DISPATCHER)
         def _on_role_reply(self, ev: Any) -> None:
@@ -408,6 +443,15 @@ if _OSKEN:
                     logger.exception('auditor poll failed')
 
         def poll_once(self) -> None:
+            refused = [dp for dpid, dp in self._datapaths.items()
+                       if self.roles.get(dpid) == ROLE_REFUSED]
+            if refused and self._fencing:
+                # Most likely stale: the primary claimed a newer generation
+                # after we asked. Re-read it and ask again.
+                self.generation = self._read_generation()
+                for dp in refused:
+                    self.roles[dp.id] = ROLE_PENDING
+                    self.request_slave(dp)
             for dpid, dp in list(self._datapaths.items()):
                 if self.roles.get(dpid) == ROLE_SLAVE:
                     dp.send_msg(dp.ofproto_parser.OFPFlowStatsRequest(

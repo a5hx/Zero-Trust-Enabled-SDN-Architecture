@@ -1856,6 +1856,20 @@ function log(ev) {
     case 'ledger_rejected':
       desc = `replica ${ev.replica} refused the trust record for <b>${ev.node}</b> — ${esc(ev.reason)}`;
       break;
+    // Multi-controller fencing (controller/fencing.py); only published when
+    // controller.fencing is on.
+    case 'controller_generation':
+      desc = `<b>${esc(ev.controller_id)}</b> holds controller generation ${ev.generation}`;
+      break;
+    case 'controller_role':
+      desc = `switch dpid=${ev.dpid}: this controller is <b>${esc(ev.role)}</b>`
+           + ` (generation ${ev.generation}`
+           + (ev.switch_generation != null ? `, switch reports ${ev.switch_generation}` : '')
+           + (ev.error_code != null ? `, error code ${ev.error_code}` : '') + ')';
+      break;
+    case 'controller_fenced':
+      desc = `<b>FENCED</b> at generation ${ev.generation}: ${esc(ev.reason)} — no further writes`;
+      break;
     default: return;
   }
 
@@ -1890,6 +1904,7 @@ function log(ev) {
 const ROUTINE_TYPES = new Set([
   'route', 'report', 'flow_install', 'flow_delete', 'block', 'optimizer',
   'switch_up', 'topology', 'topology_links', 'auth_admitted', 'witness_trial',
+  'controller_role',   // one per switch per handshake; controller_fenced is the alert
 ]);
 let _alertsSeen = false;
 const ANOMALY_ALERT_GAP_S = 15;
