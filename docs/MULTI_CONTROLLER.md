@@ -144,18 +144,51 @@ controller:
 
 Test suite: 1564 passed, 23 skipped, 0 failed (`tests/` + `base_model/tests/`).
 
-Check the switch before anything else:
+### How to verify it
 
-```
-sudo python3 tools/role_fencing_check.py
-```
+1. **Unit tests** (no root): `python3 -m pytest -q tests/test_fencing.py`.
+2. **The switch behaves as assumed** (root, no Mininet):
+   `sudo python3 tools/role_fencing_check.py`. Checks 1–8 must PASS; step 9
+   is reported for the record (the EQUAL hole, 2.4).
+3. **Live run** with `config/params_mc_fencing.yaml` (the review-demo config
+   plus fencing and the local auditor, 120 s):
+   `sudo python3 run_demo.py --mode mininet --config config/params_mc_fencing.yaml`.
+   Expected:
+   * dashboard log: "primary holds controller generation 1", then one
+     "this controller is master (generation 1)" line per switch;
+   * `sudo python3 tools/fencing_status.py` in a second terminal:
+     `generation 1 held by 'primary'`, and on every switch
+     `tcp:127.0.0.1:6653=master  tcp:127.0.0.1:6654=slave`;
+   * routing, quarantines and ledger blocks as on an unfenced run.
+4. **Ledger fencing, live:** during the run,
+   `python3 tools/fencing_status.py --claim standby` takes generation 2. From
+   then on the dashboard shows "replica … refused the trust record …
+   stale_generation" for every batch the primary sends, and the ledger stops
+   growing. The switches still list the primary as master: nothing has asked
+   them for MASTER under generation 2 yet (that is the standby, step 2).
 
-Checks 1–8 must PASS; step 9 is reported for the record.
+### Results, 15 Nov 2026 (laptop A, WSL2, Mininet 9 switches)
+
+* `role_fencing_check.py`: checks 1–8 PASS. Step 9: after being demoted and
+  refused as stale, controller A asked for EQUAL, was granted it, and **its
+  FlowMod was accepted**. The EQUAL hole (2.4) is real on this OVS.
+* Live run (`data/events_mc_fencing.jsonl`): `primary` claimed generation 1;
+  all 9 switches confirmed it MASTER (18 `controller_role` events: pending,
+  then master, per switch) and the auditor SLAVE.
+* Takeover at 22 s (`fencing_status.py --claim standby`, generation 2): 28
+  blocks committed before it, **0 after**; 580 trust records refused, every
+  one `stale_generation`. No `controller_fenced`: the primary kept routing and
+  kept sending batches, because nothing told it about the new generation.
+  An honest primary should treat its first `stale_generation` refusal as
+  being fenced and stop (next steps, item 0).
 
 ---
 
 ## 4. Next steps
 
+0. **Stand down on a ledger refusal.** A primary whose batch is refused as
+   `stale_generation` marks itself fenced (`controller_fenced`) and stops
+   writing to the switches, as it already does on a switch's STALE reply.
 1. **Standby mode.** A second TrustBalancerApp started with
    `controller.role: standby`: connects as SLAVE under the current generation,
    reads switches and the ledger, writes nothing. In practice the auditor
