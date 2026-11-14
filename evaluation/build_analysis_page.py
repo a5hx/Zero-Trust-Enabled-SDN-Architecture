@@ -689,10 +689,13 @@ def section_attack_impact(events: Sequence[Dict[str, Any]],
 
     warning = _warmup_warning(before, during, first)
 
+    # Built outside the f-string below: nesting quotes inside an f-string
+    # needs Python 3.12, and the WSL machines run 3.10.
+    plural = 's' if len(before) != 1 else ''
     body = (
         (warning or '')
         + f'<div class="panel">'
-        f'{C.table(["metric", f"clean 0–{first:.0f}s ({len(before)} bucket{"s" if len(before) != 1 else ""})", f"under attack {first:.0f}s+ ({len(during)} buckets)", "change"], rows)}'
+        f'{C.table(["metric", f"clean 0–{first:.0f}s ({len(before)} bucket{plural})", f"under attack {first:.0f}s+ ({len(during)} buckets)", "change"], rows)}'
         f'</div>'
         + _note(
             'The clean window is everything before the <strong>first timed</strong> attack arms; '
