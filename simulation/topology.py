@@ -577,13 +577,17 @@ def run_topology(cfg: Dict[str, Any], interactive: bool = False) -> None:
         controller=lambda name: RemoteController(name, ip='127.0.0.1', port=6653),
         switch=OVSSwitch,
         link=TCLink,
+        # Built once, explicitly, below. Mininet(topo=...) otherwise builds in
+        # its constructor, and a second build() re-creates every veth pair:
+        # "Error creating interface pair (iot1-eth0,s1-eth3): File exists".
+        build=False,
     )
+    # Built before the auditor is added so the primary is c0, as without an
+    # auditor; then every switch is started with both controllers. OVS keeps
+    # retrying an auditor that is not up yet, and the primary is unaffected.
+    net.build()
     auditor = _auditor_controller(cfg)
     if auditor is not None:
-        # Built first so the primary is c0, as without an auditor; then every
-        # switch is started with both controllers. OVS keeps retrying an
-        # auditor that is not up yet, and the primary is unaffected by it.
-        net.build()
         net.addController('c_audit', controller=RemoteController,
                           ip=auditor[0], port=auditor[1])
         logger.info("Second (auditor) controller at %s:%d", *auditor)

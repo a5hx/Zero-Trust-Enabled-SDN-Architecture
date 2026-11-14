@@ -376,6 +376,9 @@ def test_run_topology_wires_it_and_the_baseline_does_not():
     src = inspect.getsource(topology.run_topology)
     assert '_auditor_controller(cfg)' in src and "net.addController('c_audit'" in src
     assert src.index('net.build()') < src.index("net.addController('c_audit'") < src.index('net.start()')
+    # Built exactly once: Mininet(topo=...) builds in its constructor unless
+    # told not to, and a second build() fails on the existing veth pairs.
+    assert 'build=False' in src and src.count('net.build()') == 1
     assert 'auditor' not in inspect.getsource(run_base.run_baseline_topology)
 
 
